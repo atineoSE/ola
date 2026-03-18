@@ -1,4 +1,4 @@
-# oloopa
+# ola
 
 Outer Loop of Agents — runs coding agents in a loop over structured plan folders.
 
@@ -11,7 +11,7 @@ uv tool install .
 ## Usage
 
 ```bash
-oloopa -p <plan-folder> [-a cc|oh] [-m MODEL] [-l LIMIT] [-v]
+ola -p <plan-folder> [-a cc|oh] [-m MODEL] [-l LIMIT] [-v]
 ```
 
 | Flag | Description | Default |
@@ -40,6 +40,28 @@ Subfolders are processed in order. For each subfolder:
 1. If `SEED-PROMPT.md` exists and `PLAN.md` does not, the seed prompt runs first to populate the plan.
 2. While `PLAN.md` has unchecked tasks (`- [ ]`), the agent runs `LOOP-PROMPT.md` repeatedly.
 3. Stops when all tasks are checked or the iteration limit is reached.
+
+## Docker Sandbox
+
+Run `ola` inside a [Docker sandbox](https://docs.docker.com/sandbox/) (microVM-based isolation).
+
+### Build the template image
+
+```bash
+docker build -f docker/Dockerfile -t ola:latest .
+```
+
+### Run a sandbox
+
+```bash
+# Start a sandbox shell with your plan folder synced as workspace
+docker sandbox run shell -t ola:latest ~/my-plan
+
+# Inside the sandbox, ola and claude are ready to use
+ola -p ~/my-plan -a oh -l 5
+```
+
+The `.env` file in the workspace syncs automatically — no wrapper scripts needed.
 
 ## Agents
 

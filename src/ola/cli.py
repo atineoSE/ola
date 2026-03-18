@@ -1,19 +1,19 @@
-"""CLI entry point for oloopa."""
+"""CLI entry point for ola."""
 
 import argparse
 import logging
 import sys
 from pathlib import Path
 
-from oloopa.agents import create_agent
-from oloopa.loop import run_outer_loop
+from ola.agents import create_agent
+from ola.loop import run_outer_loop
 
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="oloopa",
+        prog="ola",
         description="Outer Loop of Agents",
     )
     parser.add_argument(

@@ -3,8 +3,8 @@
 import logging
 from pathlib import Path
 
-from oloopa.agents.base import Agent, AgentResponse
-from oloopa.plan import (
+from ola.agents.base import Agent, AgentResponse
+from ola.plan import (
     discover_plan_folders,
     has_outstanding_tasks,
     read_file_if_exists,

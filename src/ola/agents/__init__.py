@@ -1,6 +1,6 @@
-from oloopa.agents.base import Agent, AgentResponse
-from oloopa.agents.claude_code import ClaudeCodeAgent
-from oloopa.agents.openhands import OpenHandsAgent
+from ola.agents.base import Agent, AgentResponse
+from ola.agents.claude_code import ClaudeCodeAgent
+from ola.agents.openhands import OpenHandsAgent
 
 
 def create_agent(name: str, model: str | None = None) -> Agent:

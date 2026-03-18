@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from oloopa.agents.base import Agent, AgentResponse
+from ola.agents.base import Agent, AgentResponse
 
 logger = logging.getLogger(__name__)
 

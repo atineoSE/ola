@@ -1,7 +1,7 @@
 import logging
 import subprocess
 
-from oloopa.agents.base import Agent, AgentResponse
+from ola.agents.base import Agent, AgentResponse
 
 logger = logging.getLogger(__name__)
 
