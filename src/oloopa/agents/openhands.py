@@ -2,6 +2,8 @@ import logging
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from oloopa.agents.base import Agent, AgentResponse
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,8 @@ class OpenHandsAgent(Agent):
                 output="openhands-sdk is not installed. Install with: pip install openhands-sdk",
                 success=False,
             )
+
+        load_dotenv()
 
         log_dir = str(Path(workdir) / "logs")
         oh_get_logger(__name__, log_dir=log_dir)
