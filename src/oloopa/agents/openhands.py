@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 
 from oloopa.agents.base import Agent, AgentResponse
 
@@ -15,6 +16,7 @@ class OpenHandsAgent(Agent):
             from openhands.sdk.conversation.response_utils import (
                 get_agent_final_response,
             )
+            from openhands.sdk.logger import get_logger as oh_get_logger
             from openhands.tools.terminal import TerminalTool
             from openhands.tools.file_editor import FileEditorTool
             from pydantic import SecretStr
@@ -24,6 +26,9 @@ class OpenHandsAgent(Agent):
                 output="openhands-sdk is not installed. Install with: pip install openhands-sdk",
                 success=False,
             )
+
+        log_dir = str(Path(workdir) / "logs")
+        oh_get_logger(__name__, log_dir=log_dir)
 
         api_key = os.getenv("LLM_API_KEY")
         if not api_key:
