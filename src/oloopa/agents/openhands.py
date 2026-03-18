@@ -56,7 +56,10 @@ class OpenHandsAgent(Agent):
             tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)],
         )
 
-        conversation = Conversation(agent=agent, workspace=workdir)
+        persistence_dir = str(Path(workdir) / "trajectories")
+        conversation = Conversation(
+            agent=agent, workspace=workdir, persistence_dir=persistence_dir
+        )
         conversation.send_message(prompt)
         conversation.run()
 
