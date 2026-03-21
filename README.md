@@ -51,14 +51,11 @@ Run `ola` inside a [Docker sandbox](https://docs.docker.com/sandbox/) (microVM-b
 docker build -f docker/Dockerfile -t ola:latest .
 ```
 
-### Create and run a sandbox
+### Run a sandbox
 
 ```bash
-# Create a sandbox with your plan folder synced as workspace
-docker sandbox create --image ola:latest my-sandbox ~/my-plan
-
-# Run the sandbox
-docker sandbox run my-sandbox
+# Start a sandbox shell with your plan folder synced as workspace
+docker sandbox run -t ola:latest shell ~/my-plan
 
 # Inside the sandbox, ola and claude are ready to use
 ola -p ~/my-plan -a oh -l 5
