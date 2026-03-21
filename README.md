@@ -51,17 +51,20 @@ Run `ola` inside a [Docker sandbox](https://docs.docker.com/sandbox/) (microVM-b
 docker build -f docker/Dockerfile -t ola:latest .
 ```
 
-### Run a sandbox
+### Create and run a sandbox
 
 ```bash
-# Start a sandbox shell with your plan folder synced as workspace
-docker sandbox run shell -t ola:latest ~/my-plan
+# Create a sandbox with your plan folder synced as workspace
+docker sandbox create --image ola:latest my-sandbox ~/my-plan
+
+# Run the sandbox
+docker sandbox run my-sandbox
 
 # Inside the sandbox, ola and claude are ready to use
 ola -p ~/my-plan -a oh -l 5
 ```
 
-The `.env` file in the workspace syncs automatically — no wrapper scripts needed.
+Place a `.env` file in the workspace directory — it syncs automatically into the sandbox.
 
 ## Agents
 
