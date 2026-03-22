@@ -51,17 +51,58 @@ Run `ola` inside a [Docker sandbox](https://docs.docker.com/sandbox/) (microVM-b
 docker build -f docker/Dockerfile -t ola:latest .
 ```
 
-### Run a sandbox
+### Shell helper
+
+Source the helper function in your `.bashrc` or `.zshrc`:
 
 ```bash
-# Start a sandbox shell with your plan folder synced as workspace
-docker sandbox run -t ola:latest shell ~/my-plan
-
-# Inside the sandbox, ola and claude are ready to use
-ola -p ~/my-plan -a oh -l 5
+source /path/to/ola/docker/ola-sandbox.sh
 ```
 
-Place a `.env` file in the workspace directory — it syncs automatically into the sandbox.
+### Run a sandbox
+
+The expected directory layout is:
+
+```
+experiment/
+  code/   # your working directory
+  plan/   # ola plan folder (sibling)
+```
+
+From the `code` directory:
+
+```bash
+ola-sandbox my-sandbox
+```
+
+This will:
+1. Copy `~/.claude/.credentials.json` into the workspace for Claude auth
+2. Create a sandbox with `code/` as primary workspace and `plan/` mounted alongside
+3. Clean up the credentials file from the workspace on exit
+
+Inside the sandbox:
+
+```bash
+ola -p ../plan -a cc -l 5
+```
+
+To reconnect to an existing sandbox:
+
+```bash
+docker sandbox run my-sandbox
+```
+
+### Manual usage
+
+If you prefer not to use the helper:
+
+```bash
+cp ~/.claude/.credentials.json .
+docker sandbox run --name my-sandbox -t ola:latest shell . ../plan
+# credentials are auto-moved to ~/.claude/ on shell login
+```
+
+Place a `.env` file in the workspace for OpenHands env vars (`LLM_API_KEY`, etc.).
 
 ## Agents
 
