@@ -11,28 +11,36 @@ uv tool install .
 ## Usage
 
 ```bash
-ola -p <plan-folder> [-a cc|oh] [-m MODEL] [-l LIMIT] [-v]
+ola -p <agent-folder> [-a cc|oh] [-m MODEL] [-l LIMIT] [-v]
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-p, --plan` | Path to the plan folder (required) | — |
+| `-p, --plan` | Path to the agent/plan folder (required) | — |
 | `-a, --agent` | Agent: `cc`/`claude-code` or `oh`/`openhands` | `cc` |
 | `-m, --model` | Model name | Agent default |
 | `-l, --limit` | Max iterations per subfolder | No limit |
 | `-v, --verbose` | Debug logging | Off |
 
-## Plan folder structure
+## Agent folder structure
 
 ```
-my-plan/
+my-agent/
   01-setup/
     SEED-PROMPT.md    # Optional: runs once to generate PLAN.md
     LOOP-PROMPT.md    # Required: prompt used each iteration
     PLAN.md           # Optional: markdown todo list
+    .claude/          # Claude Code config dir (auto-created by ola)
+      .credentials.json
+      projects/...    # conversation history auto-created by claude
+    .openhands/       # OpenHands state dir (auto-created by ola)
+      logs/
+      trajectories/
   02-implement/
     LOOP-PROMPT.md
     PLAN.md
+    .claude/
+    .openhands/
 ```
 
 Subfolders are processed in order. For each subfolder:
@@ -41,23 +49,38 @@ Subfolders are processed in order. For each subfolder:
 2. While `PLAN.md` has unchecked tasks (`- [ ]`), the agent runs `LOOP-PROMPT.md` repeatedly.
 3. Stops when all tasks are checked or the iteration limit is reached.
 
+Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside the subfolder. For Claude Code, `CLAUDE_CONFIG_DIR` is set to `.claude/`, giving each phase its own conversation history that persists across sandbox sessions. For OpenHands, logs and trajectories are written to `.openhands/logs/` and `.openhands/trajectories/`.
+
 ## Docker Sandbox
 
 Run `ola` inside a [Docker sandbox](https://docs.docker.com/sandbox/) (microVM-based isolation).
 
 ### Build the template image
 
-```bash
-docker build -f docker/Dockerfile -t ola:latest .
-```
-
-### Shell helper
-
-Source the helper function in your `.bashrc` or `.zshrc`:
+Use `--no-cache` to ensure the latest versions of Claude Code, OpenHands, and ola are installed:
 
 ```bash
-source /path/to/ola/docker/ola-sandbox.sh
+docker build --no-cache -f docker/Dockerfile -t ola:latest .
 ```
+
+### Shell helpers
+
+Symlink `ola.sh` to your home directory and source it from `.zshrc`:
+
+```bash
+ln -sf /path/to/ola/ola.sh ~/.ola.sh
+```
+
+Add to your `.zshrc`:
+
+```bash
+[ -f ~/.ola.sh ] && source ~/.ola.sh
+```
+
+This provides two functions:
+
+- **`cc-credentials`** — restores `~/.claude/.credentials.json` from the macOS Keychain
+- **`ola-sandbox`** — creates or reconnects to a Docker sandbox
 
 ### Run a sandbox
 
@@ -65,8 +88,8 @@ The expected directory layout is:
 
 ```
 experiment/
-  code/   # your working directory
-  plan/   # ola plan folder (sibling)
+  code/    # your working directory
+  agent/   # ola agent folder (sibling)
 ```
 
 From the `code` directory:
@@ -76,20 +99,17 @@ ola-sandbox my-sandbox
 ```
 
 This will:
-1. Copy `~/.claude/.credentials.json` into the workspace for Claude auth
-2. Create a sandbox with `code/` as primary workspace and `plan/` mounted alongside
-3. Clean up the credentials file from the workspace on exit
+1. Restore `~/.claude/.credentials.json` from the Keychain if missing (via `cc-credentials`)
+2. Copy credentials into the workspace for the sandbox to pick up
+3. Create a sandbox with `code/` as primary workspace and `agent/` mounted alongside
+4. Clean up the credentials file from the workspace on exit
+
+Running `ola-sandbox my-sandbox` again will reconnect to the existing sandbox.
 
 Inside the sandbox:
 
 ```bash
-ola -p ../plan -a cc -l 5
-```
-
-To reconnect to an existing sandbox:
-
-```bash
-docker sandbox run my-sandbox
+ola -p ../agent -a cc -l 5
 ```
 
 ### Manual usage
@@ -98,7 +118,7 @@ If you prefer not to use the helper:
 
 ```bash
 cp ~/.claude/.credentials.json .
-docker sandbox run --name my-sandbox -t ola:latest shell . ../plan
+docker sandbox run --name my-sandbox -t ola:latest shell . ../agent
 # credentials are auto-moved to ~/.claude/ on shell login
 ```
 
@@ -106,6 +126,6 @@ Place a `.env` file in the workspace for OpenHands env vars (`LLM_API_KEY`, etc.
 
 ## Agents
 
-**Claude Code** (`cc`) — calls `claude --dangerously-skip-permissions -p <prompt>` as a subprocess.
+**Claude Code** (`cc`) — calls `claude --dangerously-skip-permissions -p <prompt>` as a subprocess. When run via ola, `CLAUDE_CONFIG_DIR` is set to the phase's `.claude/` directory, giving each phase its own conversation history.
 
-**OpenHands** (`oh`) — uses the OpenHands SDK (`LLM` + `Conversation`). Requires `LLM_API_KEY` (and optionally `LLM_MODEL`, `LLM_BASE_URL`) set in the environment or a `.env` file. SDK logs and conversation trajectories are saved to `<subfolder>/logs/` and `<subfolder>/trajectories/`.
+**OpenHands** (`oh`) — uses the OpenHands SDK (`LLM` + `Conversation`). Requires `LLM_API_KEY` (and optionally `LLM_MODEL`, `LLM_BASE_URL`) set in the environment or a `.env` file. SDK logs and conversation trajectories are saved to `<subfolder>/.openhands/logs/` and `<subfolder>/.openhands/trajectories/`.

@@ -12,7 +12,11 @@ logger = logging.getLogger(__name__)
 class OpenHandsAgent(Agent):
     """Agent that delegates to OpenHands SDK."""
 
-    def run(self, prompt: str, workdir: str) -> AgentResponse:
+    state_dir_name = ".openhands"
+
+    def run(
+        self, prompt: str, workdir: str, state_dir: str | None = None
+    ) -> AgentResponse:
         try:
             from openhands.sdk import LLM, Agent as OHAgent, Conversation, Tool
             from openhands.sdk.conversation.response_utils import (
@@ -31,7 +35,9 @@ class OpenHandsAgent(Agent):
 
         load_dotenv()
 
-        log_dir = str(Path(workdir) / "logs")
+        base = Path(state_dir) if state_dir else Path(workdir)
+        base.mkdir(parents=True, exist_ok=True)
+        log_dir = str(base / "logs")
         oh_get_logger(__name__, log_dir=log_dir)
 
         api_key = os.getenv("LLM_API_KEY")
@@ -60,7 +66,7 @@ class OpenHandsAgent(Agent):
             tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)],
         )
 
-        persistence_dir = str(Path(workdir) / "trajectories")
+        persistence_dir = str(base / "trajectories")
         conversation = Conversation(
             agent=agent, workspace=workdir, persistence_dir=persistence_dir
         )

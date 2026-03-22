@@ -35,7 +35,7 @@ def main() -> None:
         "--plan",
         type=str,
         required=True,
-        help="Path to the plan folder",
+        help="Path to the agent/plan folder",
     )
     parser.add_argument(
         "-l",

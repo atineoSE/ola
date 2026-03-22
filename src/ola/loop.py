@@ -33,6 +33,13 @@ def _process_folder(agent: Agent, folder: Path, limit: int | None) -> None:
     """Process a single plan folder."""
     workdir = str(folder)
 
+    # Create per-phase agent state directory
+    state_dir: str | None = None
+    if agent.state_dir_name:
+        agent_state_path = folder / agent.state_dir_name
+        agent_state_path.mkdir(parents=True, exist_ok=True)
+        state_dir = str(agent_state_path)
+
     loop_prompt = read_file_if_exists(folder / "LOOP-PROMPT.md")
     if loop_prompt is None:
         logger.warning("Skipping %s: no LOOP-PROMPT.md found.", folder.name)
@@ -46,7 +53,7 @@ def _process_folder(agent: Agent, folder: Path, limit: int | None) -> None:
             logger.info("Running seed prompt...")
             plan_path = folder / "PLAN.md"
             seed_prompt += f"\n\nWrite your plan at {plan_path}"
-            response = agent.run(seed_prompt, workdir)
+            response = agent.run(seed_prompt, workdir, state_dir=state_dir)
             _log_response("SEED", response)
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
@@ -68,7 +75,7 @@ def _process_folder(agent: Agent, folder: Path, limit: int | None) -> None:
         iteration += 1
         logger.info("Iteration %d%s...", iteration, f"/{limit}" if limit else "")
 
-        response = agent.run(loop_prompt, workdir)
+        response = agent.run(loop_prompt, workdir, state_dir=state_dir)
         _log_response(f"LOOP #{iteration}", response)
 
         if not response.success:

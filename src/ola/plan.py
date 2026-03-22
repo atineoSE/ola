@@ -9,7 +9,9 @@ def discover_plan_folders(plan_path: Path) -> list[Path]:
     if not plan_path.is_dir():
         raise FileNotFoundError(f"Plan path does not exist: {plan_path}")
 
-    subfolders = sorted(p for p in plan_path.iterdir() if p.is_dir())
+    subfolders = sorted(
+        p for p in plan_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+    )
     return subfolders
 
 
