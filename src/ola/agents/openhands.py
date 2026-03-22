@@ -25,7 +25,7 @@ class OpenHandsAgent(Agent):
             from openhands.sdk.conversation.response_utils import (
                 get_agent_final_response,
             )
-            from openhands.sdk.logger import get_logger as oh_get_logger
+            from openhands.sdk.logger.logger import setup_logging as oh_setup_logging
             from pydantic import SecretStr
         except ImportError:
             logger.error("openhands-sdk is not installed")
@@ -45,8 +45,7 @@ class OpenHandsAgent(Agent):
             if src.exists() and not dst.exists():
                 shutil.copy2(src, dst)
                 logger.debug("Copied %s → %s", src, dst)
-        log_dir = str(base / "logs")
-        oh_get_logger(__name__, log_dir=log_dir)
+        oh_setup_logging(log_to_file=True, log_dir=str(base / "logs"))
 
         api_key = os.getenv("LLM_API_KEY")
         if not api_key:
