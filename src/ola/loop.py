@@ -1,6 +1,7 @@
 """Core outer loop logic."""
 
 import logging
+import subprocess
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
@@ -13,12 +14,41 @@ from ola.plan import (
 logger = logging.getLogger(__name__)
 
 
+def _ensure_git(cwd: Path) -> None:
+    """Ensure a git repo exists in cwd; initialise one if not."""
+    if not (cwd / ".git").exists():
+        logger.info("Initialising git repository in %s", cwd)
+        subprocess.run(["git", "init"], cwd=cwd, check=True, capture_output=True)
+        _git_commit(cwd, "Initial commit")
+
+
+def _git_commit(cwd: Path, message: str) -> None:
+    """Stage all changes and commit. No-op if working tree is clean."""
+    subprocess.run(["git", "add", "-A"], cwd=cwd, check=True, capture_output=True)
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"], cwd=cwd, capture_output=True
+    )
+    if result.returncode != 0:  # there are staged changes
+        subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+        )
+        logger.info("Committed: %s", message)
+    else:
+        logger.debug("Nothing to commit after: %s", message)
+
+
 def run_outer_loop(
     agent: Agent,
     plan_path: Path,
     limit: int | None = None,
 ) -> None:
     """Run the outer loop over plan subfolders."""
+    cwd = Path.cwd()
+    _ensure_git(cwd)
+
     folders = discover_plan_folders(plan_path)
     if not folders:
         logger.info("No subfolders found in %s. Nothing to do.", plan_path)
@@ -26,10 +56,10 @@ def run_outer_loop(
 
     for folder in folders:
         logger.info("Processing: %s", folder.name)
-        _process_folder(agent, folder, limit)
+        _process_folder(agent, folder, limit, cwd)
 
 
-def _process_folder(agent: Agent, folder: Path, limit: int | None) -> None:
+def _process_folder(agent: Agent, folder: Path, limit: int | None, cwd: Path) -> None:
     """Process a single plan folder."""
     workdir = str(folder)
 
@@ -58,6 +88,7 @@ def _process_folder(agent: Agent, folder: Path, limit: int | None) -> None:
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
                 return
+            _git_commit(cwd, f"ola: {folder.name} seed")
 
     # Loop phase
     iteration = 0
@@ -81,6 +112,8 @@ def _process_folder(agent: Agent, folder: Path, limit: int | None) -> None:
         if not response.success:
             logger.error("Agent returned failure. Stopping %s.", folder.name)
             break
+
+        _git_commit(cwd, f"ola: {folder.name} loop #{iteration}")
 
 
 def _log_response(label: str, response: AgentResponse) -> None:
