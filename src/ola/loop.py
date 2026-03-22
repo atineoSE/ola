@@ -61,7 +61,7 @@ def run_outer_loop(
 
 def _process_folder(agent: Agent, folder: Path, limit: int | None, cwd: Path) -> None:
     """Process a single plan folder."""
-    workdir = str(folder)
+    workdir = str(cwd)
 
     # Create per-phase agent state directory
     state_dir: str | None = None
