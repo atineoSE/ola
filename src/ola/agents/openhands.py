@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -7,6 +8,8 @@ from dotenv import load_dotenv
 from ola.agents.base import Agent, AgentResponse
 
 logger = logging.getLogger(__name__)
+
+_CONFIG_FILES = ("agent_settings.json", "cli_config.json")
 
 
 class OpenHandsAgent(Agent):
@@ -37,6 +40,13 @@ class OpenHandsAgent(Agent):
 
         base = Path(state_dir) if state_dir else Path(workdir)
         base.mkdir(parents=True, exist_ok=True)
+        home_oh = Path.home() / ".openhands"
+        for fname in _CONFIG_FILES:
+            src = home_oh / fname
+            dst = base / fname
+            if src.exists() and not dst.exists():
+                shutil.copy2(src, dst)
+                logger.debug("Copied %s → %s", src, dst)
         log_dir = str(base / "logs")
         oh_get_logger(__name__, log_dir=log_dir)
 

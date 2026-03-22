@@ -21,4 +21,6 @@ RUN mkdir -p ~/.claude && \
 
 # On shell login: unset proxy-managed API key, install Claude credentials from workspace
 RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
-    echo 'if [ -f .credentials.json ]; then mv .credentials.json ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json; fi' >> ~/.bashrc
+    echo 'if [ -f .credentials.json ]; then mv .credentials.json ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json; fi' >> ~/.bashrc && \
+    echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc && \
+    echo "alias oh='openhands --llm-approve --exit-without-confirmation'" >> ~/.bashrc

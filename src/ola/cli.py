@@ -45,16 +45,16 @@ def main() -> None:
         help="Max iterations per plan subfolder (default: no limit)",
     )
     parser.add_argument(
-        "-v",
-        "--verbose",
+        "-q",
+        "--quiet",
         action="store_true",
-        help="Enable debug logging",
+        help="Disable debug logging",
     )
 
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.INFO if args.quiet else logging.DEBUG,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
