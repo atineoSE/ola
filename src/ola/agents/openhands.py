@@ -26,8 +26,6 @@ class OpenHandsAgent(Agent):
                 get_agent_final_response,
             )
             from openhands.sdk.logger import get_logger as oh_get_logger
-            from openhands.tools.terminal import TerminalTool
-            from openhands.tools.file_editor import FileEditorTool
             from pydantic import SecretStr
         except ImportError:
             logger.error("openhands-sdk is not installed")
@@ -73,7 +71,7 @@ class OpenHandsAgent(Agent):
 
         agent = OHAgent(
             llm=llm,
-            tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)],
+            tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")],
         )
 
         persistence_dir = str(base / "trajectories")
