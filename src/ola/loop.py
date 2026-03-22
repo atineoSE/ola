@@ -46,8 +46,7 @@ def run_outer_loop(
     limit: int | None = None,
 ) -> None:
     """Run the outer loop over plan subfolders."""
-    cwd = Path.cwd()
-    _ensure_git(cwd)
+    _ensure_git(plan_path)
 
     folders = discover_plan_folders(plan_path)
     if not folders:
@@ -56,12 +55,14 @@ def run_outer_loop(
 
     for folder in folders:
         logger.info("Processing: %s", folder.name)
-        _process_folder(agent, folder, limit, cwd)
+        _process_folder(agent, folder, limit, plan_path)
 
 
-def _process_folder(agent: Agent, folder: Path, limit: int | None, cwd: Path) -> None:
+def _process_folder(
+    agent: Agent, folder: Path, limit: int | None, agent_root: Path
+) -> None:
     """Process a single plan folder."""
-    workdir = str(cwd)
+    workdir = str(Path.cwd())
 
     # Create per-phase agent state directory
     state_dir: str | None = None
@@ -88,7 +89,7 @@ def _process_folder(agent: Agent, folder: Path, limit: int | None, cwd: Path) ->
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
                 return
-            _git_commit(cwd, f"ola: {folder.name} seed")
+            _git_commit(agent_root, f"ola: {folder.name} seed")
 
     # Loop phase
     iteration = 0
@@ -113,7 +114,7 @@ def _process_folder(agent: Agent, folder: Path, limit: int | None, cwd: Path) ->
             logger.error("Agent returned failure. Stopping %s.", folder.name)
             break
 
-        _git_commit(cwd, f"ola: {folder.name} loop #{iteration}")
+        _git_commit(agent_root, f"ola: {folder.name} loop #{iteration}")
 
 
 def _log_response(label: str, response: AgentResponse) -> None:
