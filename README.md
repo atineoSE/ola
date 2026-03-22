@@ -11,12 +11,12 @@ uv tool install .
 ## Usage
 
 ```bash
-ola -p <agent-folder> [-a cc|oh] [-m MODEL] [-l LIMIT] [-v]
+ola [-f <agent-folder>] [-a cc|oh] [-m MODEL] [-l LIMIT] [-v]
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-p, --plan` | Path to the agent/plan folder (required) | — |
+| `-f, --agent-folder` | Path to the agent folder | `../agent` |
 | `-a, --agent` | Agent: `cc`/`claude-code` or `oh`/`openhands` | `cc` |
 | `-m, --model` | Model name | Agent default |
 | `-l, --limit` | Max iterations per subfolder | No limit |
@@ -109,7 +109,7 @@ Running `ola-sandbox my-sandbox` again will reconnect to the existing sandbox.
 Inside the sandbox:
 
 ```bash
-ola -p ../agent -a cc -l 5
+ola -a cc -l 5
 ```
 
 ### Manual usage

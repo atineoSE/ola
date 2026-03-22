@@ -31,11 +31,11 @@ def main() -> None:
         help="Model name (default: agent-specific default)",
     )
     parser.add_argument(
-        "-p",
-        "--plan",
+        "-f",
+        "--agent-folder",
         type=str,
-        required=True,
-        help="Path to the agent/plan folder",
+        default="../agent",
+        help="Path to the agent folder (default: ../agent)",
     )
     parser.add_argument(
         "-l",
@@ -59,7 +59,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    plan_path = Path(args.plan).resolve()
+    plan_path = Path(args.agent_folder).resolve()
 
     if not plan_path.is_dir():
         logger.error("%s is not a directory.", plan_path)
