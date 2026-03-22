@@ -82,7 +82,7 @@ def _process_folder(agent: Agent, folder: Path, limit: int | None, cwd: Path) ->
         if not plan_exists:
             logger.info("Running seed prompt...")
             plan_path = folder / "PLAN.md"
-            seed_prompt += f"\n\nWrite your plan at {plan_path}"
+            seed_prompt += f"\n\nWrite your plan at {plan_path} using markdown tasks, i.e. `- [ ] `"
             response = agent.run(seed_prompt, workdir, state_dir=state_dir)
             _log_response("SEED", response)
             if not response.success:
