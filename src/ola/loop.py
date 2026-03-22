@@ -76,20 +76,23 @@ def _process_folder(
         logger.warning("Skipping %s: no LOOP-PROMPT.md found.", folder.name)
         return
 
+    plan_file = folder / "PLAN.md"
+
     # Seed phase: run SEED-PROMPT.md if it exists and PLAN.md doesn't yet
     seed_prompt = read_file_if_exists(folder / "SEED-PROMPT.md")
     if seed_prompt is not None:
-        plan_exists = (folder / "PLAN.md").exists()
-        if not plan_exists:
+        if not plan_file.exists():
             logger.info("Running seed prompt...")
-            plan_path = folder / "PLAN.md"
-            seed_prompt += f"\n\nWrite your plan at {plan_path} using markdown tasks, i.e. `- [ ] `"
+            seed_prompt += f"\n\nWrite your plan at {plan_file} using markdown tasks, i.e. `- [ ] `"
             response = agent.run(seed_prompt, workdir, state_dir=state_dir)
             _log_response("SEED", response)
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
                 return
             _git_commit(agent_root, f"ola: {folder.name} seed")
+
+    # Inject absolute plan path so the agent can find it from the code dir
+    effective_prompt = loop_prompt + f"\n\nPLAN.md is located at: {plan_file}"
 
     # Loop phase
     iteration = 0
@@ -107,7 +110,7 @@ def _process_folder(
         iteration += 1
         logger.info("Iteration %d%s...", iteration, f"/{limit}" if limit else "")
 
-        response = agent.run(loop_prompt, workdir, state_dir=state_dir)
+        response = agent.run(effective_prompt, workdir, state_dir=state_dir)
         _log_response(f"LOOP #{iteration}", response)
 
         if not response.success:
