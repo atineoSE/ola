@@ -27,10 +27,12 @@ class OpenHandsAgent(Agent):
             )
             from openhands.sdk.logger.logger import setup_logging as oh_setup_logging
             from pydantic import SecretStr
+
+            import openhands.tools  # noqa: F401 — registers TerminalTool, FileEditorTool
         except ImportError:
-            logger.error("openhands-sdk is not installed")
+            logger.error("openhands-sdk or openhands-tools is not installed")
             return AgentResponse(
-                output="openhands-sdk is not installed. Install with: pip install openhands-sdk",
+                output="openhands-sdk or openhands-tools is not installed.",
                 success=False,
             )
 
@@ -70,7 +72,7 @@ class OpenHandsAgent(Agent):
 
         agent = OHAgent(
             llm=llm,
-            tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")],
+            tools=[Tool(name="terminal"), Tool(name="file_editor")],
         )
 
         persistence_dir = str(base / "trajectories")
