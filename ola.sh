@@ -45,11 +45,14 @@ ola-sandbox() {
     cc-credentials || return 1
   fi
 
-  # Copy credentials into workspace for the sandbox to pick up
+  # Copy credentials and config into workspace for the sandbox to pick up
   cp ~/.claude/.credentials.json "$code_dir/.credentials.json"
+  for f in agent_settings.json cli_config.json; do
+    [ -f ~/.openhands/"$f" ] && cp ~/.openhands/"$f" "$code_dir/.oh-$f"
+  done
 
   docker sandbox run --name "$name" -t ola:latest shell "$code_dir" "$agent_dir"
 
-  # Clean up credentials from workspace if still present
-  rm -f "$code_dir/.credentials.json"
+  # Clean up credentials and config from workspace if still present
+  rm -f "$code_dir/.credentials.json" "$code_dir/.oh-agent_settings.json" "$code_dir/.oh-cli_config.json"
 }
