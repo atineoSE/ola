@@ -1,7 +1,9 @@
 """Core outer loop logic."""
 
+import json
 import logging
 import subprocess
+import time
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
@@ -10,6 +12,7 @@ from ola.plan import (
     has_outstanding_tasks,
     read_file_if_exists,
 )
+from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,35 @@ def _git_commit(cwd: Path, message: str) -> None:
         logger.info("Committed: %s", message)
     else:
         logger.debug("Nothing to commit after: %s", message)
+
+
+def _format_tokens(n: int) -> str:
+    """Format token count as human-readable string."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
+    """Log a one-liner with token usage and timing."""
+    tokens = stats.input_tokens + stats.output_tokens
+    if not tokens:
+        return
+    parts = [f"{_format_tokens(tokens)} tokens"]
+    parts.append(f"{wall_ms / 1000:.0f}s")
+    logger.info("[%s] %s", label, " · ".join(parts))
+
+
+def _append_stats(
+    folder: Path, label: str, stats: IterationStats, wall_ms: int
+) -> None:
+    """Append stats as a JSON line to STATS.jsonl in the phase folder."""
+    record = {"phase": label, "wall_ms": wall_ms, **stats.model_dump()}
+    stats_file = folder / "STATS.jsonl"
+    with open(stats_file, "a") as f:
+        f.write(json.dumps(record) + "\n")
 
 
 def run_outer_loop(
@@ -83,9 +115,16 @@ def _process_folder(
     if seed_prompt is not None:
         if not plan_file.exists():
             logger.info("Running seed prompt...")
-            seed_prompt += f"\n\nWrite your plan at {plan_file} using markdown tasks, i.e. `- [ ] `"
+            seed_prompt += (
+                f"\n\nWrite your plan at {plan_file}"
+                " using markdown tasks, i.e. `- [ ] `"
+            )
+            t0 = time.monotonic()
             response = agent.run(seed_prompt, workdir, state_dir=state_dir)
+            wall_ms = int((time.monotonic() - t0) * 1000)
             _log_response("SEED", response)
+            _log_stats("SEED", response.stats, wall_ms)
+            _append_stats(folder, "seed", response.stats, wall_ms)
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
                 return
@@ -110,8 +149,13 @@ def _process_folder(
         iteration += 1
         logger.info("Iteration %d%s...", iteration, f"/{limit}" if limit else "")
 
+        t0 = time.monotonic()
         response = agent.run(effective_prompt, workdir, state_dir=state_dir)
-        _log_response(f"LOOP #{iteration}", response)
+        wall_ms = int((time.monotonic() - t0) * 1000)
+        label = f"LOOP #{iteration}"
+        _log_response(label, response)
+        _log_stats(label, response.stats, wall_ms)
+        _append_stats(folder, f"loop-{iteration}", response.stats, wall_ms)
 
         if not response.success:
             logger.error("Agent returned failure. Stopping %s.", folder.name)

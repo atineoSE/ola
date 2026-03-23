@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from ola.stats import IterationStats
 
 
 @dataclass
@@ -8,6 +10,7 @@ class AgentResponse:
 
     output: str
     success: bool
+    stats: IterationStats = field(default_factory=IterationStats)
 
 
 class Agent(ABC):

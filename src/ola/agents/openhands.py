@@ -6,6 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from ola.agents.base import Agent, AgentResponse
+from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
@@ -83,4 +84,32 @@ class OpenHandsAgent(Agent):
         conversation.run()
 
         output = get_agent_final_response(conversation.state.events) or ""
-        return AgentResponse(output=output, success=True)
+        stats = self._extract_stats(conversation)
+        return AgentResponse(output=output, success=True, stats=stats)
+
+    def _extract_stats(self, conversation) -> IterationStats:
+        """Extract token usage stats from conversation state."""
+        try:
+            usage_to_metrics = conversation.state.stats.usage_to_metrics
+            total_input = 0
+            total_output = 0
+            total_cache_read = 0
+            total_cache_write = 0
+
+            for metrics in usage_to_metrics.values():
+                acc = metrics.accumulated_token_usage
+                total_input += acc.prompt_tokens
+                total_output += acc.completion_tokens
+                total_cache_read += acc.cache_read_tokens
+                total_cache_write += acc.cache_write_tokens
+
+            return IterationStats(
+                # prompt_tokens already includes cache reads in OH
+                input_tokens=total_input,
+                output_tokens=total_output,
+                cache_read_tokens=total_cache_read,
+                cache_creation_tokens=total_cache_write,
+            )
+        except Exception as e:
+            logger.warning("Could not extract OH stats: %s", e)
+            return IterationStats()
