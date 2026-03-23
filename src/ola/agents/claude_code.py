@@ -27,7 +27,6 @@ class ClaudeCodeAgent(Agent):
             "--output-format",
             "json",
             "-p",
-            prompt,
         ]
         if self.model:
             cmd.extend(["--model", self.model])
@@ -50,6 +49,7 @@ class ClaudeCodeAgent(Agent):
         try:
             result = subprocess.run(
                 cmd,
+                input=prompt,
                 capture_output=True,
                 text=True,
                 cwd=workdir,
