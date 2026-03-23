@@ -51,7 +51,21 @@ ola-sandbox() {
     [ -f ~/.openhands/"$f" ] && cp ~/.openhands/"$f" "$code_dir/.oh-$f"
   done
 
-  docker sandbox run --name "$name" -t ola:latest shell "$code_dir" "$agent_dir"
+  # Build network policy: deny all, allow LLM API domains
+  local policy="--policy deny"
+  policy="$policy --policy-allow api.anthropic.com --policy-allow claude.ai"
+  # Allow additional LLM host (e.g. OpenHands proxy) via .env
+  local env_file="$code_dir/../.env"
+  if [ -f "$env_file" ]; then
+    local base_url llm_host
+    base_url="$(grep '^LLM_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
+    llm_host="${base_url#https://}"
+    llm_host="${llm_host#http://}"
+    llm_host="${llm_host%%/*}"
+    [ -n "$llm_host" ] && policy="$policy --policy-allow $llm_host"
+  fi
+
+  docker sandbox run --name "$name" $policy -t ola:latest shell "$code_dir" "$agent_dir"
 
   # Clean up credentials and config from workspace if still present
   rm -f "$code_dir/.credentials.json" "$code_dir/.oh-agent_settings.json" "$code_dir/.oh-cli_config.json"
