@@ -3,6 +3,9 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
+import time
+from collections import deque
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
@@ -11,6 +14,51 @@ from ola.stats import IterationStats
 logger = logging.getLogger(__name__)
 
 _CREDENTIAL_FILES = (".credentials.json",)
+_STATUS_LINES = 3
+_MAX_LINE_LEN = 72
+
+
+class _StatusDisplay:
+    """Rolling N-line in-place display on stderr."""
+
+    def __init__(self, max_lines: int = _STATUS_LINES):
+        self._max = max_lines
+        self._lines: deque[str] = deque(maxlen=max_lines)
+        self._drawn = 0
+        self._tty = sys.stderr.isatty()
+
+    def update(self, text: str) -> None:
+        """Push a new status line (truncated to _MAX_LINE_LEN)."""
+        text = text.replace("\n", " ").strip()
+        if not text:
+            return
+        if len(text) > _MAX_LINE_LEN:
+            text = text[: _MAX_LINE_LEN - 1] + "…"
+        self._lines.append(text)
+        self._paint()
+
+    def clear(self) -> None:
+        """Erase the status area."""
+        if not self._tty or self._drawn == 0:
+            return
+        out = sys.stderr
+        for _ in range(self._drawn):
+            out.write("\033[A\033[2K")
+        out.flush()
+        self._drawn = 0
+
+    def _paint(self) -> None:
+        if not self._tty:
+            return
+        out = sys.stderr
+        # Move up to erase previous status
+        for _ in range(self._drawn):
+            out.write("\033[A\033[2K")
+        # Write current lines
+        for line in self._lines:
+            out.write(f"  \033[2m{line}\033[0m\n")
+        out.flush()
+        self._drawn = len(self._lines)
 
 
 class ClaudeCodeAgent(Agent):
@@ -25,7 +73,8 @@ class ClaudeCodeAgent(Agent):
             "claude",
             "--dangerously-skip-permissions",
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
             "-p",
         ]
         if self.model:
@@ -47,21 +96,16 @@ class ClaudeCodeAgent(Agent):
             env = {**os.environ, "CLAUDE_CONFIG_DIR": str(sd)}
 
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 cwd=workdir,
-                timeout=600,
                 env=env,
             )
-            return self._parse_response(result)
-        except subprocess.TimeoutExpired:
-            logger.error("Claude Code timed out after 600s")
-            return AgentResponse(
-                output="Claude Code timed out after 600s", success=False
-            )
+            return self._stream(proc, prompt)
         except FileNotFoundError:
             logger.error("'claude' CLI not found")
             return AgentResponse(
@@ -69,16 +113,61 @@ class ClaudeCodeAgent(Agent):
                 success=False,
             )
 
-    def _parse_response(self, result: subprocess.CompletedProcess) -> AgentResponse:
-        """Parse JSON output from Claude Code CLI."""
-        try:
-            data = json.loads(result.stdout)
-        except (json.JSONDecodeError, ValueError):
-            return AgentResponse(
-                output=result.stdout + result.stderr,
-                success=result.returncode == 0,
-            )
+    def _stream(
+        self, proc: subprocess.Popen, prompt: str, timeout: int = 600
+    ) -> AgentResponse:
+        """Read NDJSON stream, show rolling status, return final result."""
+        proc.stdin.write(prompt)
+        proc.stdin.close()
 
+        status = _StatusDisplay()
+        result_data: dict | None = None
+        deadline = time.monotonic() + timeout
+
+        for line in proc.stdout:
+            if time.monotonic() > deadline:
+                status.clear()
+                proc.kill()
+                proc.wait()
+                logger.error("Claude Code timed out after %ds", timeout)
+                return AgentResponse(
+                    output=f"Claude Code timed out after {timeout}s",
+                    success=False,
+                )
+
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = event.get("type", "")
+
+            if msg_type == "assistant" and "message" in event:
+                for block in event["message"].get("content", []):
+                    if block.get("type") == "text":
+                        status.update(block["text"])
+                    elif block.get("type") == "tool_use":
+                        name = block.get("name", "?")
+                        status.update(f"[tool] {name}")
+
+            if msg_type == "result":
+                result_data = event
+
+        status.clear()
+        proc.wait()
+
+        if result_data is None:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            return AgentResponse(output=stderr, success=proc.returncode == 0)
+
+        return self._parse_result(result_data)
+
+    def _parse_result(self, data: dict) -> AgentResponse:
+        """Parse the final 'result' event from the stream."""
         output = data.get("result", "")
         success = data.get("subtype") == "success"
         usage = data.get("usage", {})
