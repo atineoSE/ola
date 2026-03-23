@@ -22,7 +22,7 @@ RUN git config --global user.name "ola" && \
 RUN mkdir -p ~/.claude && \
     echo '{"hasCompletedOnboarding":true}' > ~/.claude.json && \
     echo '{"permissions":{"defaultMode":"bypassPermissions"}}' > ~/.claude/settings.json
-COPY --chown=1000:1000 POLICY.md /home/agent/.claude/CLAUDE.md
+COPY --chown=1000:1000 docker/POLICY.md /home/agent/.claude/CLAUDE.md
 
 # Claude Code: on login, install credentials from workspace and register alias
 RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
@@ -31,9 +31,20 @@ RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
 
 # OpenHands: network policy note
 RUN mkdir -p ~/.openhands
-COPY --chown=1000:1000 POLICY.md /home/agent/.openhands/AGENTS.md
+COPY --chown=1000:1000 docker/POLICY.md /home/agent/.openhands/AGENTS.md
 
 # OpenHands: on login, install config from workspace and register alias
 RUN echo 'mkdir -p ~/.openhands' >> ~/.bashrc && \
     echo 'for f in agent_settings.json cli_config.json; do [ -f ".oh-$f" ] && mv ".oh-$f" ~/.openhands/"$f"; done' >> ~/.bashrc && \
     echo "alias oh='openhands --llm-approve --exit-without-confirmation'" >> ~/.bashrc
+
+# Verify all tools and config are in place
+RUN set -e && \
+    uv --version && \
+    claude --version && \
+    openhands --version && \
+    test -f ~/.claude.json && \
+    test -f ~/.claude/settings.json && \
+    test -f ~/.claude/CLAUDE.md && \
+    test -f ~/.openhands/AGENTS.md && \
+    git config --global user.name | grep -q ola

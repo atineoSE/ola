@@ -3,6 +3,9 @@
 #   ln -sf /path/to/ola/ola.sh ~/.ola.sh
 #   [ -f ~/.ola.sh ] && source ~/.ola.sh
 
+# Resolve the real directory of this script (follows symlinks)
+_OLA_DIR="${${(%):-%x}:A:h}"
+
 cc-credentials() {
   # Restore ~/.claude/.credentials.json from macOS Keychain
   local cred_file="$HOME/.claude/.credentials.json"
@@ -65,7 +68,7 @@ ola-sandbox() {
   net+=(--allow-host "*.rubygems.org:443")
   net+=(--allow-host deb.nodesource.com:443)
   # Allow additional LLM host (e.g. OpenHands proxy) via .env
-  local env_file="$code_dir/../.env"
+  local env_file="$_OLA_DIR/.env"
   if [ -f "$env_file" ]; then
     local base_url llm_host
     base_url="$(grep '^LLM_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
