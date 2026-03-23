@@ -51,9 +51,16 @@ ola-sandbox() {
     [ -f ~/.openhands/"$f" ] && cp ~/.openhands/"$f" "$code_dir/.oh-$f"
   done
 
-  # Build network policy: deny all, allow LLM API domains
+  # Build network policy: deny all, allow only HTTPS on approved domains
   local policy="--policy deny"
-  policy="$policy --policy-allow api.anthropic.com --policy-allow claude.ai"
+  # Claude / Anthropic
+  policy="$policy --policy-allow api.anthropic.com:443"
+  policy="$policy --policy-allow claude.ai:443 --policy-allow '*.claude.ai:443'"
+  # Package managers
+  policy="$policy --policy-allow '*.npmjs.org:443'"
+  policy="$policy --policy-allow '*.pypi.org:443' --policy-allow files.pythonhosted.org:443"
+  policy="$policy --policy-allow '*.rubygems.org:443'"
+  policy="$policy --policy-allow deb.nodesource.com:443"
   # Allow additional LLM host (e.g. OpenHands proxy) via .env
   local env_file="$code_dir/../.env"
   if [ -f "$env_file" ]; then
@@ -62,7 +69,7 @@ ola-sandbox() {
     llm_host="${base_url#https://}"
     llm_host="${llm_host#http://}"
     llm_host="${llm_host%%/*}"
-    [ -n "$llm_host" ] && policy="$policy --policy-allow $llm_host"
+    [ -n "$llm_host" ] && policy="$policy --policy-allow $llm_host:443"
   fi
 
   docker sandbox run --name "$name" $policy -t ola:latest shell "$code_dir" "$agent_dir"
