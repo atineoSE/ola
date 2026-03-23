@@ -16,7 +16,8 @@ RUN $HOME/.local/bin/uv tool install /tmp/ola-src && rm -rf /tmp/ola-src
 
 # Git identity so commits work without per-repo config
 RUN git config --global user.name "ola" && \
-    git config --global user.email "ola@localhost"
+    git config --global user.email "ola@localhost" && \
+    git config --global --add safe.directory '*'
 
 # Claude Code: skip onboarding, bypass permissions
 RUN mkdir -p ~/.claude && \
