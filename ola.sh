@@ -52,15 +52,15 @@ ola-sandbox() {
   done
 
   # Build network policy: deny all, allow only HTTPS on approved domains
-  local policy="--policy deny"
+  local -a policy=(--policy deny)
   # Claude / Anthropic
-  policy="$policy --policy-allow api.anthropic.com:443"
-  policy="$policy --policy-allow claude.ai:443 --policy-allow '*.claude.ai:443'"
+  policy+=(--policy-allow api.anthropic.com:443)
+  policy+=(--policy-allow claude.ai:443 --policy-allow "*.claude.ai:443")
   # Package managers
-  policy="$policy --policy-allow '*.npmjs.org:443'"
-  policy="$policy --policy-allow '*.pypi.org:443' --policy-allow files.pythonhosted.org:443"
-  policy="$policy --policy-allow '*.rubygems.org:443'"
-  policy="$policy --policy-allow deb.nodesource.com:443"
+  policy+=(--policy-allow "*.npmjs.org:443")
+  policy+=(--policy-allow "*.pypi.org:443" --policy-allow files.pythonhosted.org:443)
+  policy+=(--policy-allow "*.rubygems.org:443")
+  policy+=(--policy-allow deb.nodesource.com:443)
   # Allow additional LLM host (e.g. OpenHands proxy) via .env
   local env_file="$code_dir/../.env"
   if [ -f "$env_file" ]; then
@@ -69,10 +69,10 @@ ola-sandbox() {
     llm_host="${base_url#https://}"
     llm_host="${llm_host#http://}"
     llm_host="${llm_host%%/*}"
-    [ -n "$llm_host" ] && policy="$policy --policy-allow $llm_host:443"
+    [ -n "$llm_host" ] && policy+=(--policy-allow "$llm_host:443")
   fi
 
-  docker sandbox run --name "$name" $policy -t ola:latest shell "$code_dir" "$agent_dir"
+  docker sandbox run --name "$name" "${policy[@]}" -t ola:latest shell "$code_dir" "$agent_dir"
 
   # Clean up credentials and config from workspace if still present
   rm -f "$code_dir/.credentials.json" "$code_dir/.oh-agent_settings.json" "$code_dir/.oh-cli_config.json"
