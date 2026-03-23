@@ -52,13 +52,28 @@ def _format_tokens(n: int) -> str:
     return str(n)
 
 
+def _format_duration(ms: int) -> str:
+    """Format milliseconds as human-readable duration."""
+    secs = ms // 1000
+    if secs < 60:
+        return f"{secs}s"
+    mins, secs = divmod(secs, 60)
+    if mins < 60:
+        return f"{mins}m{secs:02d}s"
+    hours, mins = divmod(mins, 60)
+    return f"{hours}h{mins:02d}m{secs:02d}s"
+
+
 def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
     """Log a one-liner with token usage and timing."""
-    tokens = stats.input_tokens + stats.output_tokens
-    if not tokens:
+    if not (stats.input_tokens or stats.output_tokens):
         return
-    parts = [f"{_format_tokens(tokens)} tokens"]
-    parts.append(f"{wall_ms / 1000:.0f}s")
+    parts = []
+    parts.append(f"in={_format_tokens(stats.input_tokens)}")
+    parts.append(f"out={_format_tokens(stats.output_tokens)}")
+    if stats.cache_read_tokens:
+        parts.append(f"cache={_format_tokens(stats.cache_read_tokens)}")
+    parts.append(_format_duration(wall_ms))
     logger.info("[%s] %s", label, " · ".join(parts))
 
 
