@@ -22,16 +22,12 @@ RUN git config --global user.name "ola" && \
 RUN mkdir -p ~/.claude && \
     echo '{"hasCompletedOnboarding":true}' > ~/.claude.json && \
     echo '{"permissions":{"defaultMode":"bypassPermissions"}}' > ~/.claude/settings.json
-COPY --chown=1000:1000 docker/POLICY.md /home/agent/.claude/CLAUDE.md
+COPY --chown=1000:1000 docker/NETWORK-POLICY.md /home/agent/.claude/CLAUDE.md
 
 # Claude Code: on login, install credentials from workspace and register alias
 RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
     echo 'if [ -f .credentials.json ]; then mv .credentials.json ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json; fi' >> ~/.bashrc && \
     echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
-
-# OpenHands: network policy note
-RUN mkdir -p ~/.openhands
-COPY --chown=1000:1000 docker/POLICY.md /home/agent/.openhands/AGENTS.md
 
 # OpenHands: on login, install config from workspace and register alias
 RUN echo 'mkdir -p ~/.openhands' >> ~/.bashrc && \
@@ -46,5 +42,4 @@ RUN set -e && \
     test -f ~/.claude.json && \
     test -f ~/.claude/settings.json && \
     test -f ~/.claude/CLAUDE.md && \
-    test -f ~/.openhands/AGENTS.md && \
     git config --global user.name | grep -q ola

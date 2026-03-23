@@ -11,6 +11,16 @@ from ola.stats import IterationStats
 logger = logging.getLogger(__name__)
 
 _CONFIG_FILES = ("agent_settings.json", "cli_config.json")
+_POLICY_FILE = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "docker"
+    / "NETWORK-POLICY.md"
+)
+_POLICY_FALLBACK = (
+    "There are network policy restrictions in place. "
+    "If network access is denied, do not retry. "
+    "Continue to make progress with what you have."
+)
 
 
 class OpenHandsAgent(Agent):
@@ -22,7 +32,14 @@ class OpenHandsAgent(Agent):
         self, prompt: str, workdir: str, state_dir: str | None = None
     ) -> AgentResponse:
         try:
-            from openhands.sdk import LLM, Agent as OHAgent, Conversation, Tool
+            from openhands.sdk import (
+                LLM,
+                AgentContext,
+                Agent as OHAgent,
+                Conversation,
+                Tool,
+            )
+            from openhands.sdk.context import Skill
             from openhands.sdk.conversation.response_utils import (
                 get_agent_final_response,
             )
@@ -71,9 +88,17 @@ class OpenHandsAgent(Agent):
             base_url=base_url,
         )
 
+        network_policy = Skill(
+            name="network-policy",
+            content=(
+                _POLICY_FILE.read_text() if _POLICY_FILE.exists() else _POLICY_FALLBACK
+            ),
+            trigger=None,  # always active
+        )
         agent = OHAgent(
             llm=llm,
             tools=[Tool(name="terminal"), Tool(name="file_editor")],
+            agent_context=AgentContext(skills=[network_policy]),
         )
 
         persistence_dir = str(base / "trajectories")
