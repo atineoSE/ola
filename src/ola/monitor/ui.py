@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import select
+import sys
+import termios
+import tty
 from pathlib import Path
 
 from rich.live import Live
@@ -36,17 +40,20 @@ def _fmt_time(ms: int) -> str:
 def build_table(
     folders: list[FolderStatus],
     expanded: set[str] | None = None,
+    cursor: int | None = None,
 ) -> Table:
     """Build a rich Table from a list of FolderStatus objects.
 
     Args:
         folders: List of folder statuses to display.
         expanded: Set of folder names whose iterations should be shown.
+        cursor: Index of the currently highlighted folder (0-based), or None.
     """
     if expanded is None:
         expanded = set()
 
     table = Table(title="ola-top", expand=True)
+    table.add_column("#", justify="right", style="dim", width=3)
     table.add_column("Folder", style="bold")
     table.add_column("Tasks", justify="right")
     table.add_column("Input", justify="right")
@@ -54,7 +61,7 @@ def build_table(
     table.add_column("Cache%", justify="right")
     table.add_column("Time", justify="right")
 
-    for fs in folders:
+    for idx, fs in enumerate(folders):
         # Determine row style based on task status
         if fs.tasks_total == 0:
             style = "dim"
@@ -63,6 +70,11 @@ def build_table(
         else:
             style = "yellow"
 
+        # Highlight the cursor row
+        is_cursor = cursor is not None and idx == cursor
+        if is_cursor:
+            style = f"reverse {style}" if style else "reverse"
+
         # Show expand indicator when there are iterations
         prefix = ""
         if fs.iterations:
@@ -70,6 +82,7 @@ def build_table(
 
         cache_pct = f"{fs.cache_hit_rate:.0f}%"
         table.add_row(
+            str(idx + 1),
             f"{prefix}{fs.name}",
             f"{fs.tasks_completed}/{fs.tasks_total}",
             _fmt_tokens(fs.total_input_tokens),
@@ -84,6 +97,7 @@ def build_table(
             for it in fs.iterations:
                 it_cache = f"{it.cache_hit_rate:.0f}%"
                 table.add_row(
+                    "",
                     f"  └ {it.phase}",
                     "",
                     _fmt_tokens(it.input_tokens),
@@ -96,14 +110,76 @@ def build_table(
     return table
 
 
-def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
-    """Run the live-updating TUI."""
-    with Live(
-        build_table(read_agent_folder(agent_path)),
-        refresh_per_second=1 / refresh_interval,
-    ) as live:
-        while True:
-            import time
+def _read_key() -> str | None:
+    """Read a single keypress without blocking. Returns None if no key is ready."""
+    if not select.select([sys.stdin], [], [], 0)[0]:
+        return None
+    ch = sys.stdin.read(1)
+    if ch == "\x1b":
+        # Read escape sequence (arrow keys send \x1b[A etc.)
+        if select.select([sys.stdin], [], [], 0.05)[0]:
+            ch += sys.stdin.read(1)
+            if ch == "\x1b[" or (len(ch) > 1 and ch[1] == "["):
+                if select.select([sys.stdin], [], [], 0.05)[0]:
+                    ch += sys.stdin.read(1)
+        return ch
+    return ch
 
-            time.sleep(refresh_interval)
-            live.update(build_table(read_agent_folder(agent_path)))
+
+def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
+    """Run the live-updating TUI with keyboard controls."""
+    import time
+
+    expanded: set[str] = set()
+    cursor = 0
+
+    folders = read_agent_folder(agent_path)
+
+    # Save terminal settings and switch to raw mode
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+
+        with Live(
+            build_table(folders, expanded, cursor),
+            refresh_per_second=4,
+        ) as live:
+            last_refresh = time.monotonic()
+            while True:
+                key = _read_key()
+
+                if key == "q" or key == "\x03":  # q or Ctrl-C
+                    break
+                elif key == "\x1b[A":  # Up arrow
+                    if folders and cursor > 0:
+                        cursor -= 1
+                elif key == "\x1b[B":  # Down arrow
+                    if folders and cursor < len(folders) - 1:
+                        cursor += 1
+                elif key == "\r" or key == "\n":  # Enter
+                    if folders:
+                        name = folders[cursor].name
+                        expanded ^= {name}
+                elif key and key.isdigit() and key != "0":
+                    # Number keys 1-9 toggle that folder
+                    idx = int(key) - 1
+                    if 0 <= idx < len(folders):
+                        cursor = idx
+                        expanded ^= {folders[idx].name}
+
+                # Periodic data refresh
+                now = time.monotonic()
+                if now - last_refresh >= refresh_interval:
+                    folders = read_agent_folder(agent_path)
+                    # Clamp cursor
+                    if folders:
+                        cursor = min(cursor, len(folders) - 1)
+                    else:
+                        cursor = 0
+                    last_refresh = now
+
+                live.update(build_table(folders, expanded, cursor))
+                time.sleep(0.05)  # ~20 FPS input polling
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)

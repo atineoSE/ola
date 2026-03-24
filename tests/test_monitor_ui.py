@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from io import StringIO
+from unittest.mock import patch
 
 from rich.console import Console
 
 from ola.monitor.data import FolderStatus, IterationStatus
-from ola.monitor.ui import _fmt_time, _fmt_tokens, build_table
+from ola.monitor.ui import _fmt_time, _fmt_tokens, _read_key, build_table
 
 
 def _render_table_text(table) -> str:
@@ -177,3 +178,69 @@ class TestBuildTable:
         table = build_table(folders, expanded={"b"})
         # a: 1 row, b: 1 parent + 2 iterations = 4 total
         assert table.row_count == 4
+
+    def test_cursor_highlights_row(self):
+        """The cursor row should use reverse styling."""
+        folders = [
+            FolderStatus(name="a", tasks_completed=1, tasks_total=2),
+            FolderStatus(name="b", tasks_completed=2, tasks_total=2),
+        ]
+        table = build_table(folders, cursor=0)
+        # Row 0 has cursor (reverse yellow), row 1 does not
+        assert "reverse" in (table.rows[0].style or "")
+        assert "reverse" not in (table.rows[1].style or "")
+
+    def test_cursor_on_second_row(self):
+        folders = [
+            FolderStatus(name="a", tasks_completed=1, tasks_total=2),
+            FolderStatus(name="b", tasks_completed=2, tasks_total=2),
+        ]
+        table = build_table(folders, cursor=1)
+        assert "reverse" not in (table.rows[0].style or "")
+        assert "reverse" in (table.rows[1].style or "")
+
+    def test_number_column_present(self):
+        """Table should have a # column header and 7 columns total."""
+        folders = [
+            FolderStatus(name="a"),
+            FolderStatus(name="b"),
+        ]
+        table = build_table(folders)
+        # 7 columns: #, Folder, Tasks, Input, Output, Cache%, Time
+        assert len(table.columns) == 7
+        assert table.columns[0].header == "#"
+
+
+class TestReadKey:
+    def test_no_key_ready(self):
+        """Returns None when no input is available."""
+        with patch("ola.monitor.ui.select") as mock_select:
+            mock_select.select.return_value = ([], [], [])
+            assert _read_key() is None
+
+    def test_regular_key(self):
+        """Returns a single character for a regular keypress."""
+        with (
+            patch("ola.monitor.ui.select") as mock_select,
+            patch("ola.monitor.ui.sys") as mock_sys,
+        ):
+            mock_select.select.return_value = ([mock_sys.stdin], [], [])
+            mock_sys.stdin.read.return_value = "q"
+            assert _read_key() == "q"
+
+    def test_arrow_key_up(self):
+        """Returns the full escape sequence for arrow keys."""
+        with (
+            patch("ola.monitor.ui.select") as mock_select,
+            patch("ola.monitor.ui.sys") as mock_sys,
+        ):
+            # First select: key is ready
+            # Second select: escape seq continues
+            # Third select: escape seq continues
+            mock_select.select.side_effect = [
+                ([mock_sys.stdin], [], []),
+                ([mock_sys.stdin], [], []),
+                ([mock_sys.stdin], [], []),
+            ]
+            mock_sys.stdin.read.side_effect = ["\x1b", "[", "A"]
+            assert _read_key() == "\x1b[A"
