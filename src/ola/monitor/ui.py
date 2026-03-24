@@ -5,11 +5,14 @@ from __future__ import annotations
 import select
 import sys
 import termios
+import time as _time
 import tty
+from datetime import datetime
 from pathlib import Path
 
 from rich.live import Live
 from rich.table import Table
+from rich.text import Text
 
 from ola.monitor.data import FolderStatus, read_agent_folder
 
@@ -41,6 +44,7 @@ def build_table(
     folders: list[FolderStatus],
     expanded: set[str] | None = None,
     cursor: int | None = None,
+    agent_path: Path | None = None,
 ) -> Table:
     """Build a rich Table from a list of FolderStatus objects.
 
@@ -48,11 +52,33 @@ def build_table(
         folders: List of folder statuses to display.
         expanded: Set of folder names whose iterations should be shown.
         cursor: Index of the currently highlighted folder (0-based), or None.
+        agent_path: Path to the agent folder, shown in the header.
     """
     if expanded is None:
         expanded = set()
 
-    table = Table(title="ola-top", expand=True)
+    # Header: tool name, agent path, current time
+    now_str = datetime.now().strftime("%H:%M:%S")
+    path_str = str(agent_path) if agent_path else ""
+    title = Text.assemble(
+        ("ola-top", "bold cyan"),
+        ("  ", ""),
+        (path_str, "dim"),
+        ("  ", ""),
+        (now_str, "green"),
+    )
+
+    # Footer: keybinding hints
+    caption = Text.assemble(
+        ("q", "bold"),
+        (": quit  ", "dim"),
+        ("\u2191\u2193", "bold"),
+        (": navigate  ", "dim"),
+        ("Enter", "bold"),
+        (": expand/collapse", "dim"),
+    )
+
+    table = Table(title=title, caption=caption, expand=True)
     table.add_column("#", justify="right", style="dim", width=3)
     table.add_column("Folder", style="bold")
     table.add_column("Tasks", justify="right")
@@ -128,8 +154,6 @@ def _read_key() -> str | None:
 
 def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
     """Run the live-updating TUI with keyboard controls."""
-    import time
-
     expanded: set[str] = set()
     cursor = 0
 
@@ -142,10 +166,10 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
         tty.setraw(fd)
 
         with Live(
-            build_table(folders, expanded, cursor),
+            build_table(folders, expanded, cursor, agent_path),
             refresh_per_second=4,
         ) as live:
-            last_refresh = time.monotonic()
+            last_refresh = _time.monotonic()
             while True:
                 key = _read_key()
 
@@ -169,7 +193,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
                         expanded ^= {folders[idx].name}
 
                 # Periodic data refresh
-                now = time.monotonic()
+                now = _time.monotonic()
                 if now - last_refresh >= refresh_interval:
                     folders = read_agent_folder(agent_path)
                     # Clamp cursor
@@ -179,7 +203,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
                         cursor = 0
                     last_refresh = now
 
-                live.update(build_table(folders, expanded, cursor))
-                time.sleep(0.05)  # ~20 FPS input polling
+                live.update(build_table(folders, expanded, cursor, agent_path))
+                _time.sleep(0.05)  # ~20 FPS input polling
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)

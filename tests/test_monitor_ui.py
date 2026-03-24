@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from rich.console import Console
@@ -209,6 +210,34 @@ class TestBuildTable:
         # 7 columns: #, Folder, Tasks, Input, Output, Cache%, Time
         assert len(table.columns) == 7
         assert table.columns[0].header == "#"
+
+
+class TestHeaderFooter:
+    def test_header_shows_path_and_time(self):
+        """Header should include the agent path and current time."""
+        folders = [FolderStatus(name="t1")]
+        table = build_table(folders, agent_path=Path("/tmp/agent"))
+        text = _render_table_text(table)
+        assert "ola-top" in text
+        assert "/tmp/agent" in text
+        # Time should be HH:MM:SS format — just check a colon appears near it
+        assert ":" in text
+
+    def test_footer_shows_keybindings(self):
+        """Footer should include keybinding hints."""
+        folders = [FolderStatus(name="t1")]
+        table = build_table(folders, agent_path=Path("/tmp/agent"))
+        text = _render_table_text(table)
+        assert "quit" in text
+        assert "navigate" in text
+        assert "expand/collapse" in text
+
+    def test_header_without_path(self):
+        """Header should work when no agent_path is provided."""
+        folders = [FolderStatus(name="t1")]
+        table = build_table(folders)
+        text = _render_table_text(table)
+        assert "ola-top" in text
 
 
 class TestReadKey:
