@@ -10,7 +10,7 @@ from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+load_dotenv(override=True)
 
 try:
     from lmnr import Laminar
