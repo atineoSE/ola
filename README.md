@@ -124,6 +124,33 @@ docker sandbox run --name my-sandbox -t ola:latest shell . ../agent
 
 Place a `.env` file in the workspace for OpenHands env vars (`LLM_API_KEY`, etc.).
 
+## ola-top
+
+A `top`-like terminal dashboard for monitoring agent progress in real time. Shows task completion, token usage, cache hit rates, and wall time for each phase — with per-iteration drill-down.
+
+```bash
+ola-top [-f <agent-folder>] [-r <refresh-seconds>]
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-f, --agent-folder` | Path to the agent folder | `../agent` |
+| `-r, --refresh` | Refresh interval in seconds | `2` |
+
+**Keybindings:** `↑`/`↓` navigate rows, `Enter` expands/collapses a phase to show per-iteration stats, `q` quits.
+
+Example output:
+
+```
+ ola-top — /Users/you/experiment/agent             03:42:15 PM
+
+ # │ Folder              │ Tasks │   Input │  Output │ Cache% │  Time
+ 1 │ 01-setup            │   5/5 │  120.4k │   45.2k │  82.3% │  3m12s
+ 2 │ 02-implement        │  3/10 │   88.1k │   32.7k │  76.1% │  2m45s
+
+ q: quit  ↑↓: navigate  Enter: expand/collapse
+```
+
 ## Agents
 
 **Claude Code** (`cc`) — calls `claude --dangerously-skip-permissions -p <prompt>` as a subprocess. When run via ola, `CLAUDE_CONFIG_DIR` is set to the phase's `.claude/` directory, giving each phase its own conversation history.
