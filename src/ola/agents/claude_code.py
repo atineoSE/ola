@@ -61,12 +61,68 @@ class _StatusDisplay:
         self._drawn = len(self._lines)
 
 
+class AuthenticationError(Exception):
+    """Raised when Claude Code reports an authentication failure."""
+
+
 class ClaudeCodeAgent(Agent):
     """Agent that delegates to the Claude Code CLI."""
 
     state_dir_name = ".claude"
 
     def run(
+        self, prompt: str, workdir: str, state_dir: str | None = None
+    ) -> AgentResponse:
+        try:
+            return self._run_once(prompt, workdir, state_dir)
+        except AuthenticationError:
+            logger.warning("Authentication failed. Refreshing credentials...")
+            if not self._refresh_credentials(state_dir):
+                return AgentResponse(
+                    output="Authentication failed and credential refresh failed.",
+                    success=False,
+                )
+            logger.info("Credentials refreshed. Retrying...")
+            try:
+                return self._run_once(prompt, workdir, state_dir)
+            except AuthenticationError:
+                return AgentResponse(
+                    output="Authentication failed even after credential refresh.",
+                    success=False,
+                )
+
+    def _refresh_credentials(self, state_dir: str | None) -> bool:
+        """Run cc-credentials to restore credentials from macOS Keychain."""
+        ola_sh = Path(__file__).resolve().parents[3] / "ola.sh"
+        if not ola_sh.exists():
+            logger.error("ola.sh not found at %s", ola_sh)
+            return False
+
+        result = subprocess.run(
+            ["zsh", "-c", f"source {ola_sh} && cc-credentials"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.error("cc-credentials failed: %s", result.stderr.strip())
+            return False
+
+        logger.info(result.stdout.strip())
+
+        # Re-copy refreshed credentials into the state dir
+        if state_dir:
+            home_claude = Path.home() / ".claude"
+            sd = Path(state_dir)
+            for fname in _CREDENTIAL_FILES:
+                src = home_claude / fname
+                dst = sd / fname
+                if src.exists():
+                    shutil.copy2(src, dst)
+                    logger.debug("Re-copied %s → %s", src, dst)
+
+        return True
+
+    def _run_once(
         self, prompt: str, workdir: str, state_dir: str | None = None
     ) -> AgentResponse:
         cmd = [
@@ -145,6 +201,14 @@ class ClaudeCodeAgent(Agent):
                 continue
 
             msg_type = event.get("type", "")
+
+            if event.get("error") == "authentication_failed":
+                status.clear()
+                proc.kill()
+                proc.wait()
+                raise AuthenticationError(
+                    event.get("message", {}).get("content", [{}])[0].get("text", "")
+                )
 
             if msg_type == "assistant" and "message" in event:
                 for block in event["message"].get("content", []):
