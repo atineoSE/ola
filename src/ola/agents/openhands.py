@@ -10,16 +10,24 @@ from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
+try:
+    from lmnr import Laminar
+
+    if os.getenv("LMNR_PROJECT_API_KEY"):
+        Laminar.initialize(
+            project_api_key=os.getenv("LMNR_PROJECT_API_KEY"),
+            base_url="http://localhost",
+            http_port=8000,
+            grpc_port=8001,
+        )
+except ImportError:
+    pass
+
 _CONFIG_FILES = ("agent_settings.json", "cli_config.json")
 _POLICY_FILE = (
     Path(__file__).resolve().parent.parent.parent.parent
     / "docker"
     / "NETWORK-POLICY.md"
-)
-_POLICY_FALLBACK = (
-    "There are network policy restrictions in place. "
-    "If network access is denied, do not retry. "
-    "Continue to make progress with what you have."
 )
 
 
@@ -90,9 +98,7 @@ class OpenHandsAgent(Agent):
 
         network_policy = Skill(
             name="network-policy",
-            content=(
-                _POLICY_FILE.read_text() if _POLICY_FILE.exists() else _POLICY_FALLBACK
-            ),
+            content=_POLICY_FILE.read_text(),
             trigger=None,  # always active
         )
         agent = OHAgent(
