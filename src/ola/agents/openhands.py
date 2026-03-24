@@ -18,9 +18,9 @@ try:
     if os.getenv("LMNR_PROJECT_API_KEY"):
         Laminar.initialize(
             project_api_key=os.getenv("LMNR_PROJECT_API_KEY"),
-            base_url="http://localhost",
-            http_port=8000,
-            grpc_port=8001,
+            base_url=os.getenv("LMNR_BASE_URL", "http://localhost"),
+            http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
+            grpc_port=int(os.getenv("LMNR_GRPC_PORT", "8001")),
         )
 except ImportError:
     pass

@@ -67,6 +67,9 @@ ola-sandbox() {
   net+=(--allow-host "*.pypi.org:443" --allow-host files.pythonhosted.org:443)
   net+=(--allow-host "*.rubygems.org:443")
   net+=(--allow-host deb.nodesource.com:443)
+  # Laminar tracing (runs on the host)
+  net+=(--allow-host host.docker.internal:8000)
+  net+=(--allow-host host.docker.internal:8001)
   # Allow additional LLM host (e.g. OpenHands proxy) via .env
   local env_file="$_OLA_DIR/.env"
   if [ -f "$env_file" ]; then
