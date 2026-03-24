@@ -40,6 +40,27 @@ def _fmt_time(ms: int) -> str:
     return f"{hours}h{mins:02d}m"
 
 
+def _cache_style(pct: float) -> str:
+    """Return a color style based on cache hit rate percentage."""
+    if pct >= 50:
+        return "green"
+    if pct >= 25:
+        return "yellow"
+    return "red"
+
+
+def _find_active_index(folders: list[FolderStatus]) -> int | None:
+    """Find the index of the currently-active folder.
+
+    The active folder is the first one with incomplete tasks (has some work
+    remaining). Returns None if no folder is active.
+    """
+    for idx, fs in enumerate(folders):
+        if fs.tasks_total > 0 and fs.tasks_completed < fs.tasks_total:
+            return idx
+    return None
+
+
 def build_table(
     folders: list[FolderStatus],
     expanded: set[str] | None = None,
@@ -56,6 +77,8 @@ def build_table(
     """
     if expanded is None:
         expanded = set()
+
+    active_idx = _find_active_index(folders)
 
     # Header: tool name, agent path, current time
     now_str = datetime.now().strftime("%H:%M:%S")
@@ -88,11 +111,15 @@ def build_table(
     table.add_column("Time", justify="right")
 
     for idx, fs in enumerate(folders):
+        is_active = idx == active_idx
+
         # Determine row style based on task status
         if fs.tasks_total == 0:
             style = "dim"
         elif fs.tasks_completed >= fs.tasks_total:
             style = "green"
+        elif is_active:
+            style = "bold yellow"
         else:
             style = "yellow"
 
@@ -104,16 +131,31 @@ def build_table(
         # Show expand indicator when there are iterations
         prefix = ""
         if fs.iterations:
-            prefix = "▼ " if fs.name in expanded else "▶ "
+            prefix = "\u25bc " if fs.name in expanded else "\u25b6 "
 
-        cache_pct = f"{fs.cache_hit_rate:.0f}%"
+        # Active folder gets a marker
+        active_marker = "\u25cf " if is_active else ""
+
+        # Color cache% per-cell
+        cache_pct_val = fs.cache_hit_rate
+        cache_text = Text(f"{cache_pct_val:.0f}%", style=_cache_style(cache_pct_val))
+
+        # Color tasks per-cell
+        tasks_str = f"{fs.tasks_completed}/{fs.tasks_total}"
+        if fs.tasks_total > 0 and fs.tasks_completed >= fs.tasks_total:
+            tasks_text = Text(tasks_str, style="green")
+        elif fs.tasks_total > 0:
+            tasks_text = Text(tasks_str, style="yellow")
+        else:
+            tasks_text = Text(tasks_str, style="dim")
+
         table.add_row(
             str(idx + 1),
-            f"{prefix}{fs.name}",
-            f"{fs.tasks_completed}/{fs.tasks_total}",
+            f"{active_marker}{prefix}{fs.name}",
+            tasks_text,
             _fmt_tokens(fs.total_input_tokens),
             _fmt_tokens(fs.total_output_tokens),
-            cache_pct,
+            cache_text,
             _fmt_time(fs.total_wall_ms),
             style=style,
         )
@@ -121,14 +163,18 @@ def build_table(
         # Render iteration sub-rows when expanded
         if fs.name in expanded:
             for it in fs.iterations:
-                it_cache = f"{it.cache_hit_rate:.0f}%"
+                it_cache_val = it.cache_hit_rate
+                it_cache_text = Text(
+                    f"{it_cache_val:.0f}%",
+                    style=_cache_style(it_cache_val),
+                )
                 table.add_row(
                     "",
-                    f"  └ {it.phase}",
+                    f"  \u2514 {it.phase}",
                     "",
                     _fmt_tokens(it.input_tokens),
                     _fmt_tokens(it.output_tokens),
-                    it_cache,
+                    it_cache_text,
                     _fmt_time(it.wall_ms),
                     style="dim",
                 )

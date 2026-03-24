@@ -9,7 +9,14 @@ from unittest.mock import patch
 from rich.console import Console
 
 from ola.monitor.data import FolderStatus, IterationStatus
-from ola.monitor.ui import _fmt_time, _fmt_tokens, _read_key, build_table
+from ola.monitor.ui import (
+    _cache_style,
+    _find_active_index,
+    _fmt_time,
+    _fmt_tokens,
+    _read_key,
+    build_table,
+)
 
 
 def _render_table_text(table) -> str:
@@ -99,10 +106,21 @@ class TestBuildTable:
         table = build_table(folders)
         assert table.rows[0].style == "green"
 
-    def test_yellow_style_for_in_progress(self):
+    def test_bold_yellow_style_for_active(self):
+        """The first in-progress folder (active) gets bold yellow."""
         folders = [FolderStatus(name="wip", tasks_completed=1, tasks_total=3)]
         table = build_table(folders)
-        assert table.rows[0].style == "yellow"
+        assert table.rows[0].style == "bold yellow"
+
+    def test_yellow_style_for_non_active_in_progress(self):
+        """In-progress folders that aren't active get plain yellow."""
+        folders = [
+            FolderStatus(name="first", tasks_completed=1, tasks_total=3),
+            FolderStatus(name="second", tasks_completed=1, tasks_total=3),
+        ]
+        table = build_table(folders)
+        assert table.rows[0].style == "bold yellow"  # active
+        assert table.rows[1].style == "yellow"  # not active
 
     def test_collapsed_shows_arrow(self):
         """Collapsed folders with iterations show ▶ prefix."""
@@ -238,6 +256,67 @@ class TestHeaderFooter:
         table = build_table(folders)
         text = _render_table_text(table)
         assert "ola-top" in text
+
+
+class TestCacheStyle:
+    def test_high_cache(self):
+        assert _cache_style(80.0) == "green"
+        assert _cache_style(50.0) == "green"
+
+    def test_medium_cache(self):
+        assert _cache_style(30.0) == "yellow"
+        assert _cache_style(25.0) == "yellow"
+
+    def test_low_cache(self):
+        assert _cache_style(10.0) == "red"
+        assert _cache_style(0.0) == "red"
+
+
+class TestFindActiveIndex:
+    def test_no_folders(self):
+        assert _find_active_index([]) is None
+
+    def test_all_complete(self):
+        folders = [FolderStatus(name="a", tasks_completed=3, tasks_total=3)]
+        assert _find_active_index(folders) is None
+
+    def test_first_incomplete(self):
+        folders = [
+            FolderStatus(name="a", tasks_completed=3, tasks_total=3),
+            FolderStatus(name="b", tasks_completed=1, tasks_total=3),
+            FolderStatus(name="c", tasks_completed=0, tasks_total=2),
+        ]
+        assert _find_active_index(folders) == 1
+
+    def test_no_tasks(self):
+        folders = [FolderStatus(name="a")]
+        assert _find_active_index(folders) is None
+
+
+class TestActiveMarker:
+    def test_active_folder_has_marker(self):
+        """Active folder should show ● marker in rendered output."""
+        folders = [
+            FolderStatus(name="done", tasks_completed=3, tasks_total=3),
+            FolderStatus(name="active", tasks_completed=1, tasks_total=3),
+        ]
+        table = build_table(folders)
+        text = _render_table_text(table)
+        assert "\u25cf" in text  # ● marker
+        # The completed folder should not have the marker
+        # Check the active folder is bold yellow
+        assert table.rows[1].style == "bold yellow"
+        assert table.rows[0].style == "green"
+
+    def test_no_active_when_all_complete(self):
+        """No ● marker when all folders are complete."""
+        folders = [
+            FolderStatus(name="a", tasks_completed=3, tasks_total=3),
+            FolderStatus(name="b", tasks_completed=2, tasks_total=2),
+        ]
+        table = build_table(folders)
+        text = _render_table_text(table)
+        assert "\u25cf" not in text
 
 
 class TestReadKey:
