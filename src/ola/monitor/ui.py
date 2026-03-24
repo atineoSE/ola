@@ -33,8 +33,19 @@ def _fmt_time(ms: int) -> str:
     return f"{hours}h{mins:02d}m"
 
 
-def build_table(folders: list[FolderStatus]) -> Table:
-    """Build a rich Table from a list of FolderStatus objects."""
+def build_table(
+    folders: list[FolderStatus],
+    expanded: set[str] | None = None,
+) -> Table:
+    """Build a rich Table from a list of FolderStatus objects.
+
+    Args:
+        folders: List of folder statuses to display.
+        expanded: Set of folder names whose iterations should be shown.
+    """
+    if expanded is None:
+        expanded = set()
+
     table = Table(title="ola-top", expand=True)
     table.add_column("Folder", style="bold")
     table.add_column("Tasks", justify="right")
@@ -52,9 +63,14 @@ def build_table(folders: list[FolderStatus]) -> Table:
         else:
             style = "yellow"
 
+        # Show expand indicator when there are iterations
+        prefix = ""
+        if fs.iterations:
+            prefix = "▼ " if fs.name in expanded else "▶ "
+
         cache_pct = f"{fs.cache_hit_rate:.0f}%"
         table.add_row(
-            fs.name,
+            f"{prefix}{fs.name}",
             f"{fs.tasks_completed}/{fs.tasks_total}",
             _fmt_tokens(fs.total_input_tokens),
             _fmt_tokens(fs.total_output_tokens),
@@ -62,6 +78,20 @@ def build_table(folders: list[FolderStatus]) -> Table:
             _fmt_time(fs.total_wall_ms),
             style=style,
         )
+
+        # Render iteration sub-rows when expanded
+        if fs.name in expanded:
+            for it in fs.iterations:
+                it_cache = f"{it.cache_hit_rate:.0f}%"
+                table.add_row(
+                    f"  └ {it.phase}",
+                    "",
+                    _fmt_tokens(it.input_tokens),
+                    _fmt_tokens(it.output_tokens),
+                    it_cache,
+                    _fmt_time(it.wall_ms),
+                    style="dim",
+                )
 
     return table
 

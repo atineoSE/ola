@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+from io import StringIO
+
+from rich.console import Console
+
 from ola.monitor.data import FolderStatus, IterationStatus
 from ola.monitor.ui import _fmt_time, _fmt_tokens, build_table
+
+
+def _render_table_text(table) -> str:
+    """Render a rich Table to plain text for assertion."""
+    console = Console(file=StringIO(), width=120, force_terminal=True)
+    console.print(table)
+    return console.file.getvalue()
 
 
 class TestFmtTokens:
@@ -90,3 +101,79 @@ class TestBuildTable:
         folders = [FolderStatus(name="wip", tasks_completed=1, tasks_total=3)]
         table = build_table(folders)
         assert table.rows[0].style == "yellow"
+
+    def test_collapsed_shows_arrow(self):
+        """Collapsed folders with iterations show ▶ prefix."""
+        folders = [
+            FolderStatus(
+                name="t1",
+                tasks_completed=1,
+                tasks_total=2,
+                iterations=[IterationStatus(phase="seed", input_tokens=100)],
+            )
+        ]
+        table = build_table(folders, expanded=set())
+        text = _render_table_text(table)
+        assert "▶" in text
+        assert "▼" not in text
+        # No sub-rows
+        assert table.row_count == 1
+
+    def test_expanded_shows_iterations(self):
+        """Expanded folders render iteration sub-rows."""
+        iters = [
+            IterationStatus(
+                phase="seed",
+                input_tokens=10_000,
+                output_tokens=5_000,
+                cache_read_tokens=8_000,
+                wall_ms=60_000,
+            ),
+            IterationStatus(
+                phase="loop-1",
+                input_tokens=20_000,
+                output_tokens=10_000,
+                cache_read_tokens=15_000,
+                wall_ms=90_000,
+            ),
+        ]
+        folders = [
+            FolderStatus(
+                name="t1",
+                tasks_completed=2,
+                tasks_total=3,
+                iterations=iters,
+            )
+        ]
+        table = build_table(folders, expanded={"t1"})
+        # 1 parent + 2 iteration rows
+        assert table.row_count == 3
+        text = _render_table_text(table)
+        assert "▼" in text
+        assert "seed" in text
+        assert "loop-1" in text
+
+    def test_expanded_no_iterations(self):
+        """Expanding a folder with no iterations adds no sub-rows."""
+        folders = [FolderStatus(name="empty")]
+        table = build_table(folders, expanded={"empty"})
+        assert table.row_count == 1
+
+    def test_mixed_expanded_collapsed(self):
+        """Only expanded folders get sub-rows."""
+        folders = [
+            FolderStatus(
+                name="a",
+                iterations=[IterationStatus(phase="seed")],
+            ),
+            FolderStatus(
+                name="b",
+                iterations=[
+                    IterationStatus(phase="seed"),
+                    IterationStatus(phase="loop-1"),
+                ],
+            ),
+        ]
+        table = build_table(folders, expanded={"b"})
+        # a: 1 row, b: 1 parent + 2 iterations = 4 total
+        assert table.row_count == 4
