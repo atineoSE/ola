@@ -10,6 +10,8 @@ from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
+load_dotenv()
+
 try:
     from lmnr import Laminar
 
@@ -61,8 +63,6 @@ class OpenHandsAgent(Agent):
                 output="openhands-sdk or openhands-tools is not installed.",
                 success=False,
             )
-
-        load_dotenv()
 
         base = Path(state_dir) if state_dir else Path(workdir)
         base.mkdir(parents=True, exist_ok=True)
