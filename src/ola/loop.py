@@ -71,8 +71,9 @@ def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
     parts = []
     parts.append(f"in={_format_tokens(stats.input_tokens)}")
     parts.append(f"out={_format_tokens(stats.output_tokens)}")
-    if stats.cache_read_tokens:
-        parts.append(f"cache={_format_tokens(stats.cache_read_tokens)}")
+    if stats.cache_read_tokens and stats.input_tokens:
+        pct = stats.cache_read_tokens / stats.input_tokens * 100
+        parts.append(f"cache={pct:.0f}%")
     parts.append(_format_duration(wall_ms))
     logger.info("[%s] %s", label, " · ".join(parts))
 
