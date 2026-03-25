@@ -101,7 +101,7 @@ def build_table(
         (": expand/collapse", "dim"),
     )
 
-    table = Table(title=title, caption=caption, expand=True)
+    table = Table(title=title, caption=caption, expand=True, show_header=True)
     table.add_column("#", justify="right", style="dim", width=3)
     table.add_column("Folder", style="bold")
     table.add_column("Tasks", justify="right")
@@ -209,7 +209,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
+        tty.setcbreak(fd)
 
         with Live(
             build_table(folders, expanded, cursor, agent_path),
@@ -219,24 +219,30 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
             while True:
                 key = _read_key()
 
+                needs_update = False
+
                 if key == "q" or key == "\x03":  # q or Ctrl-C
                     break
                 elif key == "\x1b[A":  # Up arrow
                     if folders and cursor > 0:
                         cursor -= 1
+                        needs_update = True
                 elif key == "\x1b[B":  # Down arrow
                     if folders and cursor < len(folders) - 1:
                         cursor += 1
+                        needs_update = True
                 elif key == "\r" or key == "\n":  # Enter
                     if folders:
                         name = folders[cursor].name
                         expanded ^= {name}
+                        needs_update = True
                 elif key and key.isdigit() and key != "0":
                     # Number keys 1-9 toggle that folder
                     idx = int(key) - 1
                     if 0 <= idx < len(folders):
                         cursor = idx
                         expanded ^= {folders[idx].name}
+                        needs_update = True
 
                 # Periodic data refresh
                 now = _time.monotonic()
@@ -248,8 +254,11 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
                     else:
                         cursor = 0
                     last_refresh = now
+                    needs_update = True
 
-                live.update(build_table(folders, expanded, cursor, agent_path))
+                if needs_update:
+                    live.update(build_table(folders, expanded, cursor, agent_path))
+
                 _time.sleep(0.05)  # ~20 FPS input polling
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
