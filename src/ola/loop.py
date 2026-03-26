@@ -14,6 +14,10 @@ from ola.plan import (
 )
 from ola.stats import IterationStats
 
+_DEFAULT_LOOP_PROMPT = (
+    Path(__file__).resolve().parent / "agents" / "DEFAULT-LOOP-PROMPT.md"
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,12 +123,8 @@ def _process_folder(
         agent_state_path.mkdir(parents=True, exist_ok=True)
         state_dir = str(agent_state_path)
 
-    loop_prompt = read_file_if_exists(folder / "LOOP-PROMPT.md")
-    if loop_prompt is None:
-        logger.warning("Skipping %s: no LOOP-PROMPT.md found.", folder.name)
-        return
-
     plan_file = folder / "PLAN.md"
+    loop_prompt_file = folder / "LOOP-PROMPT.md"
 
     # Seed phase: run SEED-PROMPT.md if it exists and PLAN.md doesn't yet
     seed_prompt = read_file_if_exists(folder / "SEED-PROMPT.md")
@@ -144,7 +144,18 @@ def _process_folder(
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
                 return
+            # Copy default loop prompt if none was provided
+            if not loop_prompt_file.exists():
+                import shutil
+
+                shutil.copy2(_DEFAULT_LOOP_PROMPT, loop_prompt_file)
+                logger.info("Copied DEFAULT-LOOP-PROMPT.md → %s", loop_prompt_file)
             _git_commit(agent_root, f"ola: {folder.name} seed")
+
+    loop_prompt = read_file_if_exists(loop_prompt_file)
+    if loop_prompt is None:
+        logger.warning("Skipping %s: no LOOP-PROMPT.md found.", folder.name)
+        return
 
     # Inject absolute plan path so the agent can find it from the code dir
     effective_prompt = loop_prompt + f"\n\nPLAN.md is located at: {plan_file}"
