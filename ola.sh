@@ -67,12 +67,24 @@ ola-sandbox() {
   net+=(--allow-host "*.pypi.org:443" --allow-host files.pythonhosted.org:443)
   net+=(--allow-host "*.rubygems.org:443")
   net+=(--allow-host deb.nodesource.com:443)
-  # Laminar tracing (runs on the host)
-  net+=(--allow-host host.docker.internal:8000)
-  net+=(--allow-host host.docker.internal:8001)
-  # Allow additional LLM host (e.g. OpenHands proxy) via .env
+  # Allow additional hosts from .env
   local env_file="$_OLA_DIR/.env"
   if [ -f "$env_file" ]; then
+    # Laminar tracing (runs on the host, accessed from inside the sandbox)
+    local lmnr_base lmnr_host lmnr_http_port lmnr_grpc_port
+    lmnr_base="$(grep '^LMNR_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
+    lmnr_host="${lmnr_base#https://}"
+    lmnr_host="${lmnr_host#http://}"
+    lmnr_host="${lmnr_host%%/*}"
+    lmnr_http_port="$(grep '^LMNR_HTTP_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
+    lmnr_grpc_port="$(grep '^LMNR_GRPC_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
+    : "${lmnr_host:=host.docker.internal}"
+    : "${lmnr_http_port:=8000}"
+    : "${lmnr_grpc_port:=8001}"
+    net+=(--allow-host "$lmnr_host:$lmnr_http_port")
+    net+=(--allow-host "$lmnr_host:$lmnr_grpc_port")
+
+    # LLM host (e.g. OpenHands proxy)
     local base_url llm_host
     base_url="$(grep '^LLM_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     llm_host="${base_url#https://}"

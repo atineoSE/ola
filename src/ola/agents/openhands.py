@@ -15,10 +15,12 @@ load_dotenv(override=True)
 try:
     from lmnr import Laminar
 
-    if os.getenv("LMNR_PROJECT_API_KEY"):
+    _lmnr_base = os.getenv("LMNR_BASE_URL")
+    _lmnr_key = os.getenv("LMNR_PROJECT_API_KEY")
+    if _lmnr_base and _lmnr_key:
         Laminar.initialize(
-            project_api_key=os.getenv("LMNR_PROJECT_API_KEY"),
-            base_url=os.getenv("LMNR_BASE_URL", "http://localhost"),
+            project_api_key=_lmnr_key,
+            base_url=_lmnr_base,
             http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
             grpc_port=int(os.getenv("LMNR_GRPC_PORT", "8001")),
         )
