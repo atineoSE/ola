@@ -92,6 +92,18 @@ ola-sandbox() {
     llm_host="${llm_host%%/*}"
     [ -n "$llm_host" ] && net+=(--allow-host "$llm_host:443")
   fi
+  # Allow additional hosts from agent whitelist file
+  local whitelist="$agent_dir/whitelist.txt"
+  if [ -f "$whitelist" ]; then
+    while IFS= read -r line; do
+      line="${line%%#*}"        # strip inline comments
+      line="${line// /}"        # strip spaces
+      [ -z "$line" ] && continue
+      # Default to :443 if no port specified
+      [[ "$line" != *:* ]] && line="$line:443"
+      net+=(--allow-host "$line")
+    done < "$whitelist"
+  fi
   "${net[@]}"
 
   # Run the sandbox
