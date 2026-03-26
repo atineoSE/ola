@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+_AGENT_FULL_NAMES: dict[str, str] = {
+    "cc": "Claude Code",
+    "oh": "OpenHands",
+}
+
+
 @dataclass
 class IterationStatus:
     """Stats for a single iteration (seed or loop-N)."""
@@ -19,6 +25,16 @@ class IterationStatus:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     num_turns: int = 0
+    agent: str = ""
+    agent_version: str = ""
+
+    @property
+    def agent_display(self) -> str:
+        """Full agent name with version, e.g. 'Claude Code 1.2.3'."""
+        name = _AGENT_FULL_NAMES.get(self.agent, self.agent)
+        if self.agent_version:
+            return f"{name} {self.agent_version}"
+        return name
 
     @property
     def cache_hit_rate(self) -> float:
@@ -66,6 +82,13 @@ class FolderStatus:
             return 0.0
         return self.total_cache_read_tokens / total * 100
 
+    @property
+    def agent_display(self) -> str:
+        """Agent display from the most recent iteration."""
+        if self.iterations:
+            return self.iterations[-1].agent_display
+        return ""
+
 
 def parse_task_counts(plan_text: str) -> tuple[int, int]:
     """Parse PLAN.md text and return (completed, total) task counts."""
@@ -91,6 +114,8 @@ def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
                 cache_read_tokens=record.get("cache_read_tokens", 0),
                 cache_creation_tokens=record.get("cache_creation_tokens", 0),
                 num_turns=record.get("num_turns", 0),
+                agent=record.get("agent", ""),
+                agent_version=record.get("agent_version", ""),
             )
         )
     return iterations

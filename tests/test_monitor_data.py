@@ -63,6 +63,44 @@ def test_parse_stats_jsonl():
     assert iterations[1].num_turns == 5
 
 
+def test_parse_stats_jsonl_with_agent():
+    line = (
+        '{"phase": "seed", "wall_ms": 500, "input_tokens": 10, "output_tokens": 5,'
+        ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
+        ' "agent": "cc", "agent_version": "1.2.3"}\n'
+    )
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].agent == "cc"
+    assert iterations[0].agent_version == "1.2.3"
+    assert iterations[0].agent_display == "Claude Code 1.2.3"
+
+
+def test_agent_display_no_version():
+    it = IterationStatus(phase="seed", agent="oh")
+    assert it.agent_display == "OpenHands"
+
+
+def test_agent_display_empty():
+    it = IterationStatus(phase="seed")
+    assert it.agent_display == ""
+
+
+def test_folder_agent_display():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", agent="cc", agent_version="1.0"),
+            IterationStatus(phase="loop-1", agent="cc", agent_version="1.1"),
+        ],
+    )
+    assert fs.agent_display == "Claude Code 1.1"
+
+
+def test_folder_agent_display_empty():
+    fs = FolderStatus(name="test")
+    assert fs.agent_display == ""
+
+
 def test_parse_stats_jsonl_empty():
     assert parse_stats_jsonl("") == []
     assert parse_stats_jsonl("  \n  ") == []

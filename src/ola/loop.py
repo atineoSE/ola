@@ -83,10 +83,17 @@ def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
 
 
 def _append_stats(
-    folder: Path, label: str, stats: IterationStats, wall_ms: int
+    folder: Path,
+    label: str,
+    stats: IterationStats,
+    wall_ms: int,
+    agent: Agent | None = None,
 ) -> None:
     """Append stats as a JSON line to STATS.jsonl in the phase folder."""
     record = {"phase": label, "wall_ms": wall_ms, **stats.model_dump()}
+    if agent is not None:
+        record["agent"] = agent.mnemonic
+        record["agent_version"] = agent.version()
     stats_file = folder / "STATS.jsonl"
     with open(stats_file, "a") as f:
         f.write(json.dumps(record) + "\n")
@@ -140,7 +147,7 @@ def _process_folder(
             wall_ms = int((time.monotonic() - t0) * 1000)
             _log_response("SEED", response)
             _log_stats("SEED", response.stats, wall_ms)
-            _append_stats(folder, "seed", response.stats, wall_ms)
+            _append_stats(folder, "seed", response.stats, wall_ms, agent)
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
                 return
@@ -182,7 +189,7 @@ def _process_folder(
         label = f"LOOP #{iteration}"
         _log_response(label, response)
         _log_stats(label, response.stats, wall_ms)
-        _append_stats(folder, f"loop-{iteration}", response.stats, wall_ms)
+        _append_stats(folder, f"loop-{iteration}", response.stats, wall_ms, agent)
 
         if not response.success:
             logger.error("Agent returned failure. Stopping %s.", folder.name)

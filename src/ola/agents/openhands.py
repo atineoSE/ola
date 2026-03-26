@@ -39,6 +39,16 @@ class OpenHandsAgent(Agent):
     """Agent that delegates to OpenHands SDK."""
 
     state_dir_name = ".openhands"
+    mnemonic = "oh"
+    full_name = "OpenHands"
+
+    def version(self) -> str:
+        try:
+            from importlib.metadata import version
+
+            return version("openhands-sdk")
+        except Exception:
+            return ""
 
     def run(
         self, prompt: str, workdir: str, state_dir: str | None = None

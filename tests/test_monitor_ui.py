@@ -219,14 +219,14 @@ class TestBuildTable:
         assert "reverse" in (table.rows[1].style or "")
 
     def test_number_column_present(self):
-        """Table should have a # column header and 7 columns total."""
+        """Table should have a # column header and 8 columns total."""
         folders = [
             FolderStatus(name="a"),
             FolderStatus(name="b"),
         ]
         table = build_table(folders)
-        # 7 columns: #, Folder, Tasks, Input, Output, Cache%, Time
-        assert len(table.columns) == 7
+        # 8 columns: #, Folder, Agent, Tasks, Input, Output, Cache%, Time
+        assert len(table.columns) == 8
         assert table.columns[0].header == "#"
 
 

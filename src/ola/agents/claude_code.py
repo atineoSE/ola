@@ -69,6 +69,17 @@ class ClaudeCodeAgent(Agent):
     """Agent that delegates to the Claude Code CLI."""
 
     state_dir_name = ".claude"
+    mnemonic = "cc"
+    full_name = "Claude Code"
+
+    def version(self) -> str:
+        try:
+            result = subprocess.run(
+                ["claude", "--version"], capture_output=True, text=True
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except FileNotFoundError:
+            return ""
 
     def run(
         self, prompt: str, workdir: str, state_dir: str | None = None
