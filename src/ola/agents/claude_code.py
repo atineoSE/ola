@@ -91,59 +91,10 @@ class ClaudeCodeAgent(Agent):
         try:
             return self._run_once(prompt, workdir, state_dir)
         except AuthenticationError:
-            logger.warning("Authentication failed. Refreshing credentials...")
-            if not self._refresh_credentials(state_dir):
-                return AgentResponse(
-                    output="Authentication failed and credential refresh failed.",
-                    success=False,
-                )
-            logger.info("Credentials refreshed. Retrying...")
-            try:
-                return self._run_once(prompt, workdir, state_dir)
-            except AuthenticationError:
-                return AgentResponse(
-                    output="Authentication failed even after credential refresh.",
-                    success=False,
-                )
-
-    def _refresh_credentials(self, state_dir: str | None) -> bool:
-        """Run cc-credentials to restore credentials from macOS Keychain."""
-        # Look for ola.sh in well-known locations (user home, then source tree)
-        candidates = [
-            Path.home() / ".ola.sh",
-            Path(__file__).resolve().parents[3] / "ola.sh",
-        ]
-        ola_sh = next((p for p in candidates if p.exists()), None)
-        if ola_sh is None:
-            logger.error(
-                "ola.sh not found (tried %s)",
-                ", ".join(str(p) for p in candidates),
+            return AgentResponse(
+                output="Authentication failed. Run cc-credentials on the host and rebuild the sandbox.",
+                success=False,
             )
-            return False
-
-        result = subprocess.run(
-            ["zsh", "-c", f"source {ola_sh} && cc-credentials"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            logger.error("cc-credentials failed: %s", result.stderr.strip())
-            return False
-
-        logger.info(result.stdout.strip())
-
-        # Re-copy refreshed credentials into the state dir
-        if state_dir:
-            home_claude = Path.home() / ".claude"
-            sd = Path(state_dir)
-            for fname in _CREDENTIAL_FILES:
-                src = home_claude / fname
-                dst = sd / fname
-                if src.exists():
-                    shutil.copy2(src, dst)
-                    logger.debug("Re-copied %s → %s", src, dst)
-
-        return True
 
     def _run_once(
         self, prompt: str, workdir: str, state_dir: str | None = None
