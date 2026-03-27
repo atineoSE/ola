@@ -151,6 +151,7 @@ class ClaudeCodeAgent(Agent):
         proc.stdin.close()
 
         status = _StatusDisplay()
+        models_seen: set[str] = set()
         result_data: dict | None = None
         deadline = time.monotonic() + timeout
 
@@ -185,6 +186,9 @@ class ClaudeCodeAgent(Agent):
                 )
 
             if msg_type == "assistant" and "message" in event:
+                model = event["message"].get("model")
+                if model:
+                    models_seen.add(model)
                 for block in event["message"].get("content", []):
                     if block.get("type") == "text":
                         status.update(block["text"])
@@ -202,9 +206,9 @@ class ClaudeCodeAgent(Agent):
             stderr = proc.stderr.read() if proc.stderr else ""
             return AgentResponse(output=stderr, success=proc.returncode == 0)
 
-        return self._parse_result(result_data)
+        return self._parse_result(result_data, models_seen)
 
-    def _parse_result(self, data: dict) -> AgentResponse:
+    def _parse_result(self, data: dict, models_seen: set[str]) -> AgentResponse:
         """Parse the final 'result' event from the stream."""
         output = data.get("result", "")
         success = data.get("subtype") == "success"
@@ -214,13 +218,17 @@ class ClaudeCodeAgent(Agent):
         cache_creation = usage.get("cache_creation_input_tokens", 0)
         cache_read = usage.get("cache_read_input_tokens", 0)
 
+        models = (
+            sorted(models_seen) if models_seen else ([self.model] if self.model else [])
+        )
+
         stats = IterationStats(
             input_tokens=input_tokens + cache_creation + cache_read,
             output_tokens=usage.get("output_tokens", 0),
             cache_creation_tokens=cache_creation,
             cache_read_tokens=cache_read,
             num_turns=data.get("num_turns", 0),
-            models=[data["model"]] if data.get("model") else [],
+            models=models,
         )
 
         return AgentResponse(output=output, success=success, stats=stats)
