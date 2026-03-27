@@ -1,19 +1,15 @@
 import json
 import logging
-import os
-import shutil
 import subprocess
 import sys
 import time
 from collections import deque
-from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
 from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
-_CREDENTIAL_FILES = (".credentials.json",)
 _STATUS_LINES = 3
 _MAX_LINE_LEN = 72
 
@@ -68,7 +64,6 @@ class AuthenticationError(Exception):
 class ClaudeCodeAgent(Agent):
     """Agent that delegates to the Claude Code CLI."""
 
-    state_dir_name = ".claude"
     mnemonic = "cc"
     full_name = "Claude Code"
 
@@ -112,19 +107,6 @@ class ClaudeCodeAgent(Agent):
 
         logger.debug("Running: %s", " ".join(cmd[:3]) + " ...")
 
-        env = None
-        if state_dir:
-            sd = Path(state_dir)
-            sd.mkdir(parents=True, exist_ok=True)
-            home_claude = Path.home() / ".claude"
-            for fname in _CREDENTIAL_FILES:
-                src = home_claude / fname
-                dst = sd / fname
-                if src.exists() and not dst.exists():
-                    shutil.copy2(src, dst)
-                    logger.debug("Copied %s → %s", src, dst)
-            env = {**os.environ, "CLAUDE_CONFIG_DIR": str(sd)}
-
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -133,7 +115,6 @@ class ClaudeCodeAgent(Agent):
                 stderr=subprocess.PIPE,
                 text=True,
                 cwd=workdir,
-                env=env,
             )
             return self._stream(proc, prompt)
         except FileNotFoundError:
