@@ -21,41 +21,35 @@ _DEFAULT_LOOP_PROMPT = (
 logger = logging.getLogger(__name__)
 
 
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """Run a git command, logging stderr on failure."""
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True)
+    if result.returncode != 0:
+        cmd = " ".join(["git", *args])
+        logger.error("%s failed: %s", cmd, result.stderr.decode(errors="replace"))
+        result.check_returncode()
+    return result
+
+
 def _ensure_git(cwd: Path) -> None:
     """Ensure a git repo exists in cwd; initialise one if not."""
     # Mark directory safe — mounted volumes have different ownership than the
     # container user, which makes git refuse to operate.
-    subprocess.run(
-        ["git", "config", "--global", "--add", "safe.directory", str(cwd)],
-        check=True,
-        capture_output=True,
-    )
+    _git(cwd, "config", "--global", "--add", "safe.directory", str(cwd))
     if not (cwd / ".git").exists():
         logger.info("Initialising git repository in %s", cwd)
-        subprocess.run(["git", "init"], cwd=cwd, check=True, capture_output=True)
+        _git(cwd, "init")
         _git_commit(cwd, "Initial commit")
 
 
 def _git_commit(cwd: Path, message: str) -> None:
     """Stage all changes and commit. No-op if working tree is clean."""
-    result = subprocess.run(["git", "add", "-A"], cwd=cwd, capture_output=True)
-    if result.returncode != 0:
-        logger.error("git add failed: %s", result.stderr.decode(errors="replace"))
-        result.check_returncode()
+    _git(cwd, "add", "-A")
     result = subprocess.run(
         ["git", "diff", "--cached", "--quiet"], cwd=cwd, capture_output=True
     )
     if result.returncode != 0:  # there are staged changes
-        result = subprocess.run(
-            ["git", "commit", "-m", message],
-            cwd=cwd,
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            logger.error(
-                "git commit failed: %s", result.stderr.decode(errors="replace")
-            )
-            result.check_returncode()
+        _git(cwd, "commit", "-m", message)
         logger.info("Committed: %s", message)
     else:
         logger.debug("Nothing to commit after: %s", message)
