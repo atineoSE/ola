@@ -4,7 +4,7 @@ FROM docker/sandbox-templates:shell
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install Claude Code CLI
-RUN curl -fsSL https://claude.ai/install.sh | sh
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 
 # Install OpenHands CLI
