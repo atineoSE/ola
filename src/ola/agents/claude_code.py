@@ -82,7 +82,11 @@ class ClaudeCodeAgent(Agent):
             return ""
 
     def run(
-        self, prompt: str, workdir: str, state_dir: str | None = None
+        self,
+        prompt: str,
+        workdir: str,
+        state_dir: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> AgentResponse:
         try:
             return self._run_once(prompt, workdir, state_dir)

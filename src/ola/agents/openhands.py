@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv(override=True)
 
+_lmnr_available = False
 try:
     from lmnr import Laminar
 
@@ -24,6 +25,7 @@ try:
             http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
             grpc_port=int(os.getenv("LMNR_GRPC_PORT", "8001")),
         )
+        _lmnr_available = True
 except ImportError:
     pass
 
@@ -51,7 +53,11 @@ class OpenHandsAgent(Agent):
             return ""
 
     def run(
-        self, prompt: str, workdir: str, state_dir: str | None = None
+        self,
+        prompt: str,
+        workdir: str,
+        state_dir: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> AgentResponse:
         try:
             from openhands.sdk import (
@@ -123,12 +129,65 @@ class OpenHandsAgent(Agent):
         conversation = Conversation(
             agent=agent, workspace=workdir, persistence_dir=persistence_dir
         )
+
+        labels = labels or {}
+        folder = labels.get("folder", "")
+        phase = labels.get("phase", "")
+
+        if _lmnr_available:
+            return self._run_with_tracing(
+                conversation,
+                prompt,
+                model_name,
+                folder,
+                phase,
+                get_agent_final_response,
+            )
+
         conversation.send_message(prompt)
         conversation.run()
-
         output = get_agent_final_response(conversation.state.events) or ""
         stats = self._extract_stats(conversation, model_name)
         return AgentResponse(output=output, success=True, stats=stats)
+
+    def _run_with_tracing(
+        self,
+        conversation,
+        prompt: str,
+        model_name: str,
+        folder: str,
+        phase: str,
+        get_agent_final_response,
+    ) -> AgentResponse:
+        """Run conversation inside a Laminar span with trace metadata."""
+        span_name = f"ola-{self.mnemonic}"
+        if folder:
+            span_name += f"/{folder}"
+        if phase:
+            span_name += f"/{phase}"
+
+        tags = [f"agent:{self.mnemonic}"]
+        if phase:
+            tags.append(phase)
+
+        metadata = {"model": model_name}
+        ver = self.version()
+        if ver:
+            metadata["agent_version"] = ver
+
+        with Laminar.start_as_current_span(
+            name=span_name,
+            user_id=f"ola-{self.full_name.lower().replace(' ', '')}",
+            session_id=folder,
+            tags=tags,
+            metadata=metadata,
+        ):
+            conversation.send_message(prompt)
+            conversation.run()
+            output = get_agent_final_response(conversation.state.events) or ""
+            stats = self._extract_stats(conversation, model_name)
+            Laminar.set_span_output(output[:500] if output else "")
+            return AgentResponse(output=output, success=True, stats=stats)
 
     def _extract_stats(self, conversation, model: str = "") -> IterationStats:
         """Extract token usage stats from conversation state."""

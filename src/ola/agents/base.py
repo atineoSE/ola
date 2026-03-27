@@ -25,9 +25,19 @@ class Agent(ABC):
 
     @abstractmethod
     def run(
-        self, prompt: str, workdir: str, state_dir: str | None = None
+        self,
+        prompt: str,
+        workdir: str,
+        state_dir: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> AgentResponse:
-        """Send a prompt to the agent and return its response."""
+        """Send a prompt to the agent and return its response.
+
+        Args:
+            labels: Optional context passed from the outer loop, e.g.
+                    ``{"folder": "01-solve", "phase": "loop-1"}``.
+                    Agents may use this for trace metadata.
+        """
         ...
 
     def version(self) -> str:

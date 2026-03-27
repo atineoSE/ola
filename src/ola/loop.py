@@ -143,7 +143,10 @@ def _process_folder(
                 " using markdown tasks, i.e. `- [ ] `"
             )
             t0 = time.monotonic()
-            response = agent.run(seed_prompt, workdir, state_dir=state_dir)
+            labels = {"folder": folder.name, "phase": "seed"}
+            response = agent.run(
+                seed_prompt, workdir, state_dir=state_dir, labels=labels
+            )
             wall_ms = int((time.monotonic() - t0) * 1000)
             _log_response("SEED", response)
             _log_stats("SEED", response.stats, wall_ms)
@@ -184,7 +187,10 @@ def _process_folder(
         logger.info("Iteration %d%s...", iteration, f"/{limit}" if limit else "")
 
         t0 = time.monotonic()
-        response = agent.run(effective_prompt, workdir, state_dir=state_dir)
+        labels = {"folder": folder.name, "phase": f"loop-{iteration}"}
+        response = agent.run(
+            effective_prompt, workdir, state_dir=state_dir, labels=labels
+        )
         wall_ms = int((time.monotonic() - t0) * 1000)
         label = f"LOOP #{iteration}"
         _log_response(label, response)
