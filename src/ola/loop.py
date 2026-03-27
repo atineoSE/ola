@@ -46,12 +46,16 @@ def _git_commit(cwd: Path, message: str) -> None:
         ["git", "diff", "--cached", "--quiet"], cwd=cwd, capture_output=True
     )
     if result.returncode != 0:  # there are staged changes
-        subprocess.run(
+        result = subprocess.run(
             ["git", "commit", "-m", message],
             cwd=cwd,
-            check=True,
             capture_output=True,
         )
+        if result.returncode != 0:
+            logger.error(
+                "git commit failed: %s", result.stderr.decode(errors="replace")
+            )
+            result.check_returncode()
         logger.info("Committed: %s", message)
     else:
         logger.debug("Nothing to commit after: %s", message)
