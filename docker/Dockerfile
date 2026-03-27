@@ -14,6 +14,10 @@ RUN $HOME/.local/bin/uv tool install openhands --python 3.12
 COPY --chown=1000:1000 . /tmp/ola-src
 RUN $HOME/.local/bin/uv tool install /tmp/ola-src && rm -rf /tmp/ola-src
 
+# Proxy: all outbound traffic goes through the sandbox proxy
+ENV HTTP_PROXY=http://host.docker.internal:3128
+ENV HTTPS_PROXY=http://host.docker.internal:3128
+
 # Laminar: point at host machine from inside the sandbox
 ENV LMNR_BASE_URL=http://host.docker.internal
 
