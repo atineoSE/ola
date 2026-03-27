@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 
 def _ensure_git(cwd: Path) -> None:
     """Ensure a git repo exists in cwd; initialise one if not."""
+    # Mark directory safe — mounted volumes have different ownership than the
+    # container user, which makes git refuse to operate.
+    subprocess.run(
+        ["git", "config", "--global", "--add", "safe.directory", str(cwd)],
+        check=True,
+        capture_output=True,
+    )
     if not (cwd / ".git").exists():
         logger.info("Initialising git repository in %s", cwd)
         subprocess.run(["git", "init"], cwd=cwd, check=True, capture_output=True)
