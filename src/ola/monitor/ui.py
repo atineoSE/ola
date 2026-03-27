@@ -206,6 +206,7 @@ def _read_key() -> str | None:
 
 def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
     """Run the live-updating TUI with keyboard controls."""
+    print("\033[2J\033[H", end="", flush=True)  # clear screen, cursor to top
     expanded: set[str] = set()
     cursor = 0
 
