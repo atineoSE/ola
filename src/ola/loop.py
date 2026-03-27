@@ -31,7 +31,10 @@ def _ensure_git(cwd: Path) -> None:
 
 def _git_commit(cwd: Path, message: str) -> None:
     """Stage all changes and commit. No-op if working tree is clean."""
-    subprocess.run(["git", "add", "-A"], cwd=cwd, check=True, capture_output=True)
+    result = subprocess.run(["git", "add", "-A"], cwd=cwd, capture_output=True)
+    if result.returncode != 0:
+        logger.error("git add failed: %s", result.stderr.decode(errors="replace"))
+        result.check_returncode()
     result = subprocess.run(
         ["git", "diff", "--cached", "--quiet"], cwd=cwd, capture_output=True
     )
