@@ -225,8 +225,8 @@ class TestBuildTable:
             FolderStatus(name="b"),
         ]
         table = build_table(folders)
-        # 8 columns: #, Folder, Agent, Tasks, Input, Output, Cache%, Time
-        assert len(table.columns) == 8
+        # 9 columns: #, Folder, Agent, Model, Tasks, Input, Output, Cache%, Time
+        assert len(table.columns) == 9
         assert table.columns[0].header == "#"
 
 

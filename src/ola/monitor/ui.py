@@ -104,7 +104,8 @@ def build_table(
     table = Table(title=title, caption=caption, expand=True, show_header=True)
     table.add_column("#", justify="right", style="dim", width=3)
     table.add_column("Folder", style="bold")
-    table.add_column("Agent")
+    table.add_column("Agent", max_width=16, overflow="fold")
+    table.add_column("Model", max_width=20, overflow="fold")
     table.add_column("Tasks", justify="right")
     table.add_column("Input", justify="right")
     table.add_column("Output", justify="right")
@@ -154,6 +155,7 @@ def build_table(
             str(idx + 1),
             f"{active_marker}{prefix}{fs.name}",
             fs.agent_display,
+            fs.model_display,
             tasks_text,
             _fmt_tokens(fs.total_input_tokens),
             _fmt_tokens(fs.total_output_tokens),
@@ -173,6 +175,7 @@ def build_table(
                 table.add_row(
                     "",
                     f"  \u2514 {it.phase}",
+                    "",
                     "",
                     "",
                     _fmt_tokens(it.input_tokens),

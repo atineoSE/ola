@@ -257,6 +257,7 @@ class ClaudeCodeAgent(Agent):
             cache_creation_tokens=cache_creation,
             cache_read_tokens=cache_read,
             num_turns=data.get("num_turns", 0),
+            models=[data["model"]] if data.get("model") else [],
         )
 
         return AgentResponse(output=output, success=success, stats=stats)

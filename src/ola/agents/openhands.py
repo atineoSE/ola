@@ -95,15 +95,15 @@ class OpenHandsAgent(Agent):
                 success=False,
             )
 
-        model = self.model or os.getenv(
+        model_name = self.model or os.getenv(
             "LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"
         )
         base_url = os.getenv("LLM_BASE_URL")
 
-        logger.debug("OpenHands agent using model=%s", model)
+        logger.debug("OpenHands agent using model=%s", model_name)
 
         llm = LLM(
-            model=model,
+            model=model_name,
             api_key=SecretStr(api_key),
             base_url=base_url,
         )
@@ -127,10 +127,10 @@ class OpenHandsAgent(Agent):
         conversation.run()
 
         output = get_agent_final_response(conversation.state.events) or ""
-        stats = self._extract_stats(conversation)
+        stats = self._extract_stats(conversation, model_name)
         return AgentResponse(output=output, success=True, stats=stats)
 
-    def _extract_stats(self, conversation) -> IterationStats:
+    def _extract_stats(self, conversation, model: str = "") -> IterationStats:
         """Extract token usage stats from conversation state."""
         try:
             usage_to_metrics = conversation.state.stats.usage_to_metrics
@@ -146,12 +146,18 @@ class OpenHandsAgent(Agent):
                 total_cache_read += acc.cache_read_tokens
                 total_cache_write += acc.cache_write_tokens
 
+            # Collect model names from usage keys; fall back to configured model
+            models = list(usage_to_metrics.keys()) if usage_to_metrics else []
+            if not models and model:
+                models = [model]
+
             return IterationStats(
                 # prompt_tokens already includes cache reads in OH
                 input_tokens=total_input,
                 output_tokens=total_output,
                 cache_read_tokens=total_cache_read,
                 cache_creation_tokens=total_cache_write,
+                models=models,
             )
         except Exception as e:
             logger.warning("Could not extract OH stats: %s", e)

@@ -27,6 +27,7 @@ class IterationStatus:
     num_turns: int = 0
     agent: str = ""
     agent_version: str = ""
+    models: list[str] = field(default_factory=list)
 
     @property
     def agent_display(self) -> str:
@@ -89,6 +90,16 @@ class FolderStatus:
             return self.iterations[-1].agent_display
         return ""
 
+    @property
+    def model_display(self) -> str:
+        """Unique model names across all iterations, comma-separated."""
+        seen: list[str] = []
+        for it in self.iterations:
+            for m in it.models:
+                if m and m not in seen:
+                    seen.append(m)
+        return ", ".join(seen)
+
 
 def parse_task_counts(plan_text: str) -> tuple[int, int]:
     """Parse PLAN.md text and return (completed, total) task counts."""
@@ -116,6 +127,7 @@ def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
                 num_turns=record.get("num_turns", 0),
                 agent=record.get("agent", ""),
                 agent_version=record.get("agent_version", ""),
+                models=record.get("models", []),
             )
         )
     return iterations
