@@ -42,11 +42,8 @@ ola-sandbox() {
     return 1
   fi
 
-  # Ensure credentials exist, restoring from Keychain if needed
-  if [ ! -f ~/.claude/.credentials.json ]; then
-    echo "Credentials file missing, restoring from Keychain..."
-    cc-credentials || return 1
-  fi
+  # Always refresh credentials from Keychain before creating the sandbox
+  cc-credentials || return 1
 
   # Copy credentials and config into workspace for the sandbox to pick up
   cp ~/.claude/.credentials.json "$code_dir/.credentials.json"
