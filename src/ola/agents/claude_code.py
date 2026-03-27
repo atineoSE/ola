@@ -108,9 +108,17 @@ class ClaudeCodeAgent(Agent):
 
     def _refresh_credentials(self, state_dir: str | None) -> bool:
         """Run cc-credentials to restore credentials from macOS Keychain."""
-        ola_sh = Path(__file__).resolve().parents[3] / "ola.sh"
-        if not ola_sh.exists():
-            logger.error("ola.sh not found at %s", ola_sh)
+        # Look for ola.sh in well-known locations (user home, then source tree)
+        candidates = [
+            Path.home() / ".ola.sh",
+            Path(__file__).resolve().parents[3] / "ola.sh",
+        ]
+        ola_sh = next((p for p in candidates if p.exists()), None)
+        if ola_sh is None:
+            logger.error(
+                "ola.sh not found (tried %s)",
+                ", ".join(str(p) for p in candidates),
+            )
             return False
 
         result = subprocess.run(
