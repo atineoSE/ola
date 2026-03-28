@@ -29,7 +29,7 @@ ola-sandbox() {
   local name="${1:?Usage: ola-sandbox <sandbox_name>}"
 
   # If sandbox already exists, just reconnect
-  if docker sandbox list 2>/dev/null | grep -q "\\b${name}\\b"; then
+  if docker sandbox list 2>/dev/null | awk '{print $1}' | grep -qx "$name"; then
     docker sandbox run "$name"
     return
   fi
