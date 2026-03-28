@@ -30,11 +30,7 @@ except ImportError:
     pass
 
 _CONFIG_FILES = ("agent_settings.json", "cli_config.json")
-_POLICY_FILE = (
-    Path(__file__).resolve().parent.parent.parent.parent
-    / "docker"
-    / "NETWORK-POLICY.md"
-)
+_POLICY_FILE = Path(__file__).resolve().parent / "NETWORK-POLICY.md"
 
 
 class OpenHandsAgent(Agent):

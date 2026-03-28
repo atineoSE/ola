@@ -30,7 +30,7 @@ RUN git config --global user.name "ola" && \
 RUN mkdir -p ~/.claude && \
     echo '{"hasCompletedOnboarding":true}' > ~/.claude.json && \
     echo '{"permissions":{"defaultMode":"bypassPermissions"}}' > ~/.claude/settings.json
-COPY --chown=1000:1000 docker/NETWORK-POLICY.md /home/agent/.claude/CLAUDE.md
+COPY --chown=1000:1000 src/ola/agents/NETWORK-POLICY.md /home/agent/.claude/CLAUDE.md
 
 # Claude Code: on login, install credentials from workspace and register alias
 RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
