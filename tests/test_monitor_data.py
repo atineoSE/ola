@@ -326,3 +326,42 @@ def test_folder_llm_tok_per_sec():
     )
     # total output=500, total wall=10000, total tool=3000, llm=7000ms=7s
     assert abs(fs.llm_tok_per_sec - 500 / 7) < 0.1
+
+
+def test_iteration_avg_input_tokens():
+    it = IterationStatus(phase="seed", input_tokens=9000, num_turns=3)
+    assert it.avg_input_tokens == 3000
+
+
+def test_iteration_avg_input_tokens_zero_turns():
+    it = IterationStatus(phase="seed", input_tokens=9000, num_turns=0)
+    assert it.avg_input_tokens == 0
+
+
+def test_folder_avg_input_tokens():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", input_tokens=10000, num_turns=2),
+            IterationStatus(phase="loop-1", input_tokens=30000, num_turns=3),
+        ],
+    )
+    # total input=40000, total turns=5 → avg=8000
+    assert fs.avg_input_tokens == 8000
+
+
+def test_folder_max_input_tokens():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", max_input_tokens=15000),
+            IterationStatus(phase="loop-1", max_input_tokens=42000),
+            IterationStatus(phase="loop-2", max_input_tokens=38000),
+        ],
+    )
+    assert fs.max_input_tokens == 42000
+
+
+def test_folder_max_input_tokens_empty():
+    fs = FolderStatus(name="test")
+    assert fs.max_input_tokens == 0

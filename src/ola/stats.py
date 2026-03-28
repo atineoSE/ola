@@ -14,3 +14,4 @@ class IterationStats(BaseModel):
     models: list[str] = []
     tool_ms: int = 0
     llm_ms: int = 0
+    max_input_tokens: int = 0

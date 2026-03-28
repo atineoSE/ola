@@ -156,6 +156,7 @@ class ClaudeCodeAgent(Agent):
         deadline = time.monotonic() + timeout
         tool_start: float | None = None
         total_tool_ms: int = 0
+        max_input_tokens: int = 0
 
         for line in proc.stdout:
             if time.monotonic() > deadline:
@@ -196,6 +197,15 @@ class ClaudeCodeAgent(Agent):
                 model = event["message"].get("model")
                 if model:
                     models_seen.add(model)
+                # Track per-turn input tokens for max context size
+                msg_usage = event["message"].get("usage", {})
+                turn_input = (
+                    msg_usage.get("input_tokens", 0)
+                    + msg_usage.get("cache_creation_input_tokens", 0)
+                    + msg_usage.get("cache_read_input_tokens", 0)
+                )
+                if turn_input > max_input_tokens:
+                    max_input_tokens = turn_input
                 has_tool_use = False
                 for block in event["message"].get("content", []):
                     if block.get("type") == "text":
@@ -222,10 +232,16 @@ class ClaudeCodeAgent(Agent):
             stderr = proc.stderr.read() if proc.stderr else ""
             return AgentResponse(output=stderr, success=proc.returncode == 0)
 
-        return self._parse_result(result_data, models_seen, total_tool_ms)
+        return self._parse_result(
+            result_data, models_seen, total_tool_ms, max_input_tokens
+        )
 
     def _parse_result(
-        self, data: dict, models_seen: set[str], tool_ms: int = 0
+        self,
+        data: dict,
+        models_seen: set[str],
+        tool_ms: int = 0,
+        max_input_tokens: int = 0,
     ) -> AgentResponse:
         """Parse the final 'result' event from the stream."""
         output = data.get("result", "")
@@ -248,6 +264,7 @@ class ClaudeCodeAgent(Agent):
             num_turns=data.get("num_turns", 0),
             models=models,
             tool_ms=tool_ms,
+            max_input_tokens=max_input_tokens,
         )
 
         return AgentResponse(output=output, success=success, stats=stats)

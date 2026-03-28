@@ -32,6 +32,7 @@ class IterationStatus:
     tasks_completed: int = 0
     tasks_total: int = 0
     tasks_completed_delta: int = 0
+    max_input_tokens: int = 0
 
     @property
     def agent_display(self) -> str:
@@ -48,6 +49,13 @@ class IterationStatus:
         if total == 0:
             return 0.0
         return self.cache_read_tokens / total * 100
+
+    @property
+    def avg_input_tokens(self) -> int:
+        """Average input tokens per LLM call."""
+        if self.num_turns == 0:
+            return 0
+        return self.input_tokens // self.num_turns
 
     @property
     def io_ratio(self) -> float:
@@ -117,6 +125,25 @@ class FolderStatus:
         if self.iterations:
             return self.iterations[-1].agent_display
         return ""
+
+    @property
+    def total_num_turns(self) -> int:
+        return sum(it.num_turns for it in self.iterations)
+
+    @property
+    def avg_input_tokens(self) -> int:
+        """Average input tokens per LLM call across all iterations."""
+        turns = self.total_num_turns
+        if turns == 0:
+            return 0
+        return self.total_input_tokens // turns
+
+    @property
+    def max_input_tokens(self) -> int:
+        """Max input tokens across all iterations."""
+        if not self.iterations:
+            return 0
+        return max(it.max_input_tokens for it in self.iterations)
 
     @property
     def total_tool_ms(self) -> int:
@@ -189,6 +216,7 @@ def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
                 tasks_completed=record.get("tasks_completed", 0),
                 tasks_total=record.get("tasks_total", 0),
                 tasks_completed_delta=record.get("tasks_completed_delta", 0),
+                max_input_tokens=record.get("max_input_tokens", 0),
             )
         )
     return iterations

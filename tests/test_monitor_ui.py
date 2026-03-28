@@ -233,13 +233,13 @@ class TestBuildTable:
         assert table.columns[0].header == "#"
 
     def test_number_column_present_metrics_mode(self):
-        """Metrics mode: 9 columns — #, Folder, Input, Output, Cache%, In/Out, LLM/Tool, Tok/s, Time."""
+        """Metrics mode: 11 columns — #, Folder, Input, Output, Avg Ctx, Max Ctx, Cache%, In/Out, LLM/Tool, Tok/s, Time."""
         folders = [
             FolderStatus(name="a"),
             FolderStatus(name="b"),
         ]
         table = build_table(folders, mode=ViewMode.METRICS)
-        assert len(table.columns) == 9
+        assert len(table.columns) == 11
         assert table.columns[0].header == "#"
 
 

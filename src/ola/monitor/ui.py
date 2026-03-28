@@ -148,6 +148,8 @@ def build_table(
     else:  # METRICS
         table.add_column("Input", justify="right")
         table.add_column("Output", justify="right")
+        table.add_column("Avg Ctx", justify="right")
+        table.add_column("Max Ctx", justify="right")
         table.add_column("Cache%", justify="right")
         table.add_column("In/Out", justify="right")
         table.add_column("LLM/Tool", justify="right")
@@ -211,6 +213,8 @@ def build_table(
                 folder_cell,
                 _fmt_tokens(fs.total_input_tokens),
                 _fmt_tokens(fs.total_output_tokens),
+                _fmt_tokens(fs.avg_input_tokens),
+                _fmt_tokens(fs.max_input_tokens),
                 cache_text,
                 _fmt_ratio(fs.io_ratio),
                 _fmt_time_breakdown(fs.time_breakdown),
@@ -245,6 +249,8 @@ def build_table(
                         f"  \u2514 {it.phase}",
                         _fmt_tokens(it.input_tokens),
                         _fmt_tokens(it.output_tokens),
+                        _fmt_tokens(it.avg_input_tokens),
+                        _fmt_tokens(it.max_input_tokens),
                         it_cache_text,
                         _fmt_ratio(it.io_ratio),
                         _fmt_time_breakdown(it.time_breakdown),

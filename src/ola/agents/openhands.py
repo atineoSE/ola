@@ -198,6 +198,8 @@ class OpenHandsAgent(Agent):
             total_cache_read = 0
             total_cache_write = 0
             total_llm_secs = 0.0
+            num_turns = 0
+            max_input_tokens = 0
 
             for metrics in usage_to_metrics.values():
                 acc = metrics.accumulated_token_usage
@@ -205,9 +207,15 @@ class OpenHandsAgent(Agent):
                 total_output += acc.completion_tokens
                 total_cache_read += acc.cache_read_tokens
                 total_cache_write += acc.cache_write_tokens
-                # Sum LLM round-trip latencies (seconds)
+                # Sum LLM round-trip latencies (seconds) and count calls
                 for rl in metrics.response_latencies:
                     total_llm_secs += rl.latency
+                    num_turns += 1
+                # Track max input context from per-call token usage
+                for tu in metrics.token_usages:
+                    turn_input = tu.prompt_tokens
+                    if turn_input > max_input_tokens:
+                        max_input_tokens = turn_input
 
             # Collect model names from usage keys; fall back to configured model
             models = list(usage_to_metrics.keys()) if usage_to_metrics else []
@@ -226,8 +234,10 @@ class OpenHandsAgent(Agent):
                 output_tokens=total_output,
                 cache_read_tokens=total_cache_read,
                 cache_creation_tokens=total_cache_write,
+                num_turns=num_turns,
                 models=models,
                 llm_ms=llm_ms,
+                max_input_tokens=max_input_tokens,
             )
         except Exception as e:
             logger.warning("Could not extract OH stats: %s", e)
