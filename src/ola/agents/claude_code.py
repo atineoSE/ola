@@ -143,9 +143,7 @@ class ClaudeCodeAgent(Agent):
                 success=False,
             )
 
-    def _stream(
-        self, proc: subprocess.Popen, prompt: str, timeout: int = 600
-    ) -> AgentResponse:
+    def _stream(self, proc: subprocess.Popen, prompt: str) -> AgentResponse:
         """Read NDJSON stream, show rolling status, return final result."""
         proc.stdin.write(prompt)
         proc.stdin.close()
@@ -153,22 +151,11 @@ class ClaudeCodeAgent(Agent):
         status = _StatusDisplay()
         models_seen: set[str] = set()
         result_data: dict | None = None
-        deadline = time.monotonic() + timeout
         tool_start: float | None = None
         total_tool_ms: int = 0
         max_input_tokens: int = 0
 
         for line in proc.stdout:
-            if time.monotonic() > deadline:
-                status.clear()
-                proc.kill()
-                proc.wait()
-                logger.error("Claude Code timed out after %ds", timeout)
-                return AgentResponse(
-                    output=f"Claude Code timed out after {timeout}s",
-                    success=False,
-                )
-
             line = line.strip()
             if not line:
                 continue
