@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
 from ola.plan import (
+    count_tasks,
     discover_plan_folders,
     has_outstanding_tasks,
     read_file_if_exists,
@@ -96,12 +97,17 @@ def _append_stats(
     stats: IterationStats,
     wall_ms: int,
     agent: Agent | None = None,
+    tasks_before: tuple[int, int] = (0, 0),
+    tasks_after: tuple[int, int] = (0, 0),
 ) -> None:
     """Append stats as a JSON line to STATS.jsonl in the phase folder."""
     record = {"phase": label, "wall_ms": wall_ms, **stats.model_dump()}
     if agent is not None:
         record["agent"] = agent.mnemonic
         record["agent_version"] = agent.version()
+    record["tasks_completed"] = tasks_after[0]
+    record["tasks_total"] = tasks_after[1]
+    record["tasks_completed_delta"] = tasks_after[0] - tasks_before[0]
     stats_file = folder / "STATS.jsonl"
     with open(stats_file, "a") as f:
         f.write(json.dumps(record) + "\n")
@@ -150,15 +156,25 @@ def _process_folder(
                 f"\n\nWrite your plan at {plan_file}"
                 " using markdown tasks, i.e. `- [ ] `"
             )
+            tasks_before = count_tasks(folder)
             t0 = time.monotonic()
             labels = {"folder": folder.name, "phase": "seed"}
             response = agent.run(
                 seed_prompt, workdir, state_dir=state_dir, labels=labels
             )
             wall_ms = int((time.monotonic() - t0) * 1000)
+            tasks_after = count_tasks(folder)
             _log_response("SEED", response)
             _log_stats("SEED", response.stats, wall_ms)
-            _append_stats(folder, "seed", response.stats, wall_ms, agent)
+            _append_stats(
+                folder,
+                "seed",
+                response.stats,
+                wall_ms,
+                agent,
+                tasks_before,
+                tasks_after,
+            )
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
                 return
@@ -194,16 +210,26 @@ def _process_folder(
         iteration += 1
         logger.info("Iteration %d%s...", iteration, f"/{limit}" if limit else "")
 
+        tasks_before = count_tasks(folder)
         t0 = time.monotonic()
         labels = {"folder": folder.name, "phase": f"loop-{iteration}"}
         response = agent.run(
             effective_prompt, workdir, state_dir=state_dir, labels=labels
         )
         wall_ms = int((time.monotonic() - t0) * 1000)
+        tasks_after = count_tasks(folder)
         label = f"LOOP #{iteration}"
         _log_response(label, response)
         _log_stats(label, response.stats, wall_ms)
-        _append_stats(folder, f"loop-{iteration}", response.stats, wall_ms, agent)
+        _append_stats(
+            folder,
+            f"loop-{iteration}",
+            response.stats,
+            wall_ms,
+            agent,
+            tasks_before,
+            tasks_after,
+        )
 
         if not response.success:
             logger.error("Agent returned failure. Stopping %s.", folder.name)

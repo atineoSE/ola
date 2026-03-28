@@ -8,6 +8,7 @@ import termios
 import time as _time
 import tty
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 
 from rich.live import Live
@@ -15,6 +16,13 @@ from rich.table import Table
 from rich.text import Text
 
 from ola.monitor.data import FolderStatus, read_agent_folder
+
+
+class ViewMode(Enum):
+    """Display modes for the ola-top dashboard."""
+
+    TASK = "task"
+    METRICS = "metrics"
 
 
 def _fmt_tokens(n: int) -> str:
@@ -38,6 +46,21 @@ def _fmt_time(ms: int) -> str:
     hours = minutes // 60
     mins = minutes % 60
     return f"{hours}h{mins:02d}m"
+
+
+def _fmt_ratio(ratio: float) -> str:
+    """Format an input/output token ratio for display."""
+    if ratio == 0.0:
+        return "-"
+    if ratio >= 100:
+        return f"{ratio:.0f}x"
+    return f"{ratio:.1f}x"
+
+
+def _fmt_time_breakdown(breakdown: tuple[float, float, float]) -> str:
+    """Format (llm_pct, tool_pct, other_pct) as 'LL/TT/OO'."""
+    llm, tool, other = breakdown
+    return f"{llm:.0f}/{tool:.0f}/{other:.0f}"
 
 
 def _cache_style(pct: float) -> str:
@@ -66,6 +89,7 @@ def build_table(
     expanded: set[str] | None = None,
     cursor: int | None = None,
     agent_path: Path | None = None,
+    mode: ViewMode = ViewMode.TASK,
 ) -> Table:
     """Build a rich Table from a list of FolderStatus objects.
 
@@ -74,17 +98,21 @@ def build_table(
         expanded: Set of folder names whose iterations should be shown.
         cursor: Index of the currently highlighted folder (0-based), or None.
         agent_path: Path to the agent folder, shown in the header.
+        mode: Which view mode to render (TASK or METRICS).
     """
     if expanded is None:
         expanded = set()
 
     active_idx = _find_active_index(folders)
 
-    # Header: tool name, agent path, current time
+    # Header: tool name, mode, agent path, current time
     now_str = datetime.now().strftime("%H:%M:%S")
     path_str = str(agent_path) if agent_path else ""
+    mode_label = mode.value.upper()
     title = Text.assemble(
         ("ola-top", "bold cyan"),
+        ("  ", ""),
+        (f"[{mode_label}]", "bold magenta"),
         ("  ", ""),
         (path_str, "dim"),
         ("  ", ""),
@@ -95,6 +123,8 @@ def build_table(
     caption = Text.assemble(
         ("q", "bold"),
         (": quit  ", "dim"),
+        ("m", "bold"),
+        (": mode  ", "dim"),
         ("\u2191\u2193", "bold"),
         (": navigate  ", "dim"),
         ("Enter", "bold"),
@@ -104,13 +134,19 @@ def build_table(
     table = Table(title=title, caption=caption, expand=True, show_header=True)
     table.add_column("#", justify="right", style="dim", width=3)
     table.add_column("Folder", style="bold")
-    table.add_column("Agent", max_width=16, overflow="fold")
-    table.add_column("Model", max_width=20, overflow="fold")
-    table.add_column("Tasks", justify="right")
-    table.add_column("Input", justify="right")
-    table.add_column("Output", justify="right")
-    table.add_column("Cache%", justify="right")
-    table.add_column("Time", justify="right")
+
+    if mode == ViewMode.TASK:
+        table.add_column("Agent", max_width=16, overflow="fold")
+        table.add_column("Model", max_width=20, overflow="fold")
+        table.add_column("Tasks", justify="right")
+        table.add_column("Time", justify="right")
+    else:  # METRICS
+        table.add_column("Input", justify="right")
+        table.add_column("Output", justify="right")
+        table.add_column("Cache%", justify="right")
+        table.add_column("In/Out", justify="right")
+        table.add_column("LLM/Tool/Other", justify="right")
+        table.add_column("Time", justify="right")
 
     for idx, fs in enumerate(folders):
         is_active = idx == active_idx
@@ -137,53 +173,77 @@ def build_table(
 
         # Active folder gets a marker
         active_marker = "\u25cf " if is_active else ""
+        folder_cell = f"{active_marker}{prefix}{fs.name}"
 
-        # Color cache% per-cell
-        cache_pct_val = fs.cache_hit_rate
-        cache_text = Text(f"{cache_pct_val:.0f}%", style=_cache_style(cache_pct_val))
+        if mode == ViewMode.TASK:
+            # Color tasks per-cell
+            tasks_str = f"{fs.tasks_completed}/{fs.tasks_total}"
+            if fs.tasks_total > 0 and fs.tasks_completed >= fs.tasks_total:
+                tasks_text = Text(tasks_str, style="green")
+            elif fs.tasks_total > 0:
+                tasks_text = Text(tasks_str, style="yellow")
+            else:
+                tasks_text = Text(tasks_str, style="dim")
 
-        # Color tasks per-cell
-        tasks_str = f"{fs.tasks_completed}/{fs.tasks_total}"
-        if fs.tasks_total > 0 and fs.tasks_completed >= fs.tasks_total:
-            tasks_text = Text(tasks_str, style="green")
-        elif fs.tasks_total > 0:
-            tasks_text = Text(tasks_str, style="yellow")
-        else:
-            tasks_text = Text(tasks_str, style="dim")
+            table.add_row(
+                str(idx + 1),
+                folder_cell,
+                fs.agent_display,
+                fs.model_display,
+                tasks_text,
+                _fmt_time(fs.total_wall_ms),
+                style=style,
+            )
+        else:  # METRICS
+            cache_pct_val = fs.cache_hit_rate
+            cache_text = Text(
+                f"{cache_pct_val:.0f}%", style=_cache_style(cache_pct_val)
+            )
 
-        table.add_row(
-            str(idx + 1),
-            f"{active_marker}{prefix}{fs.name}",
-            fs.agent_display,
-            fs.model_display,
-            tasks_text,
-            _fmt_tokens(fs.total_input_tokens),
-            _fmt_tokens(fs.total_output_tokens),
-            cache_text,
-            _fmt_time(fs.total_wall_ms),
-            style=style,
-        )
+            table.add_row(
+                str(idx + 1),
+                folder_cell,
+                _fmt_tokens(fs.total_input_tokens),
+                _fmt_tokens(fs.total_output_tokens),
+                cache_text,
+                _fmt_ratio(fs.io_ratio),
+                _fmt_time_breakdown(fs.time_breakdown),
+                _fmt_time(fs.total_wall_ms),
+                style=style,
+            )
 
         # Render iteration sub-rows when expanded
         if fs.name in expanded:
             for it in fs.iterations:
-                it_cache_val = it.cache_hit_rate
-                it_cache_text = Text(
-                    f"{it_cache_val:.0f}%",
-                    style=_cache_style(it_cache_val),
-                )
-                table.add_row(
-                    "",
-                    f"  \u2514 {it.phase}",
-                    "",
-                    "",
-                    "",
-                    _fmt_tokens(it.input_tokens),
-                    _fmt_tokens(it.output_tokens),
-                    it_cache_text,
-                    _fmt_time(it.wall_ms),
-                    style="dim",
-                )
+                if mode == ViewMode.TASK:
+                    delta = it.tasks_completed_delta
+                    delta_str = str(delta) if delta else ""
+                    table.add_row(
+                        "",
+                        f"  \u2514 {it.phase}",
+                        "",
+                        "",
+                        delta_str,
+                        _fmt_time(it.wall_ms),
+                        style="dim",
+                    )
+                else:  # METRICS
+                    it_cache_val = it.cache_hit_rate
+                    it_cache_text = Text(
+                        f"{it_cache_val:.0f}%",
+                        style=_cache_style(it_cache_val),
+                    )
+                    table.add_row(
+                        "",
+                        f"  \u2514 {it.phase}",
+                        _fmt_tokens(it.input_tokens),
+                        _fmt_tokens(it.output_tokens),
+                        it_cache_text,
+                        _fmt_ratio(it.io_ratio),
+                        _fmt_time_breakdown(it.time_breakdown),
+                        _fmt_time(it.wall_ms),
+                        style="dim",
+                    )
 
     return table
 
@@ -209,6 +269,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
     print("\033[2J\033[H", end="", flush=True)  # clear screen, cursor to top
     expanded: set[str] = set()
     cursor = 0
+    mode = ViewMode.TASK
 
     folders = read_agent_folder(agent_path)
 
@@ -219,7 +280,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
         tty.setcbreak(fd)
 
         with Live(
-            build_table(folders, expanded, cursor, agent_path),
+            build_table(folders, expanded, cursor, agent_path, mode),
             refresh_per_second=4,
         ) as live:
             last_refresh = _time.monotonic()
@@ -230,6 +291,9 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
 
                 if key == "q" or key == "\x03":  # q or Ctrl-C
                     break
+                elif key == "m":
+                    mode = ViewMode.METRICS if mode == ViewMode.TASK else ViewMode.TASK
+                    needs_update = True
                 elif key == "\x1b[A":  # Up arrow
                     if folders and cursor > 0:
                         cursor -= 1
@@ -264,7 +328,9 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
                     needs_update = True
 
                 if needs_update:
-                    live.update(build_table(folders, expanded, cursor, agent_path))
+                    live.update(
+                        build_table(folders, expanded, cursor, agent_path, mode)
+                    )
 
                 _time.sleep(0.05)  # ~20 FPS input polling
     finally:

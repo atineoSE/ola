@@ -209,3 +209,89 @@ def test_read_agent_folder(tmp_path: Path):
 def test_read_agent_folder_nonexistent(tmp_path: Path):
     result = read_agent_folder(tmp_path / "nonexistent")
     assert result == []
+
+
+def test_parse_stats_jsonl_with_tool_ms():
+    line = (
+        '{"phase": "seed", "wall_ms": 10000, "input_tokens": 100, "output_tokens": 50,'
+        ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
+        ' "tool_ms": 4000}\n'
+    )
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].tool_ms == 4000
+
+
+def test_parse_stats_jsonl_with_task_fields():
+    line = (
+        '{"phase": "loop-1", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
+        ' "tasks_completed": 3, "tasks_total": 5, "tasks_completed_delta": 2}\n'
+    )
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].tasks_completed == 3
+    assert iterations[0].tasks_total == 5
+    assert iterations[0].tasks_completed_delta == 2
+
+
+def test_iteration_io_ratio():
+    it = IterationStatus(phase="seed", input_tokens=400, output_tokens=100)
+    assert it.io_ratio == 4.0
+
+
+def test_iteration_io_ratio_zero_output():
+    it = IterationStatus(phase="seed", input_tokens=100, output_tokens=0)
+    assert it.io_ratio == 0.0
+
+
+def test_iteration_time_breakdown():
+    it = IterationStatus(phase="seed", wall_ms=10000, tool_ms=3000)
+    llm, tool, other = it.time_breakdown
+    assert tool == 30.0
+    assert llm == 70.0
+    assert other == 0.0
+
+
+def test_iteration_time_breakdown_zero():
+    it = IterationStatus(phase="seed", wall_ms=0, tool_ms=0)
+    assert it.time_breakdown == (0.0, 0.0, 0.0)
+
+
+def test_folder_total_tool_ms():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", tool_ms=1000),
+            IterationStatus(phase="loop-1", tool_ms=2000),
+        ],
+    )
+    assert fs.total_tool_ms == 3000
+
+
+def test_folder_io_ratio():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", input_tokens=200, output_tokens=50),
+            IterationStatus(phase="loop-1", input_tokens=300, output_tokens=100),
+        ],
+    )
+    assert fs.io_ratio == 500 / 150
+
+
+def test_folder_io_ratio_zero_output():
+    fs = FolderStatus(name="test")
+    assert fs.io_ratio == 0.0
+
+
+def test_folder_time_breakdown():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", wall_ms=5000, tool_ms=2000),
+            IterationStatus(phase="loop-1", wall_ms=5000, tool_ms=1000),
+        ],
+    )
+    llm, tool, other = fs.time_breakdown
+    assert tool == 30.0
+    assert llm == 70.0
+    assert other == 0.0

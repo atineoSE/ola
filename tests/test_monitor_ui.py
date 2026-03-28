@@ -10,9 +10,12 @@ from rich.console import Console
 
 from ola.monitor.data import FolderStatus, IterationStatus
 from ola.monitor.ui import (
+    ViewMode,
     _cache_style,
     _find_active_index,
+    _fmt_ratio,
     _fmt_time,
+    _fmt_time_breakdown,
     _fmt_tokens,
     _read_key,
     build_table,
@@ -218,15 +221,24 @@ class TestBuildTable:
         assert "reverse" not in (table.rows[0].style or "")
         assert "reverse" in (table.rows[1].style or "")
 
-    def test_number_column_present(self):
-        """Table should have a # column header and 8 columns total."""
+    def test_number_column_present_task_mode(self):
+        """Task mode: 6 columns — #, Folder, Agent, Model, Tasks, Time."""
         folders = [
             FolderStatus(name="a"),
             FolderStatus(name="b"),
         ]
-        table = build_table(folders)
-        # 9 columns: #, Folder, Agent, Model, Tasks, Input, Output, Cache%, Time
-        assert len(table.columns) == 9
+        table = build_table(folders, mode=ViewMode.TASK)
+        assert len(table.columns) == 6
+        assert table.columns[0].header == "#"
+
+    def test_number_column_present_metrics_mode(self):
+        """Metrics mode: 8 columns — #, Folder, Input, Output, Cache%, In/Out, LLM/Tool/Other, Time."""
+        folders = [
+            FolderStatus(name="a"),
+            FolderStatus(name="b"),
+        ]
+        table = build_table(folders, mode=ViewMode.METRICS)
+        assert len(table.columns) == 8
         assert table.columns[0].header == "#"
 
 
@@ -352,3 +364,132 @@ class TestReadKey:
             ]
             mock_sys.stdin.read.side_effect = ["\x1b", "[", "A"]
             assert _read_key() == "\x1b[A"
+
+
+class TestFmtRatio:
+    def test_zero(self):
+        assert _fmt_ratio(0.0) == "-"
+
+    def test_normal(self):
+        assert _fmt_ratio(4.2) == "4.2x"
+
+    def test_large(self):
+        assert _fmt_ratio(150.0) == "150x"
+
+
+class TestFmtTimeBreakdown:
+    def test_normal(self):
+        assert _fmt_time_breakdown((70.0, 25.0, 5.0)) == "70/25/5"
+
+    def test_all_llm(self):
+        assert _fmt_time_breakdown((100.0, 0.0, 0.0)) == "100/0/0"
+
+
+class TestMetricsMode:
+    def test_metrics_mode_renders_token_columns(self):
+        """Metrics mode should show Input, Output, Cache%, In/Out columns."""
+        folders = [
+            FolderStatus(
+                name="t1",
+                tasks_completed=2,
+                tasks_total=3,
+                iterations=[
+                    IterationStatus(
+                        phase="seed",
+                        input_tokens=10_000,
+                        output_tokens=2_000,
+                        cache_read_tokens=8_000,
+                        wall_ms=60_000,
+                        tool_ms=20_000,
+                    ),
+                ],
+            )
+        ]
+        table = build_table(folders, mode=ViewMode.METRICS)
+        text = _render_table_text(table)
+        assert "10.0k" in text  # input
+        assert "2.0k" in text  # output
+        assert "5.0x" in text  # in/out ratio
+
+    def test_metrics_mode_expanded_shows_breakdown(self):
+        """Expanded rows in metrics mode show per-iteration metrics."""
+        iters = [
+            IterationStatus(
+                phase="seed",
+                input_tokens=10_000,
+                output_tokens=5_000,
+                cache_read_tokens=8_000,
+                wall_ms=60_000,
+                tool_ms=20_000,
+            ),
+        ]
+        folders = [
+            FolderStatus(name="t1", tasks_completed=1, tasks_total=2, iterations=iters)
+        ]
+        table = build_table(folders, expanded={"t1"}, mode=ViewMode.METRICS)
+        assert table.row_count == 2
+        text = _render_table_text(table)
+        assert "seed" in text
+
+    def test_task_mode_no_token_columns(self):
+        """Task mode should not show Input/Output/Cache% columns."""
+        folders = [
+            FolderStatus(
+                name="t1",
+                tasks_completed=2,
+                tasks_total=3,
+                iterations=[
+                    IterationStatus(
+                        phase="seed",
+                        input_tokens=10_000,
+                        output_tokens=5_000,
+                        wall_ms=60_000,
+                    ),
+                ],
+            )
+        ]
+        table = build_table(folders, mode=ViewMode.TASK)
+        # Task mode has 6 columns, no Input/Output/Cache%
+        assert len(table.columns) == 6
+        headers = [c.header for c in table.columns]
+        assert "Input" not in headers
+        assert "Output" not in headers
+        assert "Cache%" not in headers
+
+    def test_task_mode_expanded_shows_delta(self):
+        """Expanded rows in task mode show tasks_completed_delta."""
+        iters = [
+            IterationStatus(
+                phase="seed",
+                wall_ms=60_000,
+                tasks_completed_delta=2,
+            ),
+            IterationStatus(
+                phase="loop-1",
+                wall_ms=30_000,
+                tasks_completed_delta=1,
+            ),
+        ]
+        folders = [
+            FolderStatus(name="t1", tasks_completed=3, tasks_total=5, iterations=iters)
+        ]
+        table = build_table(folders, expanded={"t1"}, mode=ViewMode.TASK)
+        assert table.row_count == 3
+
+    def test_header_shows_mode(self):
+        """Header should display the current mode label."""
+        folders = [FolderStatus(name="t1")]
+        table = build_table(folders, mode=ViewMode.TASK)
+        text = _render_table_text(table)
+        assert "TASK" in text
+
+        table = build_table(folders, mode=ViewMode.METRICS)
+        text = _render_table_text(table)
+        assert "METRICS" in text
+
+    def test_footer_shows_mode_hint(self):
+        """Footer should include 'm: mode' keybinding hint."""
+        folders = [FolderStatus(name="t1")]
+        table = build_table(folders)
+        text = _render_table_text(table)
+        assert "mode" in text

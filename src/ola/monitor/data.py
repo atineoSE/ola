@@ -28,6 +28,10 @@ class IterationStatus:
     agent: str = ""
     agent_version: str = ""
     models: list[str] = field(default_factory=list)
+    tool_ms: int = 0
+    tasks_completed: int = 0
+    tasks_total: int = 0
+    tasks_completed_delta: int = 0
 
     @property
     def agent_display(self) -> str:
@@ -44,6 +48,22 @@ class IterationStatus:
         if total == 0:
             return 0.0
         return self.cache_read_tokens / total * 100
+
+    @property
+    def io_ratio(self) -> float:
+        """Input/output token ratio."""
+        if self.output_tokens == 0:
+            return 0.0
+        return self.input_tokens / self.output_tokens
+
+    @property
+    def time_breakdown(self) -> tuple[float, float, float]:
+        """(llm_pct, tool_pct, other_pct) as percentages of wall time."""
+        if self.wall_ms == 0:
+            return (0.0, 0.0, 0.0)
+        tool_pct = self.tool_ms / self.wall_ms * 100
+        llm_pct = 100.0 - tool_pct
+        return (llm_pct, tool_pct, 0.0)
 
 
 @dataclass
@@ -91,6 +111,27 @@ class FolderStatus:
         return ""
 
     @property
+    def total_tool_ms(self) -> int:
+        return sum(it.tool_ms for it in self.iterations)
+
+    @property
+    def io_ratio(self) -> float:
+        """Input/output token ratio."""
+        if self.total_output_tokens == 0:
+            return 0.0
+        return self.total_input_tokens / self.total_output_tokens
+
+    @property
+    def time_breakdown(self) -> tuple[float, float, float]:
+        """(llm_pct, tool_pct, other_pct) as percentages of wall time."""
+        wall = self.total_wall_ms
+        if wall == 0:
+            return (0.0, 0.0, 0.0)
+        tool_pct = self.total_tool_ms / wall * 100
+        llm_pct = 100.0 - tool_pct
+        return (llm_pct, tool_pct, 0.0)
+
+    @property
     def model_display(self) -> str:
         """Unique model names across all iterations, comma-separated."""
         seen: list[str] = []
@@ -128,6 +169,10 @@ def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
                 agent=record.get("agent", ""),
                 agent_version=record.get("agent_version", ""),
                 models=record.get("models", []),
+                tool_ms=record.get("tool_ms", 0),
+                tasks_completed=record.get("tasks_completed", 0),
+                tasks_total=record.get("tasks_total", 0),
+                tasks_completed_delta=record.get("tasks_completed_delta", 0),
             )
         )
     return iterations

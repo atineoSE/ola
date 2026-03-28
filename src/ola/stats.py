@@ -12,3 +12,4 @@ class IterationStats(BaseModel):
     cache_creation_tokens: int = 0
     num_turns: int = 0
     models: list[str] = []
+    tool_ms: int = 0

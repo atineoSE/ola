@@ -154,6 +154,8 @@ class ClaudeCodeAgent(Agent):
         models_seen: set[str] = set()
         result_data: dict | None = None
         deadline = time.monotonic() + timeout
+        tool_start: float | None = None
+        total_tool_ms: int = 0
 
         for line in proc.stdout:
             if time.monotonic() > deadline:
@@ -186,17 +188,31 @@ class ClaudeCodeAgent(Agent):
                 )
 
             if msg_type == "assistant" and "message" in event:
+                # If we were timing a tool, the LLM has resumed — stop the clock
+                if tool_start is not None:
+                    total_tool_ms += int((time.monotonic() - tool_start) * 1000)
+                    tool_start = None
+
                 model = event["message"].get("model")
                 if model:
                     models_seen.add(model)
+                has_tool_use = False
                 for block in event["message"].get("content", []):
                     if block.get("type") == "text":
                         status.update(block["text"])
                     elif block.get("type") == "tool_use":
                         name = block.get("name", "?")
                         status.update(f"[tool] {name}")
+                        has_tool_use = True
+                # Start timing tool execution after seeing tool_use
+                if has_tool_use:
+                    tool_start = time.monotonic()
 
             if msg_type == "result":
+                # Close any open tool timing
+                if tool_start is not None:
+                    total_tool_ms += int((time.monotonic() - tool_start) * 1000)
+                    tool_start = None
                 result_data = event
 
         status.clear()
@@ -206,9 +222,11 @@ class ClaudeCodeAgent(Agent):
             stderr = proc.stderr.read() if proc.stderr else ""
             return AgentResponse(output=stderr, success=proc.returncode == 0)
 
-        return self._parse_result(result_data, models_seen)
+        return self._parse_result(result_data, models_seen, total_tool_ms)
 
-    def _parse_result(self, data: dict, models_seen: set[str]) -> AgentResponse:
+    def _parse_result(
+        self, data: dict, models_seen: set[str], tool_ms: int = 0
+    ) -> AgentResponse:
         """Parse the final 'result' event from the stream."""
         output = data.get("result", "")
         success = data.get("subtype") == "success"
@@ -229,6 +247,7 @@ class ClaudeCodeAgent(Agent):
             cache_read_tokens=cache_read,
             num_turns=data.get("num_turns", 0),
             models=models,
+            tool_ms=tool_ms,
         )
 
         return AgentResponse(output=output, success=success, stats=stats)

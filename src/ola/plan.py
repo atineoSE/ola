@@ -24,6 +24,17 @@ def has_outstanding_tasks(plan_path: Path) -> bool:
     return bool(re.search(r"- \[ \]", content))
 
 
+def count_tasks(folder: Path) -> tuple[int, int]:
+    """Read PLAN.md in *folder* and return (completed, total) task counts."""
+    plan_file = folder / "PLAN.md"
+    if not plan_file.exists():
+        return 0, 0
+    content = plan_file.read_text()
+    completed = len(re.findall(r"- \[x\]", content, re.IGNORECASE))
+    unchecked = len(re.findall(r"- \[ \]", content))
+    return completed, completed + unchecked
+
+
 def read_file_if_exists(path: Path) -> str | None:
     """Read a file and return its content, or None if it doesn't exist."""
     if path.exists():
