@@ -245,15 +245,14 @@ def test_iteration_io_ratio_zero_output():
 
 def test_iteration_time_breakdown():
     it = IterationStatus(phase="seed", wall_ms=10000, tool_ms=3000)
-    llm, tool, other = it.time_breakdown
+    llm, tool = it.time_breakdown
     assert tool == 30.0
     assert llm == 70.0
-    assert other == 0.0
 
 
 def test_iteration_time_breakdown_zero():
     it = IterationStatus(phase="seed", wall_ms=0, tool_ms=0)
-    assert it.time_breakdown == (0.0, 0.0, 0.0)
+    assert it.time_breakdown == (0.0, 0.0)
 
 
 def test_folder_total_tool_ms():
@@ -291,7 +290,39 @@ def test_folder_time_breakdown():
             IterationStatus(phase="loop-1", wall_ms=5000, tool_ms=1000),
         ],
     )
-    llm, tool, other = fs.time_breakdown
+    llm, tool = fs.time_breakdown
     assert tool == 30.0
     assert llm == 70.0
-    assert other == 0.0
+
+
+def test_iteration_llm_tok_per_sec():
+    # 500 output tokens, 10s wall, 4s tool → 6s LLM → 500/6 ≈ 83.3
+    it = IterationStatus(phase="seed", output_tokens=500, wall_ms=10000, tool_ms=4000)
+    assert abs(it.llm_tok_per_sec - 500 / 6) < 0.1
+
+
+def test_iteration_llm_tok_per_sec_no_tool():
+    # No tool time → all wall is LLM → 100/10 = 10.0
+    it = IterationStatus(phase="seed", output_tokens=100, wall_ms=10000, tool_ms=0)
+    assert it.llm_tok_per_sec == 10.0
+
+
+def test_iteration_llm_tok_per_sec_zero_wall():
+    it = IterationStatus(phase="seed", output_tokens=100, wall_ms=0)
+    assert it.llm_tok_per_sec == 0.0
+
+
+def test_folder_llm_tok_per_sec():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(
+                phase="seed", output_tokens=200, wall_ms=5000, tool_ms=2000
+            ),
+            IterationStatus(
+                phase="loop-1", output_tokens=300, wall_ms=5000, tool_ms=1000
+            ),
+        ],
+    )
+    # total output=500, total wall=10000, total tool=3000, llm=7000ms=7s
+    assert abs(fs.llm_tok_per_sec - 500 / 7) < 0.1

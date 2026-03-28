@@ -16,6 +16,7 @@ from ola.monitor.ui import (
     _fmt_ratio,
     _fmt_time,
     _fmt_time_breakdown,
+    _fmt_tok_per_sec,
     _fmt_tokens,
     _read_key,
     build_table,
@@ -232,26 +233,24 @@ class TestBuildTable:
         assert table.columns[0].header == "#"
 
     def test_number_column_present_metrics_mode(self):
-        """Metrics mode: 8 columns — #, Folder, Input, Output, Cache%, In/Out, LLM/Tool/Other, Time."""
+        """Metrics mode: 9 columns — #, Folder, Input, Output, Cache%, In/Out, LLM/Tool, Tok/s, Time."""
         folders = [
             FolderStatus(name="a"),
             FolderStatus(name="b"),
         ]
         table = build_table(folders, mode=ViewMode.METRICS)
-        assert len(table.columns) == 8
+        assert len(table.columns) == 9
         assert table.columns[0].header == "#"
 
 
 class TestHeaderFooter:
-    def test_header_shows_path_and_time(self):
-        """Header should include the agent path and current time."""
+    def test_header_shows_path(self):
+        """Header should include the agent path."""
         folders = [FolderStatus(name="t1")]
         table = build_table(folders, agent_path=Path("/tmp/agent"))
         text = _render_table_text(table)
         assert "ola-top" in text
         assert "/tmp/agent" in text
-        # Time should be HH:MM:SS format — just check a colon appears near it
-        assert ":" in text
 
     def test_footer_shows_keybindings(self):
         """Footer should include keybinding hints."""
@@ -377,12 +376,23 @@ class TestFmtRatio:
         assert _fmt_ratio(150.0) == "150x"
 
 
+class TestFmtTokPerSec:
+    def test_zero(self):
+        assert _fmt_tok_per_sec(0.0) == "-"
+
+    def test_small(self):
+        assert _fmt_tok_per_sec(42.5) == "42.5"
+
+    def test_large(self):
+        assert _fmt_tok_per_sec(150.3) == "150"
+
+
 class TestFmtTimeBreakdown:
     def test_normal(self):
-        assert _fmt_time_breakdown((70.0, 25.0, 5.0)) == "70/25/5"
+        assert _fmt_time_breakdown((70.0, 25.0)) == "70/25"
 
     def test_all_llm(self):
-        assert _fmt_time_breakdown((100.0, 0.0, 0.0)) == "100/0/0"
+        assert _fmt_time_breakdown((100.0, 0.0)) == "100/0"
 
 
 class TestMetricsMode:

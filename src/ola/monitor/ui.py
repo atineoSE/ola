@@ -7,7 +7,6 @@ import sys
 import termios
 import time as _time
 import tty
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -57,10 +56,19 @@ def _fmt_ratio(ratio: float) -> str:
     return f"{ratio:.1f}x"
 
 
-def _fmt_time_breakdown(breakdown: tuple[float, float, float]) -> str:
-    """Format (llm_pct, tool_pct, other_pct) as 'LL/TT/OO'."""
-    llm, tool, other = breakdown
-    return f"{llm:.0f}/{tool:.0f}/{other:.0f}"
+def _fmt_tok_per_sec(tps: float) -> str:
+    """Format tokens/second for display."""
+    if tps == 0.0:
+        return "-"
+    if tps >= 100:
+        return f"{tps:.0f}"
+    return f"{tps:.1f}"
+
+
+def _fmt_time_breakdown(breakdown: tuple[float, float]) -> str:
+    """Format (llm_pct, tool_pct) as 'LL/TT'."""
+    llm, tool = breakdown
+    return f"{llm:.0f}/{tool:.0f}"
 
 
 def _cache_style(pct: float) -> str:
@@ -105,8 +113,7 @@ def build_table(
 
     active_idx = _find_active_index(folders)
 
-    # Header: tool name, mode, agent path, current time
-    now_str = datetime.now().strftime("%H:%M:%S")
+    # Header: tool name, mode, agent path
     path_str = str(agent_path) if agent_path else ""
     mode_label = mode.value.upper()
     title = Text.assemble(
@@ -115,8 +122,6 @@ def build_table(
         (f"[{mode_label}]", "bold magenta"),
         ("  ", ""),
         (path_str, "dim"),
-        ("  ", ""),
-        (now_str, "green"),
     )
 
     # Footer: keybinding hints
@@ -145,7 +150,8 @@ def build_table(
         table.add_column("Output", justify="right")
         table.add_column("Cache%", justify="right")
         table.add_column("In/Out", justify="right")
-        table.add_column("LLM/Tool/Other", justify="right")
+        table.add_column("LLM/Tool", justify="right")
+        table.add_column("Tok/s", justify="right")
         table.add_column("Time", justify="right")
 
     for idx, fs in enumerate(folders):
@@ -208,6 +214,7 @@ def build_table(
                 cache_text,
                 _fmt_ratio(fs.io_ratio),
                 _fmt_time_breakdown(fs.time_breakdown),
+                _fmt_tok_per_sec(fs.llm_tok_per_sec),
                 _fmt_time(fs.total_wall_ms),
                 style=style,
             )
@@ -241,6 +248,7 @@ def build_table(
                         it_cache_text,
                         _fmt_ratio(it.io_ratio),
                         _fmt_time_breakdown(it.time_breakdown),
+                        _fmt_tok_per_sec(it.llm_tok_per_sec),
                         _fmt_time(it.wall_ms),
                         style="dim",
                     )

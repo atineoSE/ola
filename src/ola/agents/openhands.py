@@ -190,13 +190,14 @@ class OpenHandsAgent(Agent):
             return AgentResponse(output=output, success=True, stats=stats)
 
     def _extract_stats(self, conversation, model: str = "") -> IterationStats:
-        """Extract token usage stats from conversation state."""
+        """Extract token usage and timing stats from conversation state."""
         try:
             usage_to_metrics = conversation.state.stats.usage_to_metrics
             total_input = 0
             total_output = 0
             total_cache_read = 0
             total_cache_write = 0
+            total_llm_secs = 0.0
 
             for metrics in usage_to_metrics.values():
                 acc = metrics.accumulated_token_usage
@@ -204,11 +205,20 @@ class OpenHandsAgent(Agent):
                 total_output += acc.completion_tokens
                 total_cache_read += acc.cache_read_tokens
                 total_cache_write += acc.cache_write_tokens
+                # Sum LLM round-trip latencies (seconds)
+                for rl in metrics.response_latencies:
+                    total_llm_secs += rl.latency
 
             # Collect model names from usage keys; fall back to configured model
             models = list(usage_to_metrics.keys()) if usage_to_metrics else []
             if not models and model:
                 models = [model]
+
+            # Derive tool time: wall_ms is not known here yet (computed by
+            # the outer loop), so we store the LLM time and let the caller
+            # compute tool_ms = wall_ms - llm_ms after timing completes.
+            # For now we store llm_ms and the loop will derive tool_ms.
+            llm_ms = int(total_llm_secs * 1000)
 
             return IterationStats(
                 # prompt_tokens already includes cache reads in OH
@@ -217,6 +227,7 @@ class OpenHandsAgent(Agent):
                 cache_read_tokens=total_cache_read,
                 cache_creation_tokens=total_cache_write,
                 models=models,
+                llm_ms=llm_ms,
             )
         except Exception as e:
             logger.warning("Could not extract OH stats: %s", e)

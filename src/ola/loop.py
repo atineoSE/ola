@@ -101,6 +101,10 @@ def _append_stats(
     tasks_after: tuple[int, int] = (0, 0),
 ) -> None:
     """Append stats as a JSON line to STATS.jsonl in the phase folder."""
+    # Derive tool_ms from llm_ms when the agent provides LLM latency
+    # but not tool timing (e.g. OpenHands reports llm_ms from API latencies).
+    if stats.tool_ms == 0 and stats.llm_ms > 0:
+        stats.tool_ms = max(0, wall_ms - stats.llm_ms)
     record = {"phase": label, "wall_ms": wall_ms, **stats.model_dump()}
     if agent is not None:
         record["agent"] = agent.mnemonic

@@ -57,13 +57,21 @@ class IterationStatus:
         return self.input_tokens / self.output_tokens
 
     @property
-    def time_breakdown(self) -> tuple[float, float, float]:
-        """(llm_pct, tool_pct, other_pct) as percentages of wall time."""
+    def time_breakdown(self) -> tuple[float, float]:
+        """(llm_pct, tool_pct) as percentages of wall time."""
         if self.wall_ms == 0:
-            return (0.0, 0.0, 0.0)
+            return (0.0, 0.0)
         tool_pct = self.tool_ms / self.wall_ms * 100
         llm_pct = 100.0 - tool_pct
-        return (llm_pct, tool_pct, 0.0)
+        return (llm_pct, tool_pct)
+
+    @property
+    def llm_tok_per_sec(self) -> float:
+        """Output tokens per second during the LLM phase (excluding tool time)."""
+        llm_ms = self.wall_ms - self.tool_ms
+        if llm_ms <= 0:
+            return 0.0
+        return self.output_tokens / (llm_ms / 1000)
 
 
 @dataclass
@@ -122,14 +130,22 @@ class FolderStatus:
         return self.total_input_tokens / self.total_output_tokens
 
     @property
-    def time_breakdown(self) -> tuple[float, float, float]:
-        """(llm_pct, tool_pct, other_pct) as percentages of wall time."""
+    def time_breakdown(self) -> tuple[float, float]:
+        """(llm_pct, tool_pct) as percentages of wall time."""
         wall = self.total_wall_ms
         if wall == 0:
-            return (0.0, 0.0, 0.0)
+            return (0.0, 0.0)
         tool_pct = self.total_tool_ms / wall * 100
         llm_pct = 100.0 - tool_pct
-        return (llm_pct, tool_pct, 0.0)
+        return (llm_pct, tool_pct)
+
+    @property
+    def llm_tok_per_sec(self) -> float:
+        """Aggregate output tokens per second during LLM phases."""
+        llm_ms = self.total_wall_ms - self.total_tool_ms
+        if llm_ms <= 0:
+            return 0.0
+        return self.total_output_tokens / (llm_ms / 1000)
 
     @property
     def model_display(self) -> str:

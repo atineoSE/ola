@@ -13,3 +13,4 @@ class IterationStats(BaseModel):
     num_turns: int = 0
     models: list[str] = []
     tool_ms: int = 0
+    llm_ms: int = 0
