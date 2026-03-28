@@ -45,11 +45,19 @@ ola-sandbox() {
   # Always refresh credentials from Keychain before creating the sandbox
   cc-credentials || return 1
 
-  # Copy credentials and config into workspace for the sandbox to pick up
+  # Copy credentials, config, and secrets into workspace for the sandbox to pick up
+  # Use a trap to guarantee cleanup even on ctrl-C or failure
+  _ola_cleanup() {
+    rm -f "$code_dir/.credentials.json" "$code_dir/.oh-agent_settings.json" \
+          "$code_dir/.oh-cli_config.json" "$code_dir/.ola-env"
+  }
+  trap _ola_cleanup EXIT INT TERM
+
   cp ~/.claude/.credentials.json "$code_dir/.credentials.json"
   for f in agent_settings.json cli_config.json; do
     [ -f ~/.openhands/"$f" ] && cp ~/.openhands/"$f" "$code_dir/.oh-$f"
   done
+  [ -f "$_OLA_DIR/.env" ] && cp "$_OLA_DIR/.env" "$code_dir/.ola-env"
 
   # Create the sandbox
   docker sandbox create --name "$name" -t ola:latest shell "$code_dir" "$agent_dir"
@@ -103,9 +111,6 @@ ola-sandbox() {
   fi
   "${net[@]}"
 
-  # Run the sandbox
+  # Run the sandbox (trap handles cleanup on exit)
   docker sandbox run "$name"
-
-  # Clean up credentials and config from workspace if still present
-  rm -f "$code_dir/.credentials.json" "$code_dir/.oh-agent_settings.json" "$code_dir/.oh-cli_config.json"
 }

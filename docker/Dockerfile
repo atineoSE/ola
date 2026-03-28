@@ -37,6 +37,10 @@ RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
     echo 'if [ -f .credentials.json ]; then mv .credentials.json ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json; fi' >> ~/.bashrc && \
     echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
 
+# ola: on login, install .env from workspace
+RUN echo 'if [ -f .ola-env ]; then mv .ola-env ~/.env && chmod 600 ~/.env; fi' >> ~/.bashrc && \
+    echo 'set -a; [ -f ~/.env ] && . ~/.env; set +a' >> ~/.bashrc
+
 # OpenHands: on login, install config from workspace and register alias
 RUN echo 'mkdir -p ~/.openhands' >> ~/.bashrc && \
     echo 'for f in agent_settings.json cli_config.json; do [ -f ".oh-$f" ] && mv ".oh-$f" ~/.openhands/"$f"; done' >> ~/.bashrc && \
