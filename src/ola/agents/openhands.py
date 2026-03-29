@@ -16,9 +16,9 @@ _lmnr_available = False
 try:
     from lmnr import Laminar
 
-    _lmnr_base = os.getenv("LMNR_BASE_URL")
+    _lmnr_base = os.getenv("LMNR_BASE_URL", "http://localhost")
     _lmnr_key = os.getenv("LMNR_PROJECT_API_KEY")
-    if _lmnr_base and _lmnr_key:
+    if _lmnr_key:
         Laminar.initialize(
             project_api_key=_lmnr_key,
             base_url=_lmnr_base,
