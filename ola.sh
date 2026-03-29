@@ -57,7 +57,12 @@ ola-sandbox() {
   for f in agent_settings.json cli_config.json; do
     [ -f ~/.openhands/"$f" ] && cp ~/.openhands/"$f" "$code_dir/.oh-$f"
   done
-  [ -f "$_OLA_DIR/.env" ] && cp "$_OLA_DIR/.env" "$code_dir/.ola-env"
+  if [ -f "$_OLA_DIR/.env" ]; then
+    # Remap localhost → host.docker.internal so services on the host
+    # are reachable from inside the Docker sandbox.
+    sed 's|://localhost|://host.docker.internal|g; s|://127\.0\.0\.1|://host.docker.internal|g' \
+      "$_OLA_DIR/.env" > "$code_dir/.ola-env"
+  fi
 
   # Create the sandbox
   docker sandbox create --name "$name" -t ola:latest shell "$code_dir" "$agent_dir"
@@ -81,6 +86,9 @@ ola-sandbox() {
     lmnr_host="${lmnr_base#https://}"
     lmnr_host="${lmnr_host#http://}"
     lmnr_host="${lmnr_host%%/*}"
+    [[ "$lmnr_host" == localhost* || "$lmnr_host" == 127.0.0.1* ]] && \
+      lmnr_host="${lmnr_host/localhost/host.docker.internal}" && \
+      lmnr_host="${lmnr_host/127.0.0.1/host.docker.internal}"
     lmnr_http_port="$(grep '^LMNR_HTTP_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     lmnr_grpc_port="$(grep '^LMNR_GRPC_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     : "${lmnr_host:=host.docker.internal}"
@@ -90,12 +98,21 @@ ola-sandbox() {
     net+=(--allow-host "$lmnr_host:$lmnr_grpc_port")
 
     # LLM host (e.g. OpenHands proxy)
-    local base_url llm_host
+    local base_url llm_host llm_port
     base_url="$(grep '^LLM_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     llm_host="${base_url#https://}"
     llm_host="${llm_host#http://}"
     llm_host="${llm_host%%/*}"
-    [ -n "$llm_host" ] && net+=(--allow-host "$llm_host:443")
+    [[ "$llm_host" == localhost* || "$llm_host" == 127.0.0.1* ]] && \
+      llm_host="${llm_host/localhost/host.docker.internal}" && \
+      llm_host="${llm_host/127.0.0.1/host.docker.internal}"
+    if [[ "$llm_host" == *:* ]]; then
+      llm_port="${llm_host##*:}"
+      llm_host="${llm_host%%:*}"
+    else
+      llm_port=443
+    fi
+    [ -n "$llm_host" ] && net+=(--allow-host "$llm_host:$llm_port")
   fi
   # Allow additional hosts from agent whitelist file
   local whitelist="$agent_dir/whitelist.txt"
