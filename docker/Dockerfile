@@ -17,6 +17,8 @@ RUN $HOME/.local/bin/uv tool install /tmp/ola-src && rm -rf /tmp/ola-src
 # Proxy: all outbound traffic goes through the sandbox proxy
 ENV HTTP_PROXY=http://host.docker.internal:3128
 ENV HTTPS_PROXY=http://host.docker.internal:3128
+# Bypass proxy for host-local services (LLM, Laminar, etc.)
+ENV NO_PROXY=host.docker.internal
 
 # Laminar: point at host machine from inside the sandbox
 ENV LMNR_BASE_URL=http://host.docker.internal
