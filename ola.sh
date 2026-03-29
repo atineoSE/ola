@@ -101,6 +101,9 @@ ola-sandbox() {
     : "${lmnr_grpc_port:=8001}"
     net+=(--allow-host "$lmnr_host:$lmnr_http_port")
     net+=(--allow-host "$lmnr_host:$lmnr_grpc_port")
+    # gRPC (HTTP/2) breaks under the MITM proxy — bypass it so the
+    # connection is tunnelled end-to-end without protocol downgrade.
+    net+=(--bypass-host "$lmnr_host:$lmnr_grpc_port")
 
     # LLM host (e.g. local Ollama, OpenHands proxy)
     local base_url llm_host llm_port
