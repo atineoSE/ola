@@ -81,31 +81,39 @@ ola-sandbox() {
   local env_file="$_OLA_DIR/.env"
   if [ -f "$env_file" ]; then
     # Laminar tracing (runs on the host, accessed from inside the sandbox)
+    # NOTE: The sandbox proxy rewrites host.docker.internal → localhost
+    # before matching allow rules, so we must use localhost here.
     local lmnr_base lmnr_host lmnr_http_port lmnr_grpc_port
     lmnr_base="$(grep '^LMNR_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     lmnr_host="${lmnr_base#https://}"
     lmnr_host="${lmnr_host#http://}"
     lmnr_host="${lmnr_host%%/*}"
-    [[ "$lmnr_host" == localhost* || "$lmnr_host" == 127.0.0.1* ]] && \
-      lmnr_host="${lmnr_host/localhost/host.docker.internal}" && \
-      lmnr_host="${lmnr_host/127.0.0.1/host.docker.internal}"
+    # Normalize to localhost for allow-host rules (proxy rewrites
+    # host.docker.internal → localhost before matching).
+    [[ "$lmnr_host" == host.docker.internal* ]] && \
+      lmnr_host="${lmnr_host/host.docker.internal/localhost}"
+    [[ "$lmnr_host" == 127.0.0.1* ]] && \
+      lmnr_host="${lmnr_host/127.0.0.1/localhost}"
     lmnr_http_port="$(grep '^LMNR_HTTP_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     lmnr_grpc_port="$(grep '^LMNR_GRPC_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
-    : "${lmnr_host:=host.docker.internal}"
+    : "${lmnr_host:=localhost}"
     : "${lmnr_http_port:=8000}"
     : "${lmnr_grpc_port:=8001}"
     net+=(--allow-host "$lmnr_host:$lmnr_http_port")
     net+=(--allow-host "$lmnr_host:$lmnr_grpc_port")
 
-    # LLM host (e.g. OpenHands proxy)
+    # LLM host (e.g. local Ollama, OpenHands proxy)
     local base_url llm_host llm_port
     base_url="$(grep '^LLM_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     llm_host="${base_url#https://}"
     llm_host="${llm_host#http://}"
     llm_host="${llm_host%%/*}"
-    [[ "$llm_host" == localhost* || "$llm_host" == 127.0.0.1* ]] && \
-      llm_host="${llm_host/localhost/host.docker.internal}" && \
-      llm_host="${llm_host/127.0.0.1/host.docker.internal}"
+    # Normalize to localhost for allow-host rules
+    [[ "$llm_host" == host.docker.internal* ]] && \
+      llm_host="${llm_host/host.docker.internal/localhost}"
+    [[ "$llm_host" == 127.0.0.1* ]] && \
+      llm_host="${llm_host/127.0.0.1/localhost}"
+    [[ "$llm_host" == localhost* ]] || true  # already correct or external
     if [[ "$llm_host" == *:* ]]; then
       llm_port="${llm_host##*:}"
       llm_host="${llm_host%%:*}"
