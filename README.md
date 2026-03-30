@@ -124,6 +124,12 @@ docker sandbox run --name my-sandbox -t ola:latest shell . ../agent
 
 Place a `.env` file in the workspace for OpenHands env vars (`LLM_API_KEY`, etc.).
 
+### Laminar tracing
+
+Set `LMNR_PROJECT_API_KEY` and `LMNR_BASE_URL` in `.env` to enable trace export to [Laminar](https://www.lmnr.ai). Traces are exported over HTTP (OTLP/HTTP) on the port specified by `LMNR_HTTP_PORT` (default `8000`).
+
+> **Note:** gRPC export (the default in the Laminar SDK) does not work inside Docker sandboxes. The sandbox MITM proxy downgrades HTTP/2 to HTTP/1.x, which breaks gRPC. `--bypass-host` is not a workaround because bypassed connections lose `host.docker.internal` routing and hit the default CIDR block on `127.0.0.0/8`. ola uses `force_http=True` to avoid this entirely.
+
 ## ola-top
 
 A `top`-like terminal dashboard for monitoring agent progress in real time. Shows task completion, token usage, cache hit rates, and wall time for each phase — with per-iteration drill-down.
