@@ -39,8 +39,7 @@ RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
 # ola: on login, install .env from workspace
 RUN echo 'if [ -f .ola-env ]; then mv .ola-env ~/.env && chmod 600 ~/.env; fi' >> ~/.bashrc && \
     echo 'set -a; [ -f ~/.env ] && . ~/.env; set +a' >> ~/.bashrc && \
-    echo 'unset XAI_API_KEY GEMINI_API_KEY OPENAI_API_KEY NEBIUS_API_KEY MISTRAL_API_KEY GOOGLE_API_KEY' >> ~/.bashrc && \
-    echo 'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}host.docker.internal"' >> ~/.bashrc
+    echo 'unset XAI_API_KEY GEMINI_API_KEY OPENAI_API_KEY NEBIUS_API_KEY MISTRAL_API_KEY GOOGLE_API_KEY' >> ~/.bashrc
 
 # OpenHands: on login, install config from workspace and register alias
 RUN echo 'mkdir -p ~/.openhands' >> ~/.bashrc && \
