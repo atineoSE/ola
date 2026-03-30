@@ -68,7 +68,7 @@ def _fmt_tok_per_sec(tps: float) -> str:
 def _fmt_time_breakdown(breakdown: tuple[float, float]) -> str:
     """Format (llm_pct, tool_pct) as 'LL/TT'."""
     llm, tool = breakdown
-    return f"{llm:.0f}/{tool:.0f}"
+    return f"{llm:.0f}/{tool:.0f}%"
 
 
 def _cache_style(pct: float) -> str:

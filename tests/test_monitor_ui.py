@@ -389,10 +389,10 @@ class TestFmtTokPerSec:
 
 class TestFmtTimeBreakdown:
     def test_normal(self):
-        assert _fmt_time_breakdown((70.0, 25.0)) == "70/25"
+        assert _fmt_time_breakdown((70.0, 25.0)) == "70/25%"
 
     def test_all_llm(self):
-        assert _fmt_time_breakdown((100.0, 0.0)) == "100/0"
+        assert _fmt_time_breakdown((100.0, 0.0)) == "100/0%"
 
 
 class TestMetricsMode:
