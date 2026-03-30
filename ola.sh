@@ -55,7 +55,9 @@ ola-sandbox() {
 
   cp ~/.claude/.credentials.json "$code_dir/.credentials.json"
   for f in agent_settings.json cli_config.json; do
-    [ -f ~/.openhands/"$f" ] && cp ~/.openhands/"$f" "$code_dir/.oh-$f"
+    [ -f ~/.openhands/"$f" ] && \
+      sed 's|://localhost|://host.docker.internal|g; s|://127\.0\.0\.1|://host.docker.internal|g' \
+        ~/.openhands/"$f" > "$code_dir/.oh-$f"
   done
   if [ -f "$_OLA_DIR/.env" ]; then
     # Remap localhost → host.docker.internal so services on the host
@@ -80,6 +82,32 @@ ola-sandbox() {
   # Allow additional hosts from .env
   local env_file="$_OLA_DIR/.env"
   if [ -f "$env_file" ]; then
+    local base_url llm_host llm_port
+    base_url="$(grep '^LLM_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
+    llm_host="${base_url#https://}"
+    llm_host="${llm_host#http://}"
+    llm_host="${llm_host%%/*}"
+    if [[ "$llm_host" == *:* ]]; then
+      llm_port="${llm_host##*:}"
+      llm_host="${llm_host%%:*}"
+    else
+      llm_port=443
+    fi
+    [ -n "$llm_host" ] && net+=(--allow-host "$llm_host:$llm_port")
+
+    local lmnr_base lmnr_host lmnr_http_port lmnr_grpc_port
+    lmnr_base="$(grep '^LMNR_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
+    lmnr_host="${lmnr_base#https://}"
+    lmnr_host="${lmnr_host#http://}"
+    lmnr_host="${lmnr_host%%/*}"
+    lmnr_http_port="$(grep '^LMNR_HTTP_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
+    lmnr_grpc_port="$(grep '^LMNR_GRPC_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
+    : "${lmnr_http_port:=8000}"
+    : "${lmnr_grpc_port:=8001}"
+    if [ -n "$lmnr_host" ]; then
+      net+=(--allow-host "$lmnr_host:$lmnr_http_port")
+      net+=(--allow-host "$lmnr_host:$lmnr_grpc_port")
+    fi
   fi
   # Allow additional hosts from agent whitelist file
   local whitelist="$agent_dir/whitelist.txt"
