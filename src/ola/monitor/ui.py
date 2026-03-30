@@ -144,6 +144,7 @@ def build_table(
         table.add_column("Agent", max_width=16, overflow="fold")
         table.add_column("Model", max_width=20, overflow="fold")
         table.add_column("Tasks", justify="right")
+        table.add_column("Turns", justify="right")
         table.add_column("Time", justify="right")
     else:  # METRICS
         table.add_column("Input", justify="right")
@@ -193,12 +194,14 @@ def build_table(
             else:
                 tasks_text = Text(tasks_str, style="dim")
 
+            turns_str = str(fs.total_num_turns) if fs.total_num_turns else ""
             table.add_row(
                 str(idx + 1),
                 folder_cell,
                 fs.agent_display,
                 fs.model_display,
                 tasks_text,
+                turns_str,
                 _fmt_time(fs.total_wall_ms),
                 style=style,
             )
@@ -229,12 +232,14 @@ def build_table(
                 if mode == ViewMode.TASK:
                     delta = it.tasks_completed_delta
                     delta_str = str(delta) if delta else ""
+                    it_turns_str = str(it.num_turns) if it.num_turns else ""
                     table.add_row(
                         "",
                         f"  \u2514 {it.phase}",
                         "",
                         "",
                         delta_str,
+                        it_turns_str,
                         _fmt_time(it.wall_ms),
                         style="dim",
                     )

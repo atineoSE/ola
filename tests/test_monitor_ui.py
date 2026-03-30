@@ -223,13 +223,13 @@ class TestBuildTable:
         assert "reverse" in (table.rows[1].style or "")
 
     def test_number_column_present_task_mode(self):
-        """Task mode: 6 columns — #, Folder, Agent, Model, Tasks, Time."""
+        """Task mode: 7 columns — #, Folder, Agent, Model, Tasks, Turns, Time."""
         folders = [
             FolderStatus(name="a"),
             FolderStatus(name="b"),
         ]
         table = build_table(folders, mode=ViewMode.TASK)
-        assert len(table.columns) == 6
+        assert len(table.columns) == 7
         assert table.columns[0].header == "#"
 
     def test_number_column_present_metrics_mode(self):
@@ -459,8 +459,8 @@ class TestMetricsMode:
             )
         ]
         table = build_table(folders, mode=ViewMode.TASK)
-        # Task mode has 6 columns, no Input/Output/Cache%
-        assert len(table.columns) == 6
+        # Task mode has 7 columns, no Input/Output/Cache%
+        assert len(table.columns) == 7
         headers = [c.header for c in table.columns]
         assert "Input" not in headers
         assert "Output" not in headers
