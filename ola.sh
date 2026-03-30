@@ -95,19 +95,14 @@ ola-sandbox() {
     fi
     [ -n "$llm_host" ] && net+=(--allow-host "$llm_host:$llm_port")
 
-    local lmnr_base lmnr_host lmnr_http_port lmnr_grpc_port
+    local lmnr_base lmnr_host lmnr_http_port
     lmnr_base="$(grep '^LMNR_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     lmnr_host="${lmnr_base#https://}"
     lmnr_host="${lmnr_host#http://}"
     lmnr_host="${lmnr_host%%/*}"
     lmnr_http_port="$(grep '^LMNR_HTTP_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
-    lmnr_grpc_port="$(grep '^LMNR_GRPC_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     : "${lmnr_http_port:=8000}"
-    : "${lmnr_grpc_port:=8001}"
-    if [ -n "$lmnr_host" ]; then
-      net+=(--allow-host "$lmnr_host:$lmnr_http_port")
-      net+=(--allow-host "$lmnr_host:$lmnr_grpc_port")
-    fi
+    [ -n "$lmnr_host" ] && net+=(--allow-host "$lmnr_host:$lmnr_http_port")
   fi
   # Allow additional hosts from agent whitelist file
   local whitelist="$agent_dir/whitelist.txt"

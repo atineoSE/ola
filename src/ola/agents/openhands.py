@@ -23,7 +23,7 @@ try:
             project_api_key=_lmnr_key,
             base_url=_lmnr_base,
             http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
-            grpc_port=int(os.getenv("LMNR_GRPC_PORT", "8001")),
+            force_http=True,
         )
         _lmnr_available = True
 except ImportError:
