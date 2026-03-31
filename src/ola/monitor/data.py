@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ola.stats import cache_hit_rate as _cache_hit_rate
+
 
 _AGENT_FULL_NAMES: dict[str, str] = {
     "cc": "Claude Code",
@@ -45,10 +47,7 @@ class IterationStatus:
     @property
     def cache_hit_rate(self) -> float:
         """Cache hit rate as a percentage (0-100)."""
-        total = self.input_tokens + self.cache_read_tokens
-        if total == 0:
-            return 0.0
-        return self.cache_read_tokens / total * 100
+        return _cache_hit_rate(self.input_tokens, self.cache_read_tokens)
 
     @property
     def avg_input_tokens(self) -> int:
@@ -114,10 +113,7 @@ class FolderStatus:
     @property
     def cache_hit_rate(self) -> float:
         """Aggregate cache hit rate as a percentage (0-100)."""
-        total = self.total_input_tokens + self.total_cache_read_tokens
-        if total == 0:
-            return 0.0
-        return self.total_cache_read_tokens / total * 100
+        return _cache_hit_rate(self.total_input_tokens, self.total_cache_read_tokens)
 
     @property
     def agent_display(self) -> str:

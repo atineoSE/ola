@@ -13,7 +13,7 @@ from ola.plan import (
     has_outstanding_tasks,
     read_file_if_exists,
 )
-from ola.stats import IterationStats
+from ola.stats import IterationStats, cache_hit_rate
 
 _DEFAULT_LOOP_PROMPT = (
     Path(__file__).resolve().parent / "agents" / "DEFAULT-LOOP-PROMPT.md"
@@ -85,8 +85,9 @@ def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
     parts.append(f"in={_format_tokens(stats.input_tokens)}")
     parts.append(f"out={_format_tokens(stats.output_tokens)}")
     if stats.cache_read_tokens and stats.input_tokens:
-        pct = stats.cache_read_tokens / stats.input_tokens * 100
-        parts.append(f"cache={pct:.0f}%")
+        parts.append(
+            f"cache={cache_hit_rate(stats.input_tokens, stats.cache_read_tokens):.0f}%"
+        )
     parts.append(_format_duration(wall_ms))
     logger.info("[%s] %s", label, " · ".join(parts))
 

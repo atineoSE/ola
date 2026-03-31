@@ -3,6 +3,17 @@
 from pydantic import BaseModel
 
 
+def cache_hit_rate(input_tokens: int, cache_read_tokens: int) -> float:
+    """Cache hit rate as a percentage (0-100).
+
+    ``input_tokens`` is the **total** prompt token count (already includes
+    cache reads) as stored by both the Claude Code and OpenHands adapters.
+    """
+    if input_tokens == 0:
+        return 0.0
+    return cache_read_tokens / input_tokens * 100
+
+
 class IterationStats(BaseModel):
     """Token usage and timing for a single agent invocation."""
 

@@ -107,8 +107,9 @@ def test_parse_stats_jsonl_empty():
 
 
 def test_iteration_cache_hit_rate():
+    # input_tokens already includes cache_read_tokens (as stored by both agents)
     it = IterationStatus(phase="seed", input_tokens=100, cache_read_tokens=80)
-    assert it.cache_hit_rate == 80 / 180 * 100
+    assert it.cache_hit_rate == 80 / 100 * 100
 
 
 def test_iteration_cache_hit_rate_zero():
@@ -145,7 +146,7 @@ def test_folder_status_aggregation():
     assert fs.total_cache_read_tokens == 230
     assert fs.total_cache_creation_tokens == 70
     assert fs.total_wall_ms == 3000
-    expected_rate = 230 / (300 + 230) * 100
+    expected_rate = 230 / 300 * 100
     assert abs(fs.cache_hit_rate - expected_rate) < 0.01
 
 
