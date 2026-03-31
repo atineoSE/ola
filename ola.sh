@@ -71,14 +71,31 @@ ola-sandbox() {
 
   # Apply network policy: deny all, allow only HTTPS on approved domains
   local -a net=(docker sandbox network proxy "$name" --policy deny)
+
+  # _allow_host <host[:port]> — adds both the exact host and *.host so all
+  # subdomains are reachable without having to list them individually.
+  _allow_host() {
+    local entry="$1"
+    local host port
+    if [[ "$entry" == *:* ]]; then
+      port="${entry##*:}"
+      host="${entry%%:*}"
+    else
+      port=443
+      host="$entry"
+    fi
+    net+=(--allow-host "$host:$port" --allow-host "*.$host:$port")
+  }
+
   # Claude / Anthropic
-  net+=(--allow-host api.anthropic.com:443)
-  net+=(--allow-host claude.ai:443 --allow-host "*.claude.ai:443")
+  _allow_host api.anthropic.com:443
+  _allow_host claude.ai:443
   # Package managers
-  net+=(--allow-host "*.npmjs.org:443")
-  net+=(--allow-host "*.pypi.org:443" --allow-host files.pythonhosted.org:443)
-  net+=(--allow-host "*.rubygems.org:443")
-  net+=(--allow-host deb.nodesource.com:443)
+  _allow_host npmjs.org:443
+  _allow_host pypi.org:443
+  _allow_host files.pythonhosted.org:443
+  _allow_host rubygems.org:443
+  _allow_host deb.nodesource.com:443
   # Allow additional hosts from .env
   local env_file="$_OLA_DIR/.env"
   if [ -f "$env_file" ]; then
@@ -93,7 +110,7 @@ ola-sandbox() {
     else
       llm_port=443
     fi
-    [ -n "$llm_host" ] && net+=(--allow-host "$llm_host:$llm_port")
+    [ -n "$llm_host" ] && _allow_host "$llm_host:$llm_port"
 
     local lmnr_base lmnr_host lmnr_http_port
     lmnr_base="$(grep '^LMNR_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
@@ -102,7 +119,7 @@ ola-sandbox() {
     lmnr_host="${lmnr_host%%/*}"
     lmnr_http_port="$(grep '^LMNR_HTTP_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
     : "${lmnr_http_port:=8000}"
-    [ -n "$lmnr_host" ] && net+=(--allow-host "$lmnr_host:$lmnr_http_port")
+    [ -n "$lmnr_host" ] && _allow_host "$lmnr_host:$lmnr_http_port"
   fi
   # Allow additional hosts from agent whitelist file
   local whitelist="$agent_dir/whitelist.txt"
@@ -111,9 +128,7 @@ ola-sandbox() {
       line="${line%%#*}"        # strip inline comments
       line="${line// /}"        # strip spaces
       [ -z "$line" ] && continue
-      # Default to :443 if no port specified
-      [[ "$line" != *:* ]] && line="$line:443"
-      net+=(--allow-host "$line")
+      _allow_host "$line"
     done < "$whitelist"
   fi
   "${net[@]}"
