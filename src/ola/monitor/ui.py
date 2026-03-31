@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import select
 import sys
 import termios
@@ -267,20 +268,26 @@ def build_table(
     return table
 
 
-def _read_key() -> str | None:
-    """Read a single keypress without blocking. Returns None if no key is ready."""
-    if not select.select([sys.stdin], [], [], 0)[0]:
+def _read_key(fd: int) -> str | None:
+    """Read a single keypress without blocking. Returns None if no key is ready.
+
+    Uses os.read() on the raw file descriptor so that select() and read
+    operate on the same kernel buffer — Python's buffered sys.stdin.read()
+    can desynchronise from select(), which caused escape sequences to be
+    silently dropped.
+    """
+    if not select.select([fd], [], [], 0)[0]:
         return None
-    ch = sys.stdin.read(1)
-    if ch == "\x1b":
-        # Read escape sequence (arrow keys send \x1b[A etc.)
-        if select.select([sys.stdin], [], [], 0.05)[0]:
-            ch += sys.stdin.read(1)
-            if ch == "\x1b[" or (len(ch) > 1 and ch[1] == "["):
-                if select.select([sys.stdin], [], [], 0.05)[0]:
-                    ch += sys.stdin.read(1)
-        return ch
-    return ch
+    data = os.read(fd, 1)
+    if not data:
+        return None
+    if data == b"\x1b":
+        # Escape sequences (e.g. arrow keys: \x1b[A).  Wait briefly for the
+        # rest of the sequence, then read all available bytes in one shot.
+        if select.select([fd], [], [], 0.1)[0]:
+            data += os.read(fd, 16)
+        return data.decode("utf-8", errors="replace")
+    return data.decode("utf-8", errors="replace")
 
 
 def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
@@ -304,7 +311,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
         ) as live:
             last_refresh = _time.monotonic()
             while True:
-                key = _read_key()
+                key = _read_key(fd)
 
                 needs_update = False
 

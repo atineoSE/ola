@@ -335,34 +335,43 @@ class TestReadKey:
         """Returns None when no input is available."""
         with patch("ola.monitor.ui.select") as mock_select:
             mock_select.select.return_value = ([], [], [])
-            assert _read_key() is None
+            assert _read_key(0) is None
 
     def test_regular_key(self):
         """Returns a single character for a regular keypress."""
         with (
             patch("ola.monitor.ui.select") as mock_select,
-            patch("ola.monitor.ui.sys") as mock_sys,
+            patch("ola.monitor.ui.os") as mock_os,
         ):
-            mock_select.select.return_value = ([mock_sys.stdin], [], [])
-            mock_sys.stdin.read.return_value = "q"
-            assert _read_key() == "q"
+            mock_select.select.return_value = ([0], [], [])
+            mock_os.read.return_value = b"q"
+            assert _read_key(0) == "q"
 
     def test_arrow_key_up(self):
         """Returns the full escape sequence for arrow keys."""
         with (
             patch("ola.monitor.ui.select") as mock_select,
-            patch("ola.monitor.ui.sys") as mock_sys,
+            patch("ola.monitor.ui.os") as mock_os,
         ):
-            # First select: key is ready
-            # Second select: escape seq continues
-            # Third select: escape seq continues
             mock_select.select.side_effect = [
-                ([mock_sys.stdin], [], []),
-                ([mock_sys.stdin], [], []),
-                ([mock_sys.stdin], [], []),
+                ([0], [], []),  # initial: key ready
+                ([0], [], []),  # 0.1s wait: rest of sequence available
             ]
-            mock_sys.stdin.read.side_effect = ["\x1b", "[", "A"]
-            assert _read_key() == "\x1b[A"
+            mock_os.read.side_effect = [b"\x1b", b"[A"]
+            assert _read_key(0) == "\x1b[A"
+
+    def test_bare_escape(self):
+        """Returns bare ESC when no follow-up bytes arrive."""
+        with (
+            patch("ola.monitor.ui.select") as mock_select,
+            patch("ola.monitor.ui.os") as mock_os,
+        ):
+            mock_select.select.side_effect = [
+                ([0], [], []),  # initial: key ready
+                ([], [], []),  # 0.1s wait: nothing follows
+            ]
+            mock_os.read.return_value = b"\x1b"
+            assert _read_key(0) == "\x1b"
 
 
 class TestFmtRatio:
