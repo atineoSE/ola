@@ -19,13 +19,7 @@ RUN git config --global user.name "ola" && \
     git config --global --add safe.directory '*'
 
 # Claude Code: on login, register alias
-RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
-    echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
-
-# ola: on login, install .env from workspace
-RUN echo 'if [ -f .ola-env ]; then mv .ola-env ~/.env && chmod 600 ~/.env; fi' >> ~/.bashrc && \
-    echo 'set -a; [ -f ~/.env ] && . ~/.env; set +a' >> ~/.bashrc && \
-    echo 'unset XAI_API_KEY GEMINI_API_KEY OPENAI_API_KEY NEBIUS_API_KEY MISTRAL_API_KEY GOOGLE_API_KEY' >> ~/.bashrc
+RUN echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
 
 # OpenHands: on login, install config from workspace and register alias
 RUN echo 'mkdir -p ~/.openhands' >> ~/.bashrc && \
