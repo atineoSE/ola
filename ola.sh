@@ -64,6 +64,65 @@ ola-policy-sync() {
   echo "Synced $count domain(s) to sbx policy."
 }
 
+# Review sbx network policy against project whitelist.
+# Lists current balanced policy rules and checks for:
+#   - Whitelist domains NOT yet covered by any policy rule
+#   - Overly broad wildcards in the policy (for manual review)
+# Usage: ola-policy-review [agent_dir]
+ola-policy-review() {
+  local agent_dir="${1:-$(cd ../agent 2>/dev/null && pwd)}"
+
+  if [ -z "$agent_dir" ]; then
+    echo "Error: agent directory not found. Pass path or run from project dir." >&2
+    return 1
+  fi
+
+  # Capture current network policy rules
+  local policy_output
+  policy_output="$(sbx policy ls --type network 2>/dev/null)" || {
+    echo "Error: failed to list sbx policies. Is sbx installed and running?" >&2
+    return 1
+  }
+
+  echo "=== Current sbx network policy ==="
+  echo "$policy_output"
+  echo ""
+
+  # Flag overly broad wildcards for manual review
+  local broad_rules
+  broad_rules="$(echo "$policy_output" | grep -E '\*\.[a-z]+\.[a-z]+$' || true)"
+  if [ -n "$broad_rules" ]; then
+    echo "=== Broad wildcards (review if needed) ==="
+    echo "$broad_rules"
+    echo ""
+  fi
+
+  # Check whitelist.txt domains against policy
+  local whitelist="$agent_dir/whitelist.txt"
+  if [ ! -f "$whitelist" ]; then
+    echo "No whitelist.txt found at $whitelist"
+    return 0
+  fi
+
+  local missing=0
+  local covered=0
+  echo "=== Whitelist domain coverage ==="
+  while IFS= read -r host || [ -n "$host" ]; do
+    [[ -z "$host" || "$host" == \#* ]] && continue
+    if echo "$policy_output" | grep -qF "$host"; then
+      echo "  [covered] $host"
+      covered=$((covered + 1))
+    else
+      echo "  [MISSING] $host — run: sbx policy allow network \"$host,*.$host\""
+      missing=$((missing + 1))
+    fi
+  done < "$whitelist"
+
+  echo ""
+  echo "Summary: $covered covered, $missing missing"
+  [ "$missing" -eq 0 ] || return 1
+}
+
 ola-sandbox() {
   local name="${1:?Usage: ola-sandbox <sandbox_name>}"
   local code_dir="$(pwd)"

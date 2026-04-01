@@ -121,6 +121,68 @@ LINE_COUNT="$(wc -l < "$SBX_LOG" 2>/dev/null | tr -d ' ')"
 [ -z "$LINE_COUNT" ] && LINE_COUNT=0
 assert_eq "no sbx calls for localhost" "0" "$LINE_COUNT"
 
+# ===== ola-policy-review tests =====
+
+# Override sbx mock to simulate policy ls output
+sbx() {
+  if [ "$1" = "policy" ] && [ "$2" = "ls" ]; then
+    cat <<'POLICY'
+RULE   TYPE     ACTION  RESOURCE
+1      network  allow   *.docker.io
+2      network  allow   *.npmjs.org
+3      network  allow   *.github.com
+4      network  allow   *.googleapis.com
+5      network  allow   docs.docker.com
+POLICY
+    return 0
+  fi
+  echo "sbx $*" >> "$SBX_LOG"
+}
+export -f sbx
+
+# Test: all whitelist domains covered
+REVIEW_AGENT="$TMPDIR_TEST/review_agent"
+mkdir -p "$REVIEW_AGENT"
+cat > "$REVIEW_AGENT/whitelist.txt" <<'EOF'
+# These should all be in the policy output
+docs.docker.com
+docker.io
+EOF
+
+output="$(ola-policy-review "$REVIEW_AGENT")"
+assert_eq "review all covered" "0" "$(echo "$output" | grep -c '^\s*\[MISSING\]')"
+assert_eq "review covered count" "2" "$(echo "$output" | grep -c '\[covered\]')"
+assert_eq "review summary" "Summary: 2 covered, 0 missing" "$(echo "$output" | tail -1)"
+
+# Test: missing domain detected
+cat > "$REVIEW_AGENT/whitelist.txt" <<'EOF'
+docs.docker.com
+custom-api.example.com
+EOF
+
+output="$(ola-policy-review "$REVIEW_AGENT")" || true  # exits 1 when missing
+assert_eq "review missing detected" "1" "$(echo "$output" | grep -c '\[MISSING\]')"
+assert_eq "review missing domain" \
+  "  [MISSING] custom-api.example.com — run: sbx policy allow network \"custom-api.example.com,*.custom-api.example.com\"" \
+  "$(echo "$output" | grep '\[MISSING\]')"
+assert_eq "review missing summary" "Summary: 1 covered, 1 missing" "$(echo "$output" | tail -1)"
+
+# Test: broad wildcards flagged
+output="$(ola-policy-review "$REVIEW_AGENT")"  || true
+assert_eq "review flags broad wildcards" "1" "$(echo "$output" | grep 'Broad wildcards' | grep -c 'review')"
+
+# Test: no whitelist file
+EMPTY_REVIEW="$TMPDIR_TEST/no_whitelist"
+mkdir -p "$EMPTY_REVIEW"
+output="$(ola-policy-review "$EMPTY_REVIEW")"
+assert_eq "review no whitelist" "1" "$(echo "$output" | grep -c 'No whitelist.txt')"
+
+# Test: sbx not available
+sbx() { return 1; }
+export -f sbx
+output="$(ola-policy-review "$REVIEW_AGENT" 2>&1)" || true
+assert_eq "review sbx failure" "1" "$(echo "$output" | grep -c 'failed to list')"
+
 # ===== Summary =====
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
