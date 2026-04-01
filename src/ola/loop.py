@@ -92,6 +92,26 @@ def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
     logger.info("[%s] %s", label, " · ".join(parts))
 
 
+def _last_loop_number(folder: Path) -> int:
+    """Return the highest loop-N number from STATS.jsonl, or 0 if none."""
+    stats_file = folder / "STATS.jsonl"
+    if not stats_file.exists():
+        return 0
+    highest = 0
+    for line in stats_file.read_text().strip().splitlines():
+        try:
+            phase = json.loads(line).get("phase", "")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if phase.startswith("loop-"):
+            try:
+                num = int(phase.split("-", 1)[1])
+                highest = max(highest, num)
+            except (ValueError, IndexError):
+                continue
+    return highest
+
+
 def _append_stats(
     folder: Path,
     label: str,
@@ -199,20 +219,23 @@ def _process_folder(
     # Inject absolute plan path so the agent can find it from the code dir
     effective_prompt = loop_prompt + f"\n\nPLAN.md is located at: {plan_file}"
 
-    # Loop phase
-    iteration = 0
+    # Loop phase – resume numbering from STATS.jsonl so restarts don't
+    # produce duplicate phase labels (e.g. a second "loop-1").
+    iteration = _last_loop_number(folder)
+    iterations_this_run = 0
     while True:
         if not has_outstanding_tasks(folder):
             logger.info("No outstanding tasks in PLAN.md. Done with %s.", folder.name)
             break
 
-        if limit is not None and iteration >= limit:
+        if limit is not None and iterations_this_run >= limit:
             logger.info(
                 "Reached iteration limit (%d). Stopping %s.", limit, folder.name
             )
             break
 
         iteration += 1
+        iterations_this_run += 1
         logger.info("Iteration %d%s...", iteration, f"/{limit}" if limit else "")
 
         tasks_before = count_tasks(folder)
