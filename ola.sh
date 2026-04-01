@@ -22,6 +22,15 @@ ola-sandbox() {
     return
   fi
 
+  # Apply project-specific network allowlist (additive to balanced policy)
+  local whitelist="$agent_dir/whitelist.txt"
+  if [ -f "$whitelist" ]; then
+    while IFS= read -r host || [ -n "$host" ]; do
+      [ -z "$host" ] && continue
+      sbx policy allow network "$host,*.$host" 2>/dev/null
+    done < "$whitelist"
+  fi
+
   # Create and run with custom template + read-only agent mount
   # sbx handles proxy, credentials (via sbx secret), and network policy (balanced mode)
   sbx run claude \
