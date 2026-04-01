@@ -31,7 +31,6 @@ my-agent/
     LOOP-PROMPT.md    # Required: prompt used each iteration
     PLAN.md           # Optional: markdown todo list
     .claude/          # Claude Code config dir (auto-created by ola)
-      .credentials.json
       projects/...    # conversation history auto-created by claude
     .openhands/       # OpenHands state dir (auto-created by ola)
       logs/
@@ -53,14 +52,26 @@ Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside
 
 ## Docker Sandbox
 
-Run `ola` inside a [Docker sandbox](https://docs.docker.com/sandbox/) (microVM-based isolation).
+Run `ola` inside a Docker sandbox using [`sbx`](https://docs.docker.com/sandbox/) (microVM-based isolation).
+
+### Prerequisites
+
+Set up credentials and network policy once:
+
+```bash
+# Store your Anthropic API key in the OS keychain (never enters the VM)
+sbx secret set -g anthropic
+
+# Set default network policy to balanced (deny-all + common dev allowlist)
+sbx policy set-default balanced
+```
 
 ### Build the template image
 
 Use `--no-cache` to ensure the latest versions of Claude Code, OpenHands, and ola are installed:
 
 ```bash
-docker build --no-cache -f docker/Dockerfile -t ola:latest .
+docker build --no-cache -f docker/Dockerfile -t docker.io/ola/ola-sbx:latest --push .
 ```
 
 ### Shell helpers
@@ -77,10 +88,7 @@ Add to your `.zshrc`:
 [ -f ~/.ola.sh ] && source ~/.ola.sh
 ```
 
-This provides two functions:
-
-- **`cc-credentials`** — restores `~/.claude/.credentials.json` from the macOS Keychain
-- **`ola-sandbox`** — creates or reconnects to a Docker sandbox
+This provides **`ola-sandbox`** — creates or reconnects to a Docker sandbox.
 
 ### Run a sandbox
 
@@ -99,10 +107,9 @@ ola-sandbox my-sandbox
 ```
 
 This will:
-1. Restore `~/.claude/.credentials.json` from the Keychain if missing (via `cc-credentials`)
-2. Copy credentials into the workspace for the sandbox to pick up
-3. Create a sandbox with `code/` as primary workspace and `agent/` mounted alongside
-4. Clean up the credentials file from the workspace on exit
+1. Apply project-specific network allowlist from `agent/whitelist.txt` (additive to balanced policy)
+2. Create a sandbox with `code/` as primary workspace and `agent/` mounted read-only
+3. Credentials are injected at the proxy level via `sbx secret` — no file copying needed
 
 Running `ola-sandbox my-sandbox` again will reconnect to the existing sandbox.
 
@@ -117,18 +124,28 @@ ola -a cc -l 5
 If you prefer not to use the helper:
 
 ```bash
-cp ~/.claude/.credentials.json .
-docker sandbox run --name my-sandbox -t ola:latest shell . ../agent
-# credentials are auto-moved to ~/.claude/ on shell login
+sbx run --name my-sandbox --template docker.io/ola/ola-sbx:latest claude . ../agent:ro
 ```
 
 Place a `.env` file in the workspace for OpenHands env vars (`LLM_API_KEY`, etc.).
+
+### Network policy
+
+The `balanced` policy provides deny-by-default with allowlists for AI APIs, package managers, code hosts, and registries. To manage policies:
+
+```bash
+sbx policy ls --type network          # show active rules
+sbx policy allow network "example.com,*.example.com"  # add allow rule
+sbx policy log                        # view blocked requests
+```
+
+Project-specific domains can be added to `agent/whitelist.txt` (one domain per line). The `ola-sandbox` helper applies these automatically on sandbox creation.
 
 ### Laminar tracing
 
 Set `LMNR_PROJECT_API_KEY` and `LMNR_BASE_URL` in `.env` to enable trace export to [Laminar](https://www.lmnr.ai). Traces are exported over HTTP (OTLP/HTTP) on the port specified by `LMNR_HTTP_PORT` (default `8000`).
 
-> **Note:** gRPC export (the default in the Laminar SDK) does not work inside Docker sandboxes. The sandbox MITM proxy downgrades HTTP/2 to HTTP/1.x, which breaks gRPC. `--bypass-host` is not a workaround because bypassed connections lose `host.docker.internal` routing and hit the default CIDR block on `127.0.0.0/8`. ola uses `force_http=True` to avoid this entirely.
+> **Note:** gRPC export (the default in the Laminar SDK) does not work inside Docker sandboxes. The sbx proxy downgrades HTTP/2 to HTTP/1.x, which breaks gRPC. ola uses `force_http=True` to avoid this entirely.
 
 ## ola-top
 
