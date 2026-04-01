@@ -50,6 +50,9 @@ ola-sandbox() {
     return
   fi
 
+  # Ensure balanced network policy is active (deny-all + common dev allowlist)
+  sbx policy set-default balanced
+
   # Apply project-specific network allowlist (additive to balanced policy)
   ola-policy-sync "$agent_dir"
 
