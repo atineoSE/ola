@@ -149,6 +149,6 @@ ola-sandbox() {
   # sbx handles proxy, credentials (via sbx secret), and network policy (balanced mode)
   sbx run claude \
     --name "$name" \
-    --template docker.io/ola/ola-sbx:latest \
+    --template "${OLA_SBX_IMAGE:-docker.io/ola/ola-sbx:latest}" \
     "$code_dir" "$agent_dir:ro"
 }

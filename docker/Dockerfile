@@ -1,7 +1,8 @@
 FROM docker/sandbox-templates:claude-code
 
 # Install uv (Python package manager)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
+    sh /tmp/uv-install.sh && rm /tmp/uv-install.sh
 
 # Install OpenHands CLI
 RUN $HOME/.local/bin/uv tool install openhands --python 3.12
