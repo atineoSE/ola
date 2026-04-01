@@ -27,13 +27,6 @@ cc-credentials() {
 
 ola-sandbox() {
   local name="${1:?Usage: ola-sandbox <sandbox_name>}"
-
-  # If sandbox already exists, just reconnect
-  if docker sandbox list 2>/dev/null | awk '{print $1}' | grep -qx "$name"; then
-    docker sandbox run "$name"
-    return
-  fi
-
   local code_dir="$(pwd)"
   local agent_dir="$(cd ../agent 2>/dev/null && pwd)"
 
@@ -42,102 +35,16 @@ ola-sandbox() {
     return 1
   fi
 
-  # Always refresh credentials from Keychain before creating the sandbox
-  cc-credentials || return 1
-
-  # Copy credentials, config, and secrets into workspace for the sandbox to pick up
-  # Use a trap to guarantee cleanup even on ctrl-C or failure
-  _ola_cleanup() {
-    rm -f "$code_dir/.credentials.json" "$code_dir/.oh-agent_settings.json" \
-          "$code_dir/.oh-cli_config.json" "$code_dir/.ola-env"
-  }
-  trap _ola_cleanup EXIT INT TERM
-
-  cp ~/.claude/.credentials.json "$code_dir/.credentials.json"
-  for f in agent_settings.json cli_config.json; do
-    [ -f ~/.openhands/"$f" ] && \
-      sed 's|://localhost|://host.docker.internal|g; s|://127\.0\.0\.1|://host.docker.internal|g' \
-        ~/.openhands/"$f" > "$code_dir/.oh-$f"
-  done
-  if [ -f "$_OLA_DIR/.env" ]; then
-    # Remap localhost → host.docker.internal so services on the host
-    # are reachable from inside the Docker sandbox.
-    sed 's|://localhost|://host.docker.internal|g; s|://127\.0\.0\.1|://host.docker.internal|g' \
-      "$_OLA_DIR/.env" > "$code_dir/.ola-env"
+  # Reconnect if sandbox already exists
+  if sbx ls 2>/dev/null | grep -q "$name"; then
+    sbx run claude --name "$name"
+    return
   fi
 
-  # Create the sandbox
-  docker sandbox create --name "$name" -t ola:latest shell "$code_dir" "$agent_dir"
-
-  # Apply network policy: deny all, allow only HTTPS on approved domains
-  local -a net=(docker sandbox network proxy "$name" --policy deny)
-
-  # Claude / Anthropic
-  net+=(--allow-host api.anthropic.com:443)
-  net+=(--allow-host claude.ai:443 --allow-host "*.claude.ai:443")
-  # Package managers
-  net+=(--allow-host "*.npmjs.org:443")
-  net+=(--allow-host "*.pypi.org:443" --allow-host files.pythonhosted.org:443)
-  net+=(--allow-host "*.rubygems.org:443")
-  net+=(--allow-host deb.nodesource.com:443)
-  # Allow additional hosts from .env
-  local env_file="$_OLA_DIR/.env"
-  if [ -f "$env_file" ]; then
-    local base_url llm_host llm_port
-    base_url="$(grep '^LLM_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
-    llm_host="${base_url#https://}"
-    llm_host="${llm_host#http://}"
-    llm_host="${llm_host%%/*}"
-    if [[ "$llm_host" == *:* ]]; then
-      llm_port="${llm_host##*:}"
-      llm_host="${llm_host%%:*}"
-    else
-      llm_port=443
-    fi
-    [ -n "$llm_host" ] && net+=(--allow-host "$llm_host:$llm_port")
-
-    local lmnr_base lmnr_host lmnr_http_port lmnr_key
-    lmnr_base="$(grep '^LMNR_BASE_URL=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
-    lmnr_host="${lmnr_base#https://}"
-    lmnr_host="${lmnr_host#http://}"
-    lmnr_host="${lmnr_host%%/*}"
-    lmnr_key="$(grep '^LMNR_PROJECT_API_KEY=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
-    lmnr_http_port="$(grep '^LMNR_HTTP_PORT=' "$env_file" | cut -d= -f2 | tr -d '"'"'")"
-    : "${lmnr_http_port:=8000}"
-    # The proxy rewrites host.docker.internal → localhost, so allow rules
-    # must use localhost.  When LMNR_BASE_URL is not set the Dockerfile
-    # defaults to host.docker.internal, so default the allow to localhost.
-    if [ -z "$lmnr_host" ] && [ -n "$lmnr_key" ]; then
-      lmnr_host="localhost"
-    fi
-    [ -n "$lmnr_host" ] && net+=(--allow-host "$lmnr_host:$lmnr_http_port")
-  fi
-  # Allow additional hosts from agent whitelist file (with auto-subdomain wildcard)
-  local whitelist="$agent_dir/whitelist.txt"
-  if [ -f "$whitelist" ]; then
-    # _allow_host <host[:port]> — adds both the exact host and *.host so
-    # whitelisted subdomains are reachable without listing them individually.
-    _allow_host() {
-      local entry="$1"
-      local host port
-      if [[ "$entry" == *:* ]]; then
-        port="${entry##*:}"
-        host="${entry%%:*}"
-      else
-        port=443
-        host="$entry"
-      fi
-      net+=(--allow-host "$host:$port" --allow-host "*.$host:$port")
-    }
-    while IFS= read -r line; do
-      line="${line%%#*}"        # strip inline comments
-      line="${line// /}"        # strip spaces
-      [ -z "$line" ] && continue
-      _allow_host "$line"
-    done < "$whitelist"
-  fi
-  "${net[@]}"
-
-  # Run the sandbox (trap handles cleanup on exit)
-  docker sandbox run "$name"
+  # Create and run with custom template + read-only agent mount
+  # sbx handles proxy, credentials (via sbx secret), and network policy (balanced mode)
+  sbx run claude \
+    --name "$name" \
+    --template docker.io/ola/ola-sbx:latest \
+    "$code_dir" "$agent_dir:ro"
 }
