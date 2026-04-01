@@ -13,21 +13,31 @@ logger = logging.getLogger(__name__)
 load_dotenv(override=True)
 
 _lmnr_available = False
-try:
-    from lmnr import Laminar
+_lmnr_initialized = False
 
-    _lmnr_base = os.getenv("LMNR_BASE_URL", "http://localhost")
-    _lmnr_key = os.getenv("LMNR_PROJECT_API_KEY")
-    if _lmnr_key:
-        Laminar.initialize(
-            project_api_key=_lmnr_key,
-            base_url=_lmnr_base,
-            http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
-            force_http=True,
-        )
-        _lmnr_available = True
-except ImportError:
-    pass
+
+def _init_laminar():
+    """Initialize Laminar lazily, only when OpenHands agent is actually used."""
+    global _lmnr_available, _lmnr_initialized
+    if _lmnr_initialized:
+        return
+    _lmnr_initialized = True
+    try:
+        from lmnr import Laminar
+
+        _lmnr_base = os.getenv("LMNR_BASE_URL", "http://localhost")
+        _lmnr_key = os.getenv("LMNR_PROJECT_API_KEY")
+        if _lmnr_key:
+            Laminar.initialize(
+                project_api_key=_lmnr_key,
+                base_url=_lmnr_base,
+                http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
+                force_http=True,
+            )
+            _lmnr_available = True
+    except ImportError:
+        pass
+
 
 _CONFIG_FILES = ("agent_settings.json", "cli_config.json")
 _POLICY_FILE = Path(__file__).resolve().parent / "NETWORK-POLICY.md"
@@ -130,6 +140,7 @@ class OpenHandsAgent(Agent):
         folder = labels.get("folder", "")
         phase = labels.get("phase", "")
 
+        _init_laminar()
         if _lmnr_available:
             return self._run_with_tracing(
                 conversation,
@@ -156,6 +167,8 @@ class OpenHandsAgent(Agent):
         get_agent_final_response,
     ) -> AgentResponse:
         """Run conversation inside a Laminar span with trace metadata."""
+        from lmnr import Laminar
+
         span_name = f"ola-{self.mnemonic}"
         if folder:
             span_name += f"/{folder}"
