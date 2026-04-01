@@ -6,32 +6,62 @@
 # Resolve the real directory of this script (follows symlinks)
 _OLA_DIR="${${(%):-%x}:A:h}"
 
-# Sync project-specific domains from whitelist.txt into sbx network policy.
-# Reads ../agent/whitelist.txt (relative to cwd) and adds each domain
-# (plus wildcard subdomain) to the sbx balanced policy allowlist.
+# Extract hostname from a URL string (strips scheme, port, path).
+# Usage: _ola_host_from_url "https://example.com:8080/path" → "example.com"
+_ola_host_from_url() {
+  local url="$1"
+  # Strip scheme (http:// or https://)
+  local host="${url#*://}"
+  # Strip path
+  host="${host%%/*}"
+  # Strip port
+  host="${host%%:*}"
+  echo "$host"
+}
+
+# Sync project-specific domains from whitelist.txt and .env into sbx network policy.
+# Reads ../agent/whitelist.txt and .env (in code dir) for URL-valued variables.
+# Adds each domain (plus wildcard subdomain) to the sbx balanced policy allowlist.
 # Safe to run multiple times — sbx policy allow is idempotent.
 ola-policy-sync() {
   local agent_dir="${1:-$(cd ../agent 2>/dev/null && pwd)}"
+  local env_file="${2:-.env}"
 
   if [ -z "$agent_dir" ]; then
     echo "Error: agent directory not found. Pass path or run from project dir." >&2
     return 1
   fi
 
+  local count=0
+
+  # 1. Sync domains from whitelist.txt
   local whitelist="$agent_dir/whitelist.txt"
-  if [ ! -f "$whitelist" ]; then
-    echo "No whitelist found at $whitelist — nothing to sync." >&2
-    return 0
+  if [ -f "$whitelist" ]; then
+    while IFS= read -r host || [ -n "$host" ]; do
+      [[ -z "$host" || "$host" == \#* ]] && continue
+      sbx policy allow network "$host,*.$host" 2>/dev/null
+      count=$((count + 1))
+    done < "$whitelist"
   fi
 
-  local count=0
-  while IFS= read -r host || [ -n "$host" ]; do
-    # Skip blank lines and comments
-    [[ -z "$host" || "$host" == \#* ]] && continue
-    sbx policy allow network "$host,*.$host" 2>/dev/null
-    count=$((count + 1))
-  done < "$whitelist"
-  echo "Synced $count domain(s) from $whitelist to sbx policy."
+  # 2. Sync hostnames from *_BASE_URL variables in .env
+  if [ -f "$env_file" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      # Match VAR_BASE_URL=value (with or without quotes)
+      if [[ "$line" =~ ^[A-Z_]*_BASE_URL=[\"\']?(https?://[^\"\']*)[\"\']?$ ]]; then
+        local url="${BASH_REMATCH[1]}"
+        local host
+        host="$(_ola_host_from_url "$url")"
+        if [ -n "$host" ] && [ "$host" != "localhost" ] && [[ "$host" != 127.* ]]; then
+          sbx policy allow network "$host,*.$host" 2>/dev/null
+          count=$((count + 1))
+        fi
+      fi
+    done < "$env_file"
+  fi
+
+  echo "Synced $count domain(s) to sbx policy."
 }
 
 ola-sandbox() {

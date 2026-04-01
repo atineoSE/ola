@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Tests for ola.sh shell functions (_ola_host_from_url, ola-policy-sync).
+# Run: bash tests/test_ola_sh.bash
+set -euo pipefail
+
+PASS=0
+FAIL=0
+TMPDIR_TEST="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_TEST"' EXIT
+
+fail() { echo "FAIL: $1 (expected '$2', got '$3')"; FAIL=$((FAIL + 1)); }
+pass() { echo "PASS: $1"; PASS=$((PASS + 1)); }
+
+assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then pass "$label"; else fail "$label" "$expected" "$actual"; fi
+}
+
+# --- Mock sbx: records calls to a log file ---
+SBX_LOG="$TMPDIR_TEST/sbx_calls.log"
+sbx() {
+  echo "sbx $*" >> "$SBX_LOG"
+}
+export -f sbx
+
+# Source ola.sh (skip zsh-specific _OLA_DIR line)
+OLA_SH="$(cd "$(dirname "$0")/.." && pwd)/ola.sh"
+# We need to handle the zsh-specific line
+eval "$(grep -v '%x' "$OLA_SH")"
+
+# ===== _ola_host_from_url tests =====
+
+assert_eq "https URL" "example.com" "$(_ola_host_from_url "https://example.com")"
+assert_eq "http URL" "example.com" "$(_ola_host_from_url "http://example.com")"
+assert_eq "URL with port" "example.com" "$(_ola_host_from_url "https://example.com:8080")"
+assert_eq "URL with path" "example.com" "$(_ola_host_from_url "https://example.com/api/v1")"
+assert_eq "URL with port and path" "example.com" "$(_ola_host_from_url "https://example.com:443/path")"
+assert_eq "subdomain URL" "api.llm-proxy.dev" "$(_ola_host_from_url "https://api.llm-proxy.dev/v1")"
+
+# ===== ola-policy-sync tests =====
+
+# Setup: agent dir with whitelist
+AGENT_DIR="$TMPDIR_TEST/agent"
+mkdir -p "$AGENT_DIR"
+cat > "$AGENT_DIR/whitelist.txt" <<'EOF'
+# Comment line
+docs.docker.com
+docker.io
+
+EOF
+
+# Setup: .env with URL variables
+ENV_FILE="$TMPDIR_TEST/.env"
+cat > "$ENV_FILE" <<'EOF'
+# Openhands provider
+LLM_MODEL="litellm_proxy/minimax-m2.5"
+LLM_API_KEY="sk-test123"
+LLM_BASE_URL="https://llm-proxy.app.all-hands.dev"
+
+# Localhost should be skipped
+# LMNR_BASE_URL=http://localhost:8000
+
+# Quoted URL
+CUSTOM_BASE_URL='https://custom-api.example.com:9090/v1'
+
+# Non-URL variables should be ignored
+LLM_TIMEOUT="300"
+EOF
+
+# Test: whitelist + .env sync
+> "$SBX_LOG"  # clear log
+output="$(ola-policy-sync "$AGENT_DIR" "$ENV_FILE")"
+
+# Check output message
+assert_eq "sync count message" "Synced 4 domain(s) to sbx policy." "$output"
+
+# Check sbx was called with correct domains
+assert_eq "whitelist domain 1" \
+  "sbx policy allow network docs.docker.com,*.docs.docker.com" \
+  "$(sed -n '1p' "$SBX_LOG")"
+
+assert_eq "whitelist domain 2" \
+  "sbx policy allow network docker.io,*.docker.io" \
+  "$(sed -n '2p' "$SBX_LOG")"
+
+assert_eq ".env LLM_BASE_URL" \
+  "sbx policy allow network llm-proxy.app.all-hands.dev,*.llm-proxy.app.all-hands.dev" \
+  "$(sed -n '3p' "$SBX_LOG")"
+
+assert_eq ".env CUSTOM_BASE_URL" \
+  "sbx policy allow network custom-api.example.com,*.custom-api.example.com" \
+  "$(sed -n '4p' "$SBX_LOG")"
+
+# Verify no extra calls (localhost should be skipped, non-URL vars ignored)
+LINE_COUNT="$(wc -l < "$SBX_LOG" | tr -d ' ')"
+assert_eq "total sbx calls" "4" "$LINE_COUNT"
+
+# Test: missing whitelist (no error, just .env domains)
+> "$SBX_LOG"
+EMPTY_AGENT="$TMPDIR_TEST/empty_agent"
+mkdir -p "$EMPTY_AGENT"
+output="$(ola-policy-sync "$EMPTY_AGENT" "$ENV_FILE")"
+assert_eq "env-only sync count" "Synced 2 domain(s) to sbx policy." "$output"
+
+# Test: missing .env (just whitelist domains)
+> "$SBX_LOG"
+output="$(ola-policy-sync "$AGENT_DIR" "$TMPDIR_TEST/nonexistent.env")"
+assert_eq "whitelist-only sync count" "Synced 2 domain(s) to sbx policy." "$output"
+
+# Test: localhost and 127.x are skipped
+> "$SBX_LOG"
+LOCALHOST_ENV="$TMPDIR_TEST/localhost.env"
+cat > "$LOCALHOST_ENV" <<'EOF'
+LOCAL_BASE_URL=http://localhost:3000
+LOOPBACK_BASE_URL=http://127.0.0.1:8080
+EOF
+output="$(ola-policy-sync "$EMPTY_AGENT" "$LOCALHOST_ENV")"
+assert_eq "localhost skipped" "Synced 0 domain(s) to sbx policy." "$output"
+LINE_COUNT="$(wc -l < "$SBX_LOG" 2>/dev/null | tr -d ' ')"
+# File may not exist if no calls were made
+[ -z "$LINE_COUNT" ] && LINE_COUNT=0
+assert_eq "no sbx calls for localhost" "0" "$LINE_COUNT"
+
+# ===== Summary =====
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ] || exit 1
