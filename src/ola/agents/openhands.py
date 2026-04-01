@@ -33,6 +33,8 @@ def _init_laminar():
                 project_api_key=_lmnr_key,
                 base_url=_lmnr_base,
                 http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
+                # gRPC (default) breaks in sbx/docker sandboxes because the
+                # MITM proxy downgrades HTTP/2 → HTTP/1.x. Use OTLP/HTTP.
                 force_http=True,
             )
             _lmnr_available = True
