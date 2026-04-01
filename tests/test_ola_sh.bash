@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for ola.sh shell functions (_ola_host_from_url, ola-policy-sync).
+# Tests for ola.sh shell functions (_ola_host_from_url, ola-policy-sync, ola-sandbox).
 # Run: bash tests/test_ola_sh.bash
 set -euo pipefail
 
@@ -182,6 +182,98 @@ sbx() { return 1; }
 export -f sbx
 output="$(ola-policy-review "$REVIEW_AGENT" 2>&1)" || true
 assert_eq "review sbx failure" "1" "$(echo "$output" | grep -c 'failed to list')"
+
+# ===== ola-sandbox tests =====
+
+# Reset sbx mock for sandbox tests
+SBX_LOG="$TMPDIR_TEST/sbx_calls.log"
+
+# --- Test: error when agent dir is missing ---
+ISOLATED="$TMPDIR_TEST/isolated/deep/nested"
+mkdir -p "$ISOLATED"
+pushd "$ISOLATED" > /dev/null  # no ../agent exists at any level
+output="$(ola-sandbox test-sbx 2>&1)" || true
+assert_eq "sandbox: error when no agent dir" "1" "$(echo "$output" | grep -c 'agent directory not found')"
+popd > /dev/null
+
+# --- Test: reconnect to existing sandbox ---
+SBX_SANDBOX_DIR="$TMPDIR_TEST/sbx_sandbox"
+mkdir -p "$SBX_SANDBOX_DIR/agent"
+cat > "$SBX_SANDBOX_DIR/agent/whitelist.txt" <<'EOF'
+docs.docker.com
+EOF
+
+# Mock sbx: ls returns a match, so ola-sandbox should reconnect
+sbx() {
+  echo "sbx $*" >> "$SBX_LOG"
+  if [ "$1" = "ls" ]; then
+    echo "my-sandbox  running  2h"
+    return 0
+  fi
+}
+export -f sbx
+
+> "$SBX_LOG"
+pushd "$SBX_SANDBOX_DIR" > /dev/null
+mkdir -p code && cd code
+ola-sandbox my-sandbox
+popd > /dev/null
+
+# Should call: sbx ls, then sbx run claude --name my-sandbox (no policy setup)
+assert_eq "sandbox: reconnect calls sbx ls" \
+  "sbx ls" \
+  "$(sed -n '1p' "$SBX_LOG")"
+assert_eq "sandbox: reconnect calls sbx run" \
+  "sbx run claude --name my-sandbox" \
+  "$(sed -n '2p' "$SBX_LOG")"
+LINE_COUNT="$(wc -l < "$SBX_LOG" | tr -d ' ')"
+assert_eq "sandbox: reconnect only 2 sbx calls" "2" "$LINE_COUNT"
+
+# --- Test: create new sandbox ---
+# Mock sbx: ls returns no match, so ola-sandbox should create
+sbx() {
+  echo "sbx $*" >> "$SBX_LOG"
+  if [ "$1" = "ls" ]; then
+    echo "other-sandbox  running  1h"
+    return 0
+  fi
+}
+export -f sbx
+
+> "$SBX_LOG"
+pushd "$SBX_SANDBOX_DIR/code" > /dev/null
+ola-sandbox new-sandbox
+popd > /dev/null
+
+# Should call: sbx ls, sbx policy set-default balanced, ola-policy-sync calls, sbx run claude ...
+assert_eq "sandbox: new calls sbx ls" \
+  "sbx ls" \
+  "$(sed -n '1p' "$SBX_LOG")"
+assert_eq "sandbox: new sets balanced policy" \
+  "sbx policy set-default balanced" \
+  "$(sed -n '2p' "$SBX_LOG")"
+# policy-sync adds whitelist domain (docs.docker.com)
+assert_eq "sandbox: new syncs whitelist" \
+  "sbx policy allow network docs.docker.com,*.docs.docker.com" \
+  "$(sed -n '3p' "$SBX_LOG")"
+# Last call should be sbx run claude with template and mounts
+LAST_LINE="$(tail -1 "$SBX_LOG")"
+assert_eq "sandbox: new calls sbx run with --name" \
+  "1" "$(echo "$LAST_LINE" | grep -c '\-\-name new-sandbox')"
+assert_eq "sandbox: new calls sbx run with --template" \
+  "1" "$(echo "$LAST_LINE" | grep -c '\-\-template docker.io/ola/ola-sbx:latest')"
+assert_eq "sandbox: new calls sbx run with agent:ro" \
+  "1" "$(echo "$LAST_LINE" | grep -c 'agent:ro')"
+
+# --- Test: OLA_SBX_IMAGE override ---
+> "$SBX_LOG"
+pushd "$SBX_SANDBOX_DIR/code" > /dev/null
+OLA_SBX_IMAGE="myregistry.io/custom:v2" ola-sandbox custom-sandbox
+popd > /dev/null
+
+LAST_LINE="$(tail -1 "$SBX_LOG")"
+assert_eq "sandbox: custom image override" \
+  "1" "$(echo "$LAST_LINE" | grep -c '\-\-template myregistry.io/custom:v2')"
 
 # ===== Summary =====
 echo ""
