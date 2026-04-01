@@ -1,11 +1,7 @@
-FROM docker/sandbox-templates:shell
+FROM docker/sandbox-templates:claude-code
 
 # Install uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install Claude Code CLI
-RUN curl -fsSL https://claude.ai/install.sh | bash
-
 
 # Install OpenHands CLI
 RUN $HOME/.local/bin/uv tool install openhands --python 3.12
@@ -25,15 +21,8 @@ RUN git config --global user.name "ola" && \
     git config --global user.email "ola@localhost" && \
     git config --global --add safe.directory '*'
 
-# Claude Code: skip onboarding, bypass permissions
-RUN mkdir -p ~/.claude && \
-    echo '{"hasCompletedOnboarding":true}' > ~/.claude.json && \
-    echo '{"permissions":{"defaultMode":"bypassPermissions"}}' > ~/.claude/settings.json
-COPY --chown=1000:1000 src/ola/agents/NETWORK-POLICY.md /home/agent/.claude/CLAUDE.md
-
-# Claude Code: on login, install credentials from workspace and register alias
+# Claude Code: on login, register alias
 RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
-    echo 'if [ -f .credentials.json ]; then mv .credentials.json ~/.claude/.credentials.json && chmod 600 ~/.claude/.credentials.json; fi' >> ~/.bashrc && \
     echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
 
 # ola: on login, install .env from workspace
@@ -52,7 +41,4 @@ RUN set -e && \
     uv --version && \
     claude --version && \
     openhands --version && \
-    test -f ~/.claude.json && \
-    test -f ~/.claude/settings.json && \
-    test -f ~/.claude/CLAUDE.md && \
     git config --global user.name | grep -q ola
