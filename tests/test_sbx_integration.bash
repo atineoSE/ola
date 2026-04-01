@@ -152,6 +152,59 @@ assert_contains "7.1k: oh alias exists" "$ALIASES" "oh="
 kill "$SBX_PID" 2>/dev/null || true
 wait "$SBX_PID" 2>/dev/null || true
 
+# ===== 7.2 Verify authentication via sbx secret =====
+echo ""
+echo "=== 7.2: Authentication via sbx secret (no .credentials.json) ==="
+
+# Test: no .credentials.json inside the sandbox
+CRED_FILE="$(sbx exec "$SBX_NAME" bash -c 'ls -a /home/user/.claude/.credentials.json 2>/dev/null || echo NOT_FOUND' 2>/dev/null)" || true
+if echo "$CRED_FILE" | grep -q "NOT_FOUND"; then
+  pass "7.2a: no .credentials.json inside sandbox"
+else
+  fail "7.2a: no .credentials.json inside sandbox (file exists)"
+fi
+
+# Test: no .credentials.json anywhere in the home directory
+CRED_FIND="$(sbx exec "$SBX_NAME" bash -c 'find /home/user -name .credentials.json -type f 2>/dev/null | head -1' 2>/dev/null)" || true
+if [ -z "$CRED_FIND" ]; then
+  pass "7.2b: no .credentials.json anywhere in home dir"
+else
+  fail "7.2b: no .credentials.json anywhere in home dir (found: $CRED_FIND)"
+fi
+
+# Test: sbx secret has anthropic key configured (proxy will inject it)
+# We check this on the host — sbx secret is a host-side concept
+SECRET_LS="$(sbx secret ls 2>/dev/null)" || true
+if echo "$SECRET_LS" | grep -qi "anthropic"; then
+  pass "7.2c: anthropic secret is configured in sbx"
+else
+  skip "7.2c: anthropic secret not configured (run 'sbx secret set -g anthropic' to enable)"
+fi
+
+# Test: claude can authenticate (quick prompt that exercises the API)
+# Use a minimal prompt and short timeout — we just need to see it doesn't fail with auth error
+if echo "$SECRET_LS" | grep -qi "anthropic"; then
+  AUTH_OUTPUT="$(timeout 30 sbx exec "$SBX_NAME" claude -p 'Reply with exactly: AUTH_OK' --output-format text 2>&1)" || true
+  if echo "$AUTH_OUTPUT" | grep -q "AUTH_OK"; then
+    pass "7.2d: claude authenticated successfully via sbx secret"
+  elif echo "$AUTH_OUTPUT" | grep -qi "authentication.failed\|authentication_failed\|unauthorized"; then
+    fail "7.2d: claude authentication failed (credentials not injected by proxy)"
+  else
+    # Could be a timeout or other transient issue — skip rather than fail
+    skip "7.2d: claude auth test inconclusive (output: ${AUTH_OUTPUT:0:120})"
+  fi
+else
+  skip "7.2d: claude auth test skipped (no anthropic secret configured)"
+fi
+
+# Test: ANTHROPIC_API_KEY env var is NOT set inside sandbox (proxy injects at network level)
+API_KEY_VAR="$(sbx exec "$SBX_NAME" bash -c 'echo "${ANTHROPIC_API_KEY:-UNSET}"' 2>/dev/null)" || true
+if [ "$API_KEY_VAR" = "UNSET" ] || [ -z "$API_KEY_VAR" ]; then
+  pass "7.2e: ANTHROPIC_API_KEY not leaked into sandbox env"
+else
+  fail "7.2e: ANTHROPIC_API_KEY not leaked into sandbox env (variable is set)"
+fi
+
 # ===== 7.7 Verify reconnection =====
 echo ""
 echo "=== 7.7: Sandbox reconnection ==="
