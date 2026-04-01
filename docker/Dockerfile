@@ -10,9 +10,6 @@ RUN $HOME/.local/bin/uv tool install openhands --python 3.12
 COPY --chown=1000:1000 . /tmp/ola-src
 RUN $HOME/.local/bin/uv tool install /tmp/ola-src && rm -rf /tmp/ola-src
 
-# Laminar: point at host machine from inside the sandbox
-ENV LMNR_BASE_URL=http://host.docker.internal
-
 # Git identity so commits work without per-repo config
 RUN git config --global user.name "ola" && \
     git config --global user.email "ola@localhost" && \
