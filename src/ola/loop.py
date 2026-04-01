@@ -88,6 +88,8 @@ def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
         parts.append(
             f"cache={cache_hit_rate(stats.input_tokens, stats.cache_read_tokens):.0f}%"
         )
+    if stats.ttft_ms:
+        parts.append(f"ttft={stats.ttft_ms}ms")
     parts.append(_format_duration(wall_ms))
     logger.info("[%s] %s", label, " · ".join(parts))
 

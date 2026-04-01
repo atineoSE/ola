@@ -18,6 +18,7 @@ from ola.monitor.ui import (
     _fmt_time_breakdown,
     _fmt_tok_per_sec,
     _fmt_tokens,
+    _fmt_ttft,
     _read_key,
     build_table,
 )
@@ -233,13 +234,13 @@ class TestBuildTable:
         assert table.columns[0].header == "#"
 
     def test_number_column_present_metrics_mode(self):
-        """Metrics mode: 11 columns — #, Folder, Input, Output, Avg Ctx, Max Ctx, Cache%, In/Out, LLM/Tool, Tok/s, Time."""
+        """Metrics mode: 12 columns — #, Folder, Input, Output, Avg Ctx, Max Ctx, Cache%, In/Out, LLM/Tool, TTFT, Tok/s, Time."""
         folders = [
             FolderStatus(name="a"),
             FolderStatus(name="b"),
         ]
         table = build_table(folders, mode=ViewMode.METRICS)
-        assert len(table.columns) == 11
+        assert len(table.columns) == 12
         assert table.columns[0].header == "#"
 
 
@@ -394,6 +395,26 @@ class TestFmtTokPerSec:
 
     def test_large(self):
         assert _fmt_tok_per_sec(150.3) == "150"
+
+
+class TestFmtTTFT:
+    def test_zero(self):
+        assert _fmt_ttft(0) == "-"
+
+    def test_milliseconds(self):
+        assert _fmt_ttft(500) == "500ms"
+
+    def test_one_ms(self):
+        assert _fmt_ttft(1) == "1ms"
+
+    def test_boundary(self):
+        assert _fmt_ttft(999) == "999ms"
+
+    def test_seconds(self):
+        assert _fmt_ttft(1500) == "1.5s"
+
+    def test_large(self):
+        assert _fmt_ttft(12345) == "12.3s"
 
 
 class TestFmtTimeBreakdown:

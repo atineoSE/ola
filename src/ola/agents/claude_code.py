@@ -144,16 +144,31 @@ class ClaudeCodeAgent(Agent):
             )
 
     def _stream(self, proc: subprocess.Popen, prompt: str) -> AgentResponse:
-        """Read NDJSON stream, show rolling status, return final result."""
+        """Read NDJSON stream, show rolling status, return final result.
+
+        Processes three granular Anthropic API streaming event types to get
+        per-turn TTFT and decode timing:
+
+            message_start ─[prefill]─> content_block_start ─[decode]─> message_delta
+                 │                            │                             │
+            turn begins              first token generated            turn ends
+
+        The higher-level ``assistant`` events are still processed for the
+        rolling status display but no longer carry timing responsibility.
+        """
         proc.stdin.write(prompt)
         proc.stdin.close()
 
         status = _StatusDisplay()
         models_seen: set[str] = set()
         result_data: dict | None = None
-        tool_start: float | None = None
-        total_tool_ms: int = 0
         max_input_tokens: int = 0
+
+        # Per-turn timing via granular stream events
+        total_ttft_ms: int = 0
+        total_decode_ms: int = 0
+        turn_start: float | None = None
+        token_start: float | None = None
 
         for line in proc.stdout:
             line = line.strip()
@@ -175,41 +190,44 @@ class ClaudeCodeAgent(Agent):
                     event.get("message", {}).get("content", [{}])[0].get("text", "")
                 )
 
-            if msg_type == "assistant" and "message" in event:
-                # If we were timing a tool, the LLM has resumed — stop the clock
-                if tool_start is not None:
-                    total_tool_ms += int((time.monotonic() - tool_start) * 1000)
-                    tool_start = None
+            # --- Granular timing events ---
 
+            if msg_type == "message_start" and "message" in event:
+                turn_start = time.monotonic()
+                token_start = None  # reset for new turn
                 model = event["message"].get("model")
                 if model:
                     models_seen.add(model)
                 # Track per-turn input tokens for max context size
                 msg_usage = event["message"].get("usage", {})
-                turn_input = (
-                    msg_usage.get("input_tokens", 0)
-                    + msg_usage.get("cache_creation_input_tokens", 0)
-                    + msg_usage.get("cache_read_input_tokens", 0)
-                )
+                turn_input = msg_usage.get("input_tokens", 0)
                 if turn_input > max_input_tokens:
                     max_input_tokens = turn_input
-                has_tool_use = False
+
+            elif msg_type == "content_block_start":
+                # First content block in this turn marks end of prefill
+                if turn_start is not None and token_start is None:
+                    token_start = time.monotonic()
+                    total_ttft_ms += int((token_start - turn_start) * 1000)
+
+            elif msg_type == "message_delta":
+                # Turn complete — accumulate decode time
+                if token_start is not None:
+                    total_decode_ms += int((time.monotonic() - token_start) * 1000)
+                turn_start = None
+                token_start = None
+
+            # --- Status display from assistant events (no timing) ---
+
+            elif msg_type == "assistant" and "message" in event:
                 for block in event["message"].get("content", []):
                     if block.get("type") == "text":
                         status.update(block["text"])
                     elif block.get("type") == "tool_use":
                         name = block.get("name", "?")
                         status.update(f"[tool] {name}")
-                        has_tool_use = True
-                # Start timing tool execution after seeing tool_use
-                if has_tool_use:
-                    tool_start = time.monotonic()
 
-            if msg_type == "result":
-                # Close any open tool timing
-                if tool_start is not None:
-                    total_tool_ms += int((time.monotonic() - tool_start) * 1000)
-                    tool_start = None
+            elif msg_type == "result":
                 result_data = event
 
         status.clear()
@@ -219,16 +237,22 @@ class ClaudeCodeAgent(Agent):
             stderr = proc.stderr.read() if proc.stderr else ""
             return AgentResponse(output=stderr, success=proc.returncode == 0)
 
+        llm_ms = total_ttft_ms + total_decode_ms
         return self._parse_result(
-            result_data, models_seen, total_tool_ms, max_input_tokens
+            result_data,
+            models_seen,
+            max_input_tokens=max_input_tokens,
+            ttft_ms=total_ttft_ms,
+            llm_ms=llm_ms,
         )
 
     def _parse_result(
         self,
         data: dict,
         models_seen: set[str],
-        tool_ms: int = 0,
         max_input_tokens: int = 0,
+        ttft_ms: int = 0,
+        llm_ms: int = 0,
     ) -> AgentResponse:
         """Parse the final 'result' event from the stream."""
         output = data.get("result", "")
@@ -250,8 +274,9 @@ class ClaudeCodeAgent(Agent):
             cache_read_tokens=cache_read,
             num_turns=data.get("num_turns", 0),
             models=models,
-            tool_ms=tool_ms,
             max_input_tokens=max_input_tokens,
+            ttft_ms=ttft_ms,
+            llm_ms=llm_ms,
         )
 
         return AgentResponse(output=output, success=success, stats=stats)

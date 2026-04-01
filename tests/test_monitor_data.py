@@ -297,7 +297,7 @@ def test_folder_time_breakdown():
 
 
 def test_iteration_llm_tok_per_sec():
-    # 500 output tokens, 10s wall, 4s tool → 6s LLM → 500/6 ≈ 83.3
+    # 500 output tokens, 10s wall, 4s tool → 6s decode → 500/6 ≈ 83.3
     it = IterationStatus(phase="seed", output_tokens=500, wall_ms=10000, tool_ms=4000)
     assert abs(it.llm_tok_per_sec - 500 / 6) < 0.1
 
@@ -325,7 +325,7 @@ def test_folder_llm_tok_per_sec():
             ),
         ],
     )
-    # total output=500, total wall=10000, total tool=3000, llm=7000ms=7s
+    # total output=500, total wall=10000, total tool=3000, decode=7000ms=7s
     assert abs(fs.llm_tok_per_sec - 500 / 7) < 0.1
 
 
@@ -366,3 +366,78 @@ def test_folder_max_input_tokens():
 def test_folder_max_input_tokens_empty():
     fs = FolderStatus(name="test")
     assert fs.max_input_tokens == 0
+
+
+# --- TTFT tests ---
+
+
+def test_iteration_llm_tok_per_sec_with_ttft():
+    # 500 output tokens, 10s wall, 4s tool, 1s ttft → 5s decode → 100 tok/s
+    it = IterationStatus(
+        phase="seed", output_tokens=500, wall_ms=10000, tool_ms=4000, ttft_ms=1000
+    )
+    assert it.llm_tok_per_sec == 100.0
+
+
+def test_iteration_llm_tok_per_sec_all_ttft():
+    # Edge case: decode_ms would be zero or negative → returns 0.0
+    it = IterationStatus(
+        phase="seed", output_tokens=500, wall_ms=5000, tool_ms=3000, ttft_ms=2000
+    )
+    assert it.llm_tok_per_sec == 0.0
+
+
+def test_folder_total_ttft_ms():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", ttft_ms=500),
+            IterationStatus(phase="loop-1", ttft_ms=300),
+        ],
+    )
+    assert fs.total_ttft_ms == 800
+
+
+def test_folder_llm_tok_per_sec_with_ttft():
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(
+                phase="seed",
+                output_tokens=200,
+                wall_ms=5000,
+                tool_ms=1000,
+                ttft_ms=500,
+            ),
+            IterationStatus(
+                phase="loop-1",
+                output_tokens=300,
+                wall_ms=5000,
+                tool_ms=1000,
+                ttft_ms=500,
+            ),
+        ],
+    )
+    # total output=500, total wall=10000, total tool=2000, total ttft=1000
+    # decode = 10000 - 2000 - 1000 = 7000ms = 7s → 500/7 ≈ 71.4
+    assert abs(fs.llm_tok_per_sec - 500 / 7) < 0.1
+
+
+def test_parse_stats_jsonl_with_ttft():
+    line = (
+        '{"phase": "seed", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
+        ' "tool_ms": 1000, "ttft_ms": 800}\n'
+    )
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].ttft_ms == 800
+
+
+def test_parse_stats_jsonl_backward_compat_ttft():
+    """Old STATS.jsonl without ttft_ms field defaults to 0."""
+    line = (
+        '{"phase": "seed", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1}\n'
+    )
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].ttft_ms == 0

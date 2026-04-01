@@ -31,6 +31,7 @@ class IterationStatus:
     agent_version: str = ""
     models: list[str] = field(default_factory=list)
     tool_ms: int = 0
+    ttft_ms: int = 0
     tasks_completed: int = 0
     tasks_total: int = 0
     tasks_completed_delta: int = 0
@@ -74,11 +75,11 @@ class IterationStatus:
 
     @property
     def llm_tok_per_sec(self) -> float:
-        """Output tokens per second during the LLM phase (excluding tool time)."""
-        llm_ms = self.wall_ms - self.tool_ms
-        if llm_ms <= 0:
+        """Output tokens per second during decode (excluding tool time and TTFT)."""
+        decode_ms = self.wall_ms - self.tool_ms - self.ttft_ms
+        if decode_ms <= 0:
             return 0.0
-        return self.output_tokens / (llm_ms / 1000)
+        return self.output_tokens / (decode_ms / 1000)
 
 
 @dataclass
@@ -146,6 +147,10 @@ class FolderStatus:
         return sum(it.tool_ms for it in self.iterations)
 
     @property
+    def total_ttft_ms(self) -> int:
+        return sum(it.ttft_ms for it in self.iterations)
+
+    @property
     def io_ratio(self) -> float:
         """Input/output token ratio."""
         if self.total_output_tokens == 0:
@@ -164,11 +169,11 @@ class FolderStatus:
 
     @property
     def llm_tok_per_sec(self) -> float:
-        """Aggregate output tokens per second during LLM phases."""
-        llm_ms = self.total_wall_ms - self.total_tool_ms
-        if llm_ms <= 0:
+        """Aggregate output tokens per second during decode phases."""
+        decode_ms = self.total_wall_ms - self.total_tool_ms - self.total_ttft_ms
+        if decode_ms <= 0:
             return 0.0
-        return self.total_output_tokens / (llm_ms / 1000)
+        return self.total_output_tokens / (decode_ms / 1000)
 
     @property
     def model_display(self) -> str:
@@ -209,6 +214,7 @@ def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
                 agent_version=record.get("agent_version", ""),
                 models=record.get("models", []),
                 tool_ms=record.get("tool_ms", 0),
+                ttft_ms=record.get("ttft_ms", 0),
                 tasks_completed=record.get("tasks_completed", 0),
                 tasks_total=record.get("tasks_total", 0),
                 tasks_completed_delta=record.get("tasks_completed_delta", 0),

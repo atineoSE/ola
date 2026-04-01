@@ -66,6 +66,15 @@ def _fmt_tok_per_sec(tps: float) -> str:
     return f"{tps:.1f}"
 
 
+def _fmt_ttft(ms: int) -> str:
+    """Format TTFT (time to first token) for display."""
+    if ms == 0:
+        return "-"
+    if ms < 1000:
+        return f"{ms}ms"
+    return f"{ms / 1000:.1f}s"
+
+
 def _fmt_time_breakdown(breakdown: tuple[float, float]) -> str:
     """Format (llm_pct, tool_pct) as 'LL/TT'."""
     llm, tool = breakdown
@@ -155,6 +164,7 @@ def build_table(
         table.add_column("Cache%", justify="right")
         table.add_column("In/Out", justify="right")
         table.add_column("LLM/Tool", justify="right")
+        table.add_column("TTFT", justify="right")
         table.add_column("Tok/s", justify="right")
         table.add_column("Time", justify="right")
 
@@ -222,6 +232,7 @@ def build_table(
                 cache_text,
                 _fmt_ratio(fs.io_ratio),
                 _fmt_time_breakdown(fs.time_breakdown),
+                _fmt_ttft(fs.total_ttft_ms),
                 _fmt_tok_per_sec(fs.llm_tok_per_sec),
                 _fmt_time(fs.total_wall_ms),
                 style=style,
@@ -260,6 +271,7 @@ def build_table(
                         it_cache_text,
                         _fmt_ratio(it.io_ratio),
                         _fmt_time_breakdown(it.time_breakdown),
+                        _fmt_ttft(it.ttft_ms),
                         _fmt_tok_per_sec(it.llm_tok_per_sec),
                         _fmt_time(it.wall_ms),
                         style="dim",

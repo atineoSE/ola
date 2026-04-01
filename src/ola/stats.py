@@ -26,3 +26,4 @@ class IterationStats(BaseModel):
     tool_ms: int = 0
     llm_ms: int = 0
     max_input_tokens: int = 0
+    ttft_ms: int = 0
