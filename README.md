@@ -48,6 +48,8 @@ Subfolders are processed in order. For each subfolder:
 2. While `PLAN.md` has unchecked tasks (`- [ ]`), the agent runs `LOOP-PROMPT.md` repeatedly.
 3. Stops when all tasks are checked or the iteration limit is reached.
 
+The agent folder must be its own git repository (ola initialises one if missing). ola commits to this repo after each seed phase and loop iteration, tracking plan progress independently from your source code.
+
 Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside the subfolder. For Claude Code, `CLAUDE_CONFIG_DIR` is set to `.claude/`, giving each phase its own conversation history that persists across sandbox sessions. For OpenHands, logs and trajectories are written to `.openhands/logs/` and `.openhands/trajectories/`.
 
 ## Docker Sandbox
@@ -97,12 +99,12 @@ This provides **`ola-sandbox`** — creates or reconnects to a Docker sandbox.
 The expected directory layout is:
 
 ```
-experiment/
-  code/    # your working directory
-  agent/   # ola agent folder (sibling)
+project/
+  src/     # your source code (must be a git repo)
+  agent/   # ola agent folder (git repo created by ola if missing)
 ```
 
-From the `code` directory:
+From the `src` directory:
 
 ```bash
 ola-sandbox my-sandbox
@@ -110,7 +112,7 @@ ola-sandbox my-sandbox
 
 This will:
 1. Apply project-specific network allowlist from `agent/whitelist.txt` (additive to balanced policy)
-2. Create a sandbox with `code/` as primary workspace and `agent/` mounted read-only
+2. Create a sandbox with `src/` as primary workspace and `agent/` mounted read-only
 3. Credentials are copied from host `~/.claude/.credentials.json` into the sandbox (OAuth token)
 
 Running `ola-sandbox my-sandbox` again will reconnect to the existing sandbox.
@@ -126,6 +128,7 @@ ola -a cc -l 5
 If you prefer not to use the helper:
 
 ```bash
+cd project/src
 sbx run --name my-sandbox --template ola/ola:latest claude . ../agent:ro
 ```
 
@@ -143,9 +146,9 @@ sbx policy log                        # view blocked requests
 
 Project-specific domains can be added to `agent/whitelist.txt` (one domain per line). The `ola-sandbox` helper applies these automatically on sandbox creation.
 
-### Laminar tracing
+### Laminar tracing (OpenHands only)
 
-Set `LMNR_PROJECT_API_KEY` and `LMNR_BASE_URL` in `.env` to enable trace export to [Laminar](https://www.lmnr.ai). Traces are exported over HTTP (OTLP/HTTP) on the port specified by `LMNR_HTTP_PORT` (default `8000`).
+Set `LMNR_PROJECT_API_KEY` and `LMNR_BASE_URL` in `.env` to enable trace export to [Laminar](https://www.lmnr.ai) when using the OpenHands agent (`-a oh`). Traces are exported over HTTP (OTLP/HTTP) on the port specified by `LMNR_HTTP_PORT` (default `8000`).
 
 > **Note:** gRPC export (the default in the Laminar SDK) does not work inside Docker sandboxes. The sbx proxy downgrades HTTP/2 to HTTP/1.x, which breaks gRPC. ola uses `force_http=True` to avoid this entirely.
 
