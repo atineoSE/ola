@@ -123,6 +123,22 @@ ola-policy-review() {
   [ "$missing" -eq 0 ] || return 1
 }
 
+# Copy host ~/.claude/.credentials.json into a running sandbox.
+# Usage: _ola_inject_credentials <sandbox_name> <host_credentials_path>
+_ola_inject_credentials() {
+  local name="$1" cred_src="$2"
+  if [ ! -f "$cred_src" ]; then
+    echo "Warning: $cred_src not found — Claude auth may fail inside sandbox." >&2
+    echo "Run 'claude' on the host first to authenticate, then re-run ola-sandbox." >&2
+    return 1
+  fi
+  sbx exec "$name" bash -c 'mkdir -p ~/.claude' 2>/dev/null
+  sbx cp "$cred_src" "$name:/home/user/.claude/.credentials.json" 2>/dev/null || {
+    echo "Warning: failed to copy credentials into sandbox." >&2
+    return 1
+  }
+}
+
 ola-sandbox() {
   local name="${1:?Usage: ola-sandbox <sandbox_name>}"
   local code_dir="$(pwd)"
@@ -133,8 +149,12 @@ ola-sandbox() {
     return 1
   fi
 
+  local cred_src="$HOME/.claude/.credentials.json"
+
   # Reconnect if sandbox already exists
   if sbx ls 2>/dev/null | grep -q "$name"; then
+    # Refresh credentials on reconnect
+    _ola_inject_credentials "$name" "$cred_src"
     sbx run claude --name "$name"
     return
   fi
@@ -146,9 +166,27 @@ ola-sandbox() {
   ola-policy-sync "$agent_dir"
 
   # Create and run with custom template + read-only agent mount
-  # sbx handles proxy, credentials (via sbx secret), and network policy (balanced mode)
+  # sbx handles proxy and network policy (balanced mode)
+  # Credentials are copied in after sandbox starts (OAuth token from host)
   sbx run claude \
     --name "$name" \
     --template "${OLA_SBX_IMAGE:-docker.io/ola/ola-sbx:latest}" \
-    "$code_dir" "$agent_dir:ro"
+    "$code_dir" "$agent_dir:ro" &
+  local sbx_pid=$!
+
+  # Wait for sandbox to be ready, then inject credentials
+  local elapsed=0
+  while ! sbx ls 2>/dev/null | grep -q "$name"; do
+    if [ $elapsed -ge 60 ]; then
+      echo "Warning: sandbox not ready after 60s, skipping credential injection" >&2
+      break
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+
+  _ola_inject_credentials "$name" "$cred_src"
+
+  # Bring sbx run back to foreground
+  wait "$sbx_pid"
 }

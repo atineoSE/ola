@@ -92,7 +92,7 @@ class ClaudeCodeAgent(Agent):
             return self._run_once(prompt, workdir, state_dir)
         except AuthenticationError:
             return AgentResponse(
-                output="Authentication failed. Run `sbx secret set -g anthropic` on the host.",
+                output="Authentication failed. Run `ola-sandbox <name>` to refresh credentials (copies ~/.claude/.credentials.json into sandbox).",
                 success=False,
             )
 

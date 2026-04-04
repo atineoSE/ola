@@ -152,57 +152,44 @@ assert_contains "7.1k: oh alias exists" "$ALIASES" "oh="
 kill "$SBX_PID" 2>/dev/null || true
 wait "$SBX_PID" 2>/dev/null || true
 
-# ===== 7.2 Verify authentication via sbx secret =====
+# ===== 7.2 Verify authentication via .credentials.json =====
 echo ""
-echo "=== 7.2: Authentication via sbx secret (no .credentials.json) ==="
+echo "=== 7.2: Authentication via .credentials.json copy ==="
 
-# Test: no .credentials.json inside the sandbox
-CRED_FILE="$(sbx exec "$SBX_NAME" bash -c 'ls -a /home/user/.claude/.credentials.json 2>/dev/null || echo NOT_FOUND' 2>/dev/null)" || true
-if echo "$CRED_FILE" | grep -q "NOT_FOUND"; then
-  pass "7.2a: no .credentials.json inside sandbox"
-else
-  fail "7.2a: no .credentials.json inside sandbox (file exists)"
-fi
+# Inject credentials into the sandbox (simulates what ola-sandbox does)
+HOST_CRED="$HOME/.claude/.credentials.json"
+if [ -f "$HOST_CRED" ]; then
+  sbx exec "$SBX_NAME" bash -c 'mkdir -p ~/.claude' 2>/dev/null || true
+  sbx cp "$HOST_CRED" "$SBX_NAME:/home/user/.claude/.credentials.json" 2>/dev/null || true
 
-# Test: no .credentials.json anywhere in the home directory
-CRED_FIND="$(sbx exec "$SBX_NAME" bash -c 'find /home/user -name .credentials.json -type f 2>/dev/null | head -1' 2>/dev/null)" || true
-if [ -z "$CRED_FIND" ]; then
-  pass "7.2b: no .credentials.json anywhere in home dir"
-else
-  fail "7.2b: no .credentials.json anywhere in home dir (found: $CRED_FIND)"
-fi
+  # Test: .credentials.json exists inside the sandbox after copy
+  CRED_CHECK="$(sbx exec "$SBX_NAME" bash -c 'test -f ~/.claude/.credentials.json && echo FOUND || echo NOT_FOUND' 2>/dev/null)" || true
+  if [ "$CRED_CHECK" = "FOUND" ]; then
+    pass "7.2a: .credentials.json copied into sandbox"
+  else
+    fail "7.2a: .credentials.json copied into sandbox (file not found after copy)"
+  fi
 
-# Test: sbx secret has anthropic key configured (proxy will inject it)
-# We check this on the host — sbx secret is a host-side concept
-SECRET_LS="$(sbx secret ls 2>/dev/null)" || true
-if echo "$SECRET_LS" | grep -qi "anthropic"; then
-  pass "7.2c: anthropic secret is configured in sbx"
-else
-  skip "7.2c: anthropic secret not configured (run 'sbx secret set -g anthropic' to enable)"
-fi
-
-# Test: claude can authenticate (quick prompt that exercises the API)
-# Use a minimal prompt and short timeout — we just need to see it doesn't fail with auth error
-if echo "$SECRET_LS" | grep -qi "anthropic"; then
+  # Test: claude can authenticate (quick prompt that exercises the API via OAuth token)
   AUTH_OUTPUT="$(timeout 30 sbx exec "$SBX_NAME" claude -p 'Reply with exactly: AUTH_OK' --output-format text 2>&1)" || true
   if echo "$AUTH_OUTPUT" | grep -q "AUTH_OK"; then
-    pass "7.2d: claude authenticated successfully via sbx secret"
+    pass "7.2b: claude authenticated successfully via .credentials.json"
   elif echo "$AUTH_OUTPUT" | grep -qi "authentication.failed\|authentication_failed\|unauthorized"; then
-    fail "7.2d: claude authentication failed (credentials not injected by proxy)"
+    fail "7.2b: claude authentication failed (OAuth token may be expired — re-run 'claude' on host)"
   else
-    # Could be a timeout or other transient issue — skip rather than fail
-    skip "7.2d: claude auth test inconclusive (output: ${AUTH_OUTPUT:0:120})"
+    skip "7.2b: claude auth test inconclusive (output: ${AUTH_OUTPUT:0:120})"
   fi
 else
-  skip "7.2d: claude auth test skipped (no anthropic secret configured)"
+  skip "7.2a: host ~/.claude/.credentials.json not found (run 'claude' on host first)"
+  skip "7.2b: claude auth test skipped (no host credentials)"
 fi
 
-# Test: ANTHROPIC_API_KEY env var is NOT set inside sandbox (proxy injects at network level)
+# Test: ANTHROPIC_API_KEY env var is NOT set inside sandbox (auth is file-based, not env-based)
 API_KEY_VAR="$(sbx exec "$SBX_NAME" bash -c 'echo "${ANTHROPIC_API_KEY:-UNSET}"' 2>/dev/null)" || true
 if [ "$API_KEY_VAR" = "UNSET" ] || [ -z "$API_KEY_VAR" ]; then
-  pass "7.2e: ANTHROPIC_API_KEY not leaked into sandbox env"
+  pass "7.2c: ANTHROPIC_API_KEY not set in sandbox env (auth is file-based)"
 else
-  fail "7.2e: ANTHROPIC_API_KEY not leaked into sandbox env (variable is set)"
+  fail "7.2c: ANTHROPIC_API_KEY not set in sandbox env (variable is set)"
 fi
 
 # ===== 7.7 Verify reconnection =====

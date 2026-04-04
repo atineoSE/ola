@@ -59,12 +59,14 @@ Run `ola` inside a Docker sandbox using [`sbx`](https://docs.docker.com/sandbox/
 Set up credentials and network policy once:
 
 ```bash
-# Store your Anthropic API key in the OS keychain (never enters the VM)
-sbx secret set -g anthropic
+# Authenticate Claude on the host (creates ~/.claude/.credentials.json via OAuth)
+claude
 
 # Set default network policy to balanced (deny-all + common dev allowlist)
 sbx policy set-default balanced
 ```
+
+> **Note:** We use a Claude subscription (OAuth), not an API key. The `ola-sandbox` helper copies `~/.claude/.credentials.json` from your host into the sandbox on each creation/reconnection.
 
 ### Build the template image
 
@@ -109,7 +111,7 @@ ola-sandbox my-sandbox
 This will:
 1. Apply project-specific network allowlist from `agent/whitelist.txt` (additive to balanced policy)
 2. Create a sandbox with `code/` as primary workspace and `agent/` mounted read-only
-3. Credentials are injected at the proxy level via `sbx secret` — no file copying needed
+3. Credentials are copied from host `~/.claude/.credentials.json` into the sandbox (OAuth token)
 
 Running `ola-sandbox my-sandbox` again will reconnect to the existing sandbox.
 

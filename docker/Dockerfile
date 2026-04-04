@@ -1,4 +1,19 @@
-FROM docker/sandbox-templates:claude-code
+FROM docker/sandbox-templates:shell
+
+# Install Node.js (required for Claude Code CLI)
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource.sh && \
+    sudo bash /tmp/nodesource.sh && \
+    sudo apt-get install -y nodejs && \
+    rm /tmp/nodesource.sh
+
+# Install Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
+# Claude Code config: bypass onboarding and enable skip-permissions
+RUN mkdir -p ~/.claude && \
+    echo '{"completedOnboarding": true}' > ~/.claude/.claude.json && \
+    mkdir -p ~/.claude/settings && \
+    echo '{"permissions":{"allow":["*"],"deny":[]}}' > ~/.claude/settings/settings.json
 
 # Install uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
@@ -20,7 +35,7 @@ RUN git config --global user.name "ola" && \
 RUN echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
 
 # OpenHands: on login, install config from workspace and register alias
-RUN echo 'mkdir -p ~/.openhands' >> ~/.bashrc && \
+RUN mkdir -p ~/.openhands && \
     echo 'for f in agent_settings.json cli_config.json; do [ -f ".oh-$f" ] && mv ".oh-$f" ~/.openhands/"$f"; done' >> ~/.bashrc && \
     echo "alias oh='openhands --llm-approve --exit-without-confirmation'" >> ~/.bashrc
 
