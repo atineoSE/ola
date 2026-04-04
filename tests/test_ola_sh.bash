@@ -188,6 +188,14 @@ assert_eq "review sbx failure" "1" "$(echo "$output" | grep -c 'failed to list')
 # Reset sbx mock for sandbox tests
 SBX_LOG="$TMPDIR_TEST/sbx_calls.log"
 
+# Create a fake credentials file so _ola_inject_credentials doesn't warn
+FAKE_CLAUDE_DIR="$TMPDIR_TEST/fake_home/.claude"
+mkdir -p "$FAKE_CLAUDE_DIR"
+echo '{"oauth_token":"fake"}' > "$FAKE_CLAUDE_DIR/.credentials.json"
+# Override HOME so ola-sandbox finds the fake credentials
+ORIG_HOME="$HOME"
+export HOME="$TMPDIR_TEST/fake_home"
+
 # --- Test: error when agent dir is missing ---
 ISOLATED="$TMPDIR_TEST/isolated/deep/nested"
 mkdir -p "$ISOLATED"
@@ -204,6 +212,7 @@ docs.docker.com
 EOF
 
 # Mock sbx: ls returns a match, so ola-sandbox should reconnect
+# Also handle exec/cp from _ola_inject_credentials
 sbx() {
   echo "sbx $*" >> "$SBX_LOG"
   if [ "$1" = "ls" ]; then
@@ -219,33 +228,50 @@ mkdir -p code && cd code
 ola-sandbox my-sandbox
 popd > /dev/null
 
-# Should call: sbx ls, then sbx run claude --name my-sandbox (no policy setup)
+# Should call: sbx ls, sbx exec (mkdir), sbx cp (credentials), sbx run claude --name
 assert_eq "sandbox: reconnect calls sbx ls" \
   "sbx ls" \
   "$(sed -n '1p' "$SBX_LOG")"
+assert_eq "sandbox: reconnect injects credentials" \
+  "1" "$(grep -c 'sbx cp' "$SBX_LOG")"
+# Last call should be sbx run claude --name
+LAST_LINE="$(tail -1 "$SBX_LOG")"
 assert_eq "sandbox: reconnect calls sbx run" \
-  "sbx run claude --name my-sandbox" \
-  "$(sed -n '2p' "$SBX_LOG")"
-LINE_COUNT="$(wc -l < "$SBX_LOG" | tr -d ' ')"
-assert_eq "sandbox: reconnect only 2 sbx calls" "2" "$LINE_COUNT"
+  "1" "$(echo "$LAST_LINE" | grep -c 'sbx run claude --name my-sandbox')"
 
 # --- Test: create new sandbox ---
-# Mock sbx: ls returns no match, so ola-sandbox should create
+# Mock sbx: first ls returns no match; subsequent ls calls return any sandbox name
+# (simulates sandbox becoming ready after sbx run starts)
+SBX_LS_CALL_COUNT_FILE="$TMPDIR_TEST/ls_call_count"
+SBX_LS_SANDBOX_NAME_FILE="$TMPDIR_TEST/ls_sandbox_name"
 sbx() {
   echo "sbx $*" >> "$SBX_LOG"
   if [ "$1" = "ls" ]; then
-    echo "other-sandbox  running  1h"
+    local count sandbox_name
+    count="$(cat "$SBX_LS_CALL_COUNT_FILE" 2>/dev/null || echo 0)"
+    sandbox_name="$(cat "$SBX_LS_SANDBOX_NAME_FILE" 2>/dev/null || echo unknown)"
+    count=$((count + 1))
+    echo "$count" > "$SBX_LS_CALL_COUNT_FILE"
+    if [ "$count" -ge 2 ]; then
+      echo "$sandbox_name  running  0s"
+    else
+      echo "other-sandbox  running  1h"
+    fi
     return 0
   fi
 }
 export -f sbx
 
 > "$SBX_LOG"
+echo "0" > "$SBX_LS_CALL_COUNT_FILE"
+echo "new-sandbox" > "$SBX_LS_SANDBOX_NAME_FILE"
 pushd "$SBX_SANDBOX_DIR/code" > /dev/null
 ola-sandbox new-sandbox
 popd > /dev/null
 
-# Should call: sbx ls, sbx policy set-default balanced, ola-policy-sync calls, sbx run claude ...
+# Should call: sbx ls (no match), sbx policy set-default balanced,
+# ola-policy-sync calls, sbx run claude (backgrounded),
+# sbx ls (poll → match), sbx exec + sbx cp (credentials), wait
 assert_eq "sandbox: new calls sbx ls" \
   "sbx ls" \
   "$(sed -n '1p' "$SBX_LOG")"
@@ -256,24 +282,30 @@ assert_eq "sandbox: new sets balanced policy" \
 assert_eq "sandbox: new syncs whitelist" \
   "sbx policy allow network docs.docker.com,*.docs.docker.com" \
   "$(sed -n '3p' "$SBX_LOG")"
-# Last call should be sbx run claude with template and mounts
-LAST_LINE="$(tail -1 "$SBX_LOG")"
+# Check sbx run was called with correct args
 assert_eq "sandbox: new calls sbx run with --name" \
-  "1" "$(echo "$LAST_LINE" | grep -c '\-\-name new-sandbox')"
+  "1" "$(grep -c '\-\-name new-sandbox' "$SBX_LOG")"
 assert_eq "sandbox: new calls sbx run with --template" \
-  "1" "$(echo "$LAST_LINE" | grep -c '\-\-template docker.io/ola/ola-sbx:latest')"
+  "1" "$(grep -c '\-\-template docker.io/ola/ola-sbx:latest' "$SBX_LOG")"
 assert_eq "sandbox: new calls sbx run with agent:ro" \
-  "1" "$(echo "$LAST_LINE" | grep -c 'agent:ro')"
+  "1" "$(grep -c 'agent:ro' "$SBX_LOG")"
+# Credentials were injected
+assert_eq "sandbox: new injects credentials" \
+  "1" "$(grep -c 'sbx cp' "$SBX_LOG")"
 
 # --- Test: OLA_SBX_IMAGE override ---
 > "$SBX_LOG"
+echo "0" > "$SBX_LS_CALL_COUNT_FILE"
+echo "custom-sandbox" > "$SBX_LS_SANDBOX_NAME_FILE"
 pushd "$SBX_SANDBOX_DIR/code" > /dev/null
 OLA_SBX_IMAGE="myregistry.io/custom:v2" ola-sandbox custom-sandbox
 popd > /dev/null
 
-LAST_LINE="$(tail -1 "$SBX_LOG")"
 assert_eq "sandbox: custom image override" \
-  "1" "$(echo "$LAST_LINE" | grep -c '\-\-template myregistry.io/custom:v2')"
+  "1" "$(grep -c '\-\-template myregistry.io/custom:v2' "$SBX_LOG")"
+
+# Restore HOME
+export HOME="$ORIG_HOME"
 
 # ===== Summary =====
 echo ""
