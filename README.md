@@ -73,7 +73,7 @@ sbx policy set-default balanced
 Use `--no-cache` to ensure the latest versions of Claude Code, OpenHands, and ola are installed:
 
 ```bash
-docker build --no-cache -f docker/Dockerfile -t docker.io/ola/ola-sbx:latest --push .
+docker build -f docker/Dockerfile -t docker.io/ola/ola-sbx:latest .
 ```
 
 ### Shell helpers
