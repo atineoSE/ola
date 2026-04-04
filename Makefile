@@ -9,4 +9,4 @@ test-sh: ## Run shell unit tests (requires bats: npm install -g bats bats-suppor
 	bats tests/test_ola_sh.bats
 
 test-integration: ## Run sbx integration tests (requires sbx)
-	bash tests/test_sbx_integration.bash
+	bats tests/test_sbx_integration.bats
