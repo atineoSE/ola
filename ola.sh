@@ -170,7 +170,7 @@ ola-sandbox() {
   # Credentials are copied in after sandbox starts (OAuth token from host)
   sbx run claude \
     --name "$name" \
-    --template "${OLA_SBX_IMAGE:-docker.io/ola/ola-sbx:latest}" \
+    --template "${OLA_SBX_IMAGE:-ola/ola:latest}" \
     "$code_dir" "$agent_dir:ro" &
   local sbx_pid=$!
 

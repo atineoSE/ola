@@ -73,7 +73,7 @@ sbx policy set-default balanced
 Use `--no-cache` to ensure the latest versions of Claude Code, OpenHands, and ola are installed:
 
 ```bash
-docker build -f docker/Dockerfile -t docker.io/ola/ola-sbx:latest .
+docker build -f docker/Dockerfile -t ola/ola:latest .
 ```
 
 ### Shell helpers
@@ -126,7 +126,7 @@ ola -a cc -l 5
 If you prefer not to use the helper:
 
 ```bash
-sbx run --name my-sandbox --template docker.io/ola/ola-sbx:latest claude . ../agent:ro
+sbx run --name my-sandbox --template ola/ola:latest claude . ../agent:ro
 ```
 
 Place a `.env` file in the workspace for OpenHands env vars (`LLM_API_KEY`, etc.).
