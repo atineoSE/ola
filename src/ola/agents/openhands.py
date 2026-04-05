@@ -100,6 +100,13 @@ class OpenHandsAgent(Agent):
         state_dir: str | None = None,
         labels: dict[str, str] | None = None,
     ) -> AgentResponse:
+        # Initialize Laminar BEFORE importing OpenHands SDK. The SDK
+        # auto-instruments via lmnr at import time — if it sees
+        # LMNR_PROJECT_API_KEY it sets up a gRPC exporter that breaks
+        # behind the sbx proxy. Our init uses force_http=True and pops
+        # the key so the SDK's auto-instrumentation is a no-op.
+        _init_laminar()
+
         try:
             from openhands.sdk import (
                 LLM,
@@ -180,7 +187,6 @@ class OpenHandsAgent(Agent):
         folder = labels.get("folder", "")
         phase = labels.get("phase", "")
 
-        _init_laminar()
         if _lmnr_available:
             return self._run_with_tracing(
                 conversation,
