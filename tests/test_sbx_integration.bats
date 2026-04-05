@@ -45,6 +45,7 @@ EOF
   sbx create shell \
     --name "$SBX_NAME" \
     "${template_flag[@]}" \
+    -m 4g \
     -q \
     "$TMPDIR_TEST" || {
     rm -rf "$TMPDIR_TEST"
@@ -86,8 +87,7 @@ setup() {
 }
 
 @test "7.1e: agent dir is writable" {
-  _sbx_exec touch "$AGENT_DIR/test-write"
-  _sbx_exec rm "$AGENT_DIR/test-write"
+  _sbx_exec bash -c "touch $AGENT_DIR/test-write && rm $AGENT_DIR/test-write"
 }
 
 @test "7.1f: claude is installed" {
@@ -119,11 +119,11 @@ setup() {
 }
 
 @test "7.1l: claude-yolo alias exists" {
-  _sbx_exec bash -ic 'alias' | grep -q "claude-yolo"
+  _sbx_exec bash -c 'grep -q "claude-yolo" $HOME/.bashrc'
 }
 
 @test "7.1m: oh alias exists" {
-  _sbx_exec bash -ic 'alias' | grep -q "oh="
+  _sbx_exec bash -c 'grep -q "alias oh=" $HOME/.bashrc'
 }
 
 # ===== 7.2 Authentication via .credentials.json =====
@@ -132,12 +132,12 @@ setup() {
   local host_cred="$HOME/.claude/.credentials.json"
   [ -f "$host_cred" ] || skip "no host credentials (~/.claude/.credentials.json)"
 
-  _sbx_exec bash -c 'mkdir -p ~/.claude'
+  _sbx_exec bash -c 'mkdir -p $HOME/.claude'
   local cred_data
   cred_data="$(base64 < "$host_cred")"
-  _sbx_exec bash -c "echo '$cred_data' | base64 -d > ~/.claude/.credentials.json"
+  _sbx_exec bash -c "echo '$cred_data' | base64 -d > \$HOME/.claude/.credentials.json"
 
-  result="$(_sbx_exec bash -c 'test -f ~/.claude/.credentials.json && echo FOUND || echo NOT_FOUND')"
+  result="$(_sbx_exec bash -c 'test -f $HOME/.claude/.credentials.json && echo FOUND || echo NOT_FOUND')"
   [ "$result" = "FOUND" ]
 }
 
@@ -146,7 +146,7 @@ setup() {
   [ -f "$host_cred" ] || skip "no host credentials"
 
   # Ensure credentials are in place
-  _sbx_exec bash -c 'test -f ~/.claude/.credentials.json' || skip "credentials not copied (run 7.2a first)"
+  _sbx_exec bash -c 'test -f $HOME/.claude/.credentials.json' || skip "credentials not copied (run 7.2a first)"
 
   result="$(timeout 30 sbx exec "$SBX_NAME" claude -p 'hi' --output-format text 2>&1)" || true
   if echo "$result" | grep -qi "authentication.failed\|authentication_failed\|unauthorized"; then
@@ -183,6 +183,7 @@ setup() {
   # Restart — sbx create re-creates a stopped sandbox
   sbx create shell \
     --name "$SBX_NAME" \
+    -m 4g \
     -q \
     "$TMPDIR_TEST" 2>/dev/null || true
 
