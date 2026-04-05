@@ -153,10 +153,10 @@ _ola_inject_file() {
     return 1
   fi
   local dir="${dest%/*}"
-  sbx exec "$name" bash -c "mkdir -p '$dir'" 2>/dev/null
+  sbx exec "$name" bash -c "mkdir -p $dir" 2>/dev/null
   local data
   data="$(base64 < "$src")"
-  sbx exec "$name" bash -c "echo '$data' | base64 -d > '$dest'" 2>/dev/null
+  sbx exec "$name" bash -c "echo '$data' | base64 -d > $dest" 2>/dev/null
 }
 
 # Inject agent credentials and config into a running sandbox.
@@ -165,14 +165,14 @@ _ola_inject_credentials() {
 
   # Claude Code: OAuth credentials from Keychain
   local cc_cred="$HOME/.claude/.credentials.json"
-  if ! _ola_inject_file "$name" "$cc_cred" "~/.claude/.credentials.json"; then
+  if ! _ola_inject_file "$name" "$cc_cred" "\$HOME/.claude/.credentials.json"; then
     echo "Warning: $cc_cred not found — run 'cc-credentials' or 'claude' on the host first." >&2
   fi
 
   # OpenHands: agent settings and CLI config
   local oh_dir="$HOME/.openhands"
-  _ola_inject_file "$name" "$oh_dir/agent_settings.json" "~/.openhands/agent_settings.json" || true
-  _ola_inject_file "$name" "$oh_dir/cli_config.json" "~/.openhands/cli_config.json" || true
+  _ola_inject_file "$name" "$oh_dir/agent_settings.json" "\$HOME/.openhands/agent_settings.json" || true
+  _ola_inject_file "$name" "$oh_dir/cli_config.json" "\$HOME/.openhands/cli_config.json" || true
 }
 
 ola-sandbox() {
