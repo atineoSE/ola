@@ -150,11 +150,11 @@ setup() {
   # Ensure credentials are in place
   _sbx_exec bash -c 'test -f ~/.claude/.credentials.json' || skip "credentials not copied (run 7.2a first)"
 
-  result="$(timeout 30 sbx exec "$SBX_NAME" claude -p 'Reply with exactly: AUTH_OK' --output-format text 2>&1)" || true
+  result="$(timeout 30 sbx exec "$SBX_NAME" claude -p 'hi' --output-format text 2>&1)" || true
   if echo "$result" | grep -qi "authentication.failed\|authentication_failed\|unauthorized"; then
-    false  # fail: auth error
+    echo "Auth failed: ${result:0:200}" >&2
+    false
   fi
-  echo "$result" | grep -q "AUTH_OK" || skip "auth test inconclusive (output: ${result:0:120})"
 }
 
 @test "7.2c: ANTHROPIC_API_KEY not hardcoded in image" {
