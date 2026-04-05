@@ -42,14 +42,15 @@ EOF
     template_flag=(--template "$IMAGE")
   fi
 
-  sbx create shell \
+  local create_err
+  create_err="$(sbx create shell \
     --name "$SBX_NAME" \
     "${template_flag[@]}" \
     -m 4g \
     -q \
-    "$TMPDIR_TEST" || {
+    "$TMPDIR_TEST" 2>&1)" || {
     rm -rf "$TMPDIR_TEST"
-    echo "Sandbox creation failed" >&2
+    echo "$create_err" >&2
     return 1
   }
 }
@@ -180,23 +181,7 @@ setup() {
   sbx stop "$SBX_NAME" 2>/dev/null
   sleep 2
 
-  # Restart — sbx create re-creates a stopped sandbox
-  sbx create shell \
-    --name "$SBX_NAME" \
-    -m 4g \
-    -q \
-    "$TMPDIR_TEST" 2>/dev/null || true
-
-  # Wait for it to come back
-  local elapsed=0
-  while ! _sbx_exec echo ready 2>/dev/null; do
-    if [ $elapsed -ge 60 ]; then
-      skip "sandbox did not restart within 60s"
-    fi
-    sleep 2
-    elapsed=$((elapsed + 2))
-  done
-
+  # sbx exec auto-starts a stopped sandbox
   result="$(_sbx_exec cat /tmp/persist-check.txt)"
   [[ "$result" == *"persistence-test"* ]]
 }
