@@ -75,7 +75,7 @@ sbx policy set-default balanced
 The template extends `docker/sandbox-templates:shell` and must be pushed to an OCI registry — sbx pulls templates from a registry directly and does not use the local Docker daemon's image store.
 
 ```bash
-docker build -f docker/Dockerfile -t docker.io/<your-user>/ola:latest --push .
+docker build -f docker/Dockerfile -t ghcr.io/<your-user>/ola:latest --push .
 ```
 
 Add `--no-cache` to force fresh installs of Claude Code, OpenHands, and ola.
@@ -131,7 +131,7 @@ If you prefer not to use the helper:
 
 ```bash
 cd project/src
-sbx create shell --name my-sandbox --template docker.io/<your-user>/ola:latest . ../agent:ro
+sbx create shell --name my-sandbox --template ghcr.io/<your-user>/ola:latest . ../agent:ro
 sbx run my-sandbox
 ```
 
