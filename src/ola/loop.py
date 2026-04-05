@@ -149,6 +149,14 @@ def run_outer_loop(
     limit: int | None = None,
 ) -> None:
     """Run the outer loop over plan subfolders."""
+    # Load agent-folder .env (LLM_API_KEY, LMNR_*, etc.) before running agents
+    env_file = plan_path / ".env"
+    if env_file.is_file():
+        from dotenv import load_dotenv
+
+        load_dotenv(env_file, override=True)
+        logger.info("Loaded environment from %s", env_file)
+
     _ensure_git(plan_path)
 
     folders = discover_plan_folders(plan_path)

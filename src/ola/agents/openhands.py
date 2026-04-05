@@ -4,14 +4,10 @@ import shutil
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from ola.agents.base import Agent, AgentResponse
 from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
-
-load_dotenv(override=True)
 
 _lmnr_available = False
 _lmnr_initialized = False
