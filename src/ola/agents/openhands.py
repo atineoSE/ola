@@ -188,15 +188,20 @@ class OpenHandsAgent(Agent):
         phase = labels.get("phase", "")
 
         if _lmnr_available:
-            return self._run_with_tracing(
-                conversation,
-                prompt,
-                model_name,
-                folder,
-                phase,
-                get_agent_final_response,
-                tracker,
-            )
+            try:
+                return self._run_with_tracing(
+                    conversation,
+                    prompt,
+                    model_name,
+                    folder,
+                    phase,
+                    get_agent_final_response,
+                    tracker,
+                )
+            except Exception:
+                logger.warning(
+                    "Tracing failed, retrying without tracing", exc_info=True
+                )
 
         conversation.send_message(prompt)
         conversation.run()
