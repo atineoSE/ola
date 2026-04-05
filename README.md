@@ -1,6 +1,6 @@
 # ola
 
-Outer Loop of Agents — runs coding agents in a loop over structured plan folders.
+Outer Loop of Agents — A harness to run long-horizon agentic loops
 
 ## Install
 
