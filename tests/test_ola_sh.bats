@@ -44,6 +44,9 @@ teardown_file() {
 }
 
 setup() {
+  # Isolate HOME so real host config doesn't leak into tests
+  export HOME="$TMPDIR_TEST/fake_home"
+
   # Re-source ola.sh (functions don't survive subshells in bats)
   local ola_sh="$(cd "$BATS_TEST_DIRNAME/.." && pwd)/ola.sh"
   eval "$(grep -v '%x' "$ola_sh")"
@@ -224,7 +227,6 @@ EOF
 }
 
 @test "sandbox: reconnect to existing sandbox" {
-  export HOME="$TMPDIR_TEST/fake_home"
   mkdir -p "$TMPDIR_TEST/sbx_reconnect/agent" "$TMPDIR_TEST/sbx_reconnect/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_reconnect/agent/whitelist.txt"
 
@@ -270,7 +272,6 @@ _mock_sbx_new_sandbox() {
 }
 
 @test "sandbox: create new sandbox" {
-  export HOME="$TMPDIR_TEST/fake_home"
   mkdir -p "$TMPDIR_TEST/sbx_new/agent" "$TMPDIR_TEST/sbx_new/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_new/agent/whitelist.txt"
 
@@ -291,7 +292,6 @@ _mock_sbx_new_sandbox() {
 }
 
 @test "sandbox: OLA_SBX_IMAGE override" {
-  export HOME="$TMPDIR_TEST/fake_home"
   mkdir -p "$TMPDIR_TEST/sbx_custom/agent" "$TMPDIR_TEST/sbx_custom/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_custom/agent/whitelist.txt"
 

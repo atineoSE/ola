@@ -83,6 +83,7 @@ ola-policy-sync() {
     done < "$env_file"
   fi
 
+
   echo "Synced $count domain(s) to sbx policy."
 }
 
@@ -202,7 +203,7 @@ ola-sandbox() {
   sbx policy set-default balanced 2>/dev/null || true
 
   # Apply project-specific network allowlist (additive to balanced policy)
-  ola-policy-sync "$agent_dir"
+  ola-policy-sync "$agent_dir" "$agent_dir/.env"
 
   # Create sandbox non-interactively, then attach.
   # The template extends docker/sandbox-templates:shell, so the agent is "shell".

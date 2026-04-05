@@ -39,6 +39,9 @@ def _ensure_git(cwd: Path) -> None:
     _git(cwd, "config", "--global", "--add", "safe.directory", str(cwd))
     if not (cwd / ".git").exists():
         logger.info("Initialising git repository in %s", cwd)
+        gitignore = cwd / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(".env\n")
         _git(cwd, "init")
         _git_commit(cwd, "Initial commit")
 

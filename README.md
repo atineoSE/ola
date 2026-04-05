@@ -104,6 +104,7 @@ The expected directory layout is:
 project/
   src/     # your source code (must be a git repo)
   agent/   # ola agent folder (git repo created by ola if missing)
+    .env   # LLM_BASE_URL, LMNR_BASE_URL, etc. (gitignored)
 ```
 
 From the `src` directory:
