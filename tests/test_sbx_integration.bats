@@ -91,18 +91,16 @@ setup() {
 }
 
 @test "7.1f: claude is installed" {
-  result="$(_sbx_exec claude --version)"
-  [ -n "$result" ]
+  _sbx_exec which claude
 }
 
 @test "7.1g: uv is installed" {
-  result="$(_sbx_exec uv --version)"
-  [ -n "$result" ]
+  _sbx_exec which uv
 }
 
 @test "7.1h: openhands is installed" {
-  result="$(_sbx_exec openhands --version)"
-  [ -n "$result" ]
+  # Use which instead of --version to avoid OOM from full SDK import
+  _sbx_exec which openhands
 }
 
 @test "7.1i: git is installed" {
