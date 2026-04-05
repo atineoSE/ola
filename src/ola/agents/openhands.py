@@ -23,7 +23,7 @@ def _init_laminar():
         from lmnr import Laminar
 
         _lmnr_base = os.getenv("LMNR_BASE_URL", "http://localhost")
-        _lmnr_key = os.getenv("LMNR_PROJECT_API_KEY")
+        _lmnr_key = os.environ.pop("LMNR_PROJECT_API_KEY", None)
         if _lmnr_key:
             Laminar.initialize(
                 project_api_key=_lmnr_key,

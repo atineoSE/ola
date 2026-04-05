@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 import subprocess
 import time
 from pathlib import Path
@@ -157,18 +156,6 @@ def run_outer_loop(
 
         load_dotenv(env_file, override=True)
         logger.info("Loaded environment from %s", env_file)
-
-    # If Laminar is configured, ensure the base URL and HTTP port are set so
-    # any initialization (ours or the OpenHands SDK's) uses OTLP/HTTP instead
-    # of gRPC, which breaks behind the sbx proxy.
-    if os.getenv("LMNR_PROJECT_API_KEY"):
-        os.environ.setdefault("LMNR_BASE_URL", "http://localhost")
-        os.environ.setdefault("LMNR_HTTP_PORT", "8000")
-        # Tell the OpenTelemetry SDK to use HTTP, not gRPC
-        port = os.environ["LMNR_HTTP_PORT"]
-        base = os.environ["LMNR_BASE_URL"]
-        os.environ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf"
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"{base}:{port}"
 
     _ensure_git(plan_path)
 
