@@ -228,6 +228,10 @@ EOF
   mkdir -p "$TMPDIR_TEST/sbx_reconnect/agent" "$TMPDIR_TEST/sbx_reconnect/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_reconnect/agent/whitelist.txt"
 
+  # Mock security (macOS Keychain) for cc-credentials
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+
   sbx() {
     echo "sbx $*" >> "$SBX_LOG"
     if [ "$1" = "ls" ]; then
@@ -247,6 +251,10 @@ EOF
 
 _mock_sbx_new_sandbox() {
   local sandbox_name="$1"
+
+  # Mock security (macOS Keychain) for cc-credentials
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
 
   eval "
   sbx() {

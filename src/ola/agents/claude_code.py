@@ -13,7 +13,7 @@ from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
-_BOOTSTRAP_FILES = (".claude.json", "settings.json")
+_BOOTSTRAP_FILES = (".credentials.json", ".claude.json", "settings.json")
 _STATUS_LINES = 3
 _MAX_LINE_LEN = 72
 

@@ -1,10 +1,32 @@
-# ola shell helpers — ola-sandbox, ola-policy-sync
+# ola shell helpers — cc-credentials, ola-sandbox, ola-policy-sync
 # Symlink to ~/.ola.sh and source from .zshrc:
 #   ln -sf /path/to/ola/ola.sh ~/.ola.sh
 #   [ -f ~/.ola.sh ] && source ~/.ola.sh
 
 # Resolve the real directory of this script (follows symlinks)
 _OLA_DIR="${${(%):-%x}:A:h}"
+
+# Restore ~/.claude/.credentials.json from macOS Keychain.
+# Claude Code stores its OAuth token in the Keychain; this extracts it to a
+# file so it can be copied into sandboxes.
+cc-credentials() {
+  local cred_file="$HOME/.claude/.credentials.json"
+  local service="Claude Code-credentials"
+  local account="$(whoami)"
+
+  local data
+  data="$(security find-generic-password -s "$service" -a "$account" -w 2>/dev/null)"
+  if [ $? -ne 0 ] || [ -z "$data" ]; then
+    echo "Error: no credentials found in Keychain (service=$service, account=$account)" >&2
+    echo "Run 'claude' on the host first to authenticate via OAuth." >&2
+    return 1
+  fi
+
+  mkdir -p "$HOME/.claude"
+  printf '%s' "$data" > "$cred_file"
+  chmod 600 "$cred_file"
+  echo "Restored $cred_file from Keychain"
+}
 
 # Extract hostname from a URL string (strips scheme, port, path).
 # Usage: _ola_host_from_url "https://example.com:8080/path" → "example.com"
@@ -128,12 +150,11 @@ ola-policy-review() {
 _ola_inject_credentials() {
   local name="$1" cred_src="$2"
   if [ ! -f "$cred_src" ]; then
-    echo "Warning: $cred_src not found — Claude auth may fail inside sandbox." >&2
-    echo "Run 'claude' on the host first to authenticate, then re-run ola-sandbox." >&2
+    echo "Warning: $cred_src not found — run 'cc-credentials' or 'claude' on the host first." >&2
     return 1
   fi
   sbx exec "$name" bash -c 'mkdir -p ~/.claude' 2>/dev/null
-  sbx cp "$cred_src" "$name:/home/user/.claude/.credentials.json" 2>/dev/null || {
+  sbx cp "$cred_src" "$name:/home/agent/.claude/.credentials.json" 2>/dev/null || {
     echo "Warning: failed to copy credentials into sandbox." >&2
     return 1
   }
@@ -150,6 +171,9 @@ ola-sandbox() {
   fi
 
   local cred_src="$HOME/.claude/.credentials.json"
+
+  # Extract fresh credentials from Keychain
+  cc-credentials || true
 
   # Reconnect if sandbox already exists
   if sbx ls 2>/dev/null | grep -q "$name"; then
