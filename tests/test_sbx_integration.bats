@@ -3,12 +3,12 @@
 # These tests require a running sbx environment — skipped if sbx is not installed.
 #
 # Run:   bats tests/test_sbx_integration.bats
-# Env:   OLA_SBX_IMAGE — override template image (default: ghcr.io/atineose/ola:latest)
+# Env:   OLA_SBX_IMAGE — override template image (default: docker.io/atineose/ola:latest)
 #        SBX_TEST_TIMEOUT — seconds to wait for sandbox creation (default: 120)
 
 SBX_NAME="ola-integration-test-$$"
 TIMEOUT="${SBX_TEST_TIMEOUT:-120}"
-IMAGE="${OLA_SBX_IMAGE:-ghcr.io/atineose/ola:latest}"
+IMAGE="${OLA_SBX_IMAGE:-docker.io/atineose/ola:latest}"
 
 # --- Helpers ---
 

@@ -273,7 +273,7 @@ _mock_sbx_new_sandbox() {
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx ls" ]
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy set-default balanced" ]
   grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
-  grep -q 'sbx create shell --name new-sandbox --template ghcr.io/atineose/ola:latest -q' "$SBX_LOG"
+  grep -q "sbx create shell --name new-sandbox --template docker.io/$(whoami)/ola:latest -q" "$SBX_LOG"
   grep -q 'agent:ro' "$SBX_LOG"
   grep -q 'sbx cp' "$SBX_LOG"
   grep -q 'sbx run new-sandbox' "$SBX_LOG"

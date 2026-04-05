@@ -169,7 +169,7 @@ ola-sandbox() {
   # The template extends docker/sandbox-templates:shell, so the agent is "shell".
   # sbx pulls templates from a registry (not the local Docker daemon), so the
   # image must be pushed to a registry first (see README).
-  local image="${OLA_SBX_IMAGE:-ghcr.io/atineose/ola:latest}"
+  local image="${OLA_SBX_IMAGE:-docker.io/$(whoami)/ola:latest}"
 
   sbx create shell \
     --name "$name" \
