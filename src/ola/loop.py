@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -143,6 +144,26 @@ def _append_stats(
         f.write(json.dumps(record) + "\n")
 
 
+# LMNR env vars stashed here so _init_laminar can use them after they're
+# removed from the environment (prevents OpenHands SDK from auto-initing gRPC).
+_lmnr_stash: dict[str, str] = {}
+
+_LMNR_KEYS = ("LMNR_PROJECT_API_KEY", "LMNR_BASE_URL", "LMNR_HTTP_PORT")
+
+
+def _stash_lmnr_env() -> None:
+    """Pop LMNR_* from os.environ into _lmnr_stash."""
+    for key in _LMNR_KEYS:
+        val = os.environ.pop(key, None)
+        if val is not None:
+            _lmnr_stash[key] = val
+
+
+def get_lmnr_var(key: str, default: str | None = None) -> str | None:
+    """Read a LMNR var from the stash (preferred) or environment."""
+    return _lmnr_stash.get(key, os.getenv(key, default))
+
+
 def run_outer_loop(
     agent: Agent,
     plan_path: Path,
@@ -156,6 +177,11 @@ def run_outer_loop(
 
         load_dotenv(env_file, override=True)
         logger.info("Loaded environment from %s", env_file)
+
+    # Pop LMNR vars from environment so the OpenHands SDK doesn't
+    # auto-initialize Laminar with gRPC (which breaks in sbx proxies).
+    # ola's _init_laminar() handles initialization with force_http=True.
+    _stash_lmnr_env()
 
     _ensure_git(plan_path)
 

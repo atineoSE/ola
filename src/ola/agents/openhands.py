@@ -22,13 +22,15 @@ def _init_laminar():
     try:
         from lmnr import Laminar
 
-        _lmnr_base = os.getenv("LMNR_BASE_URL", "http://localhost")
-        _lmnr_key = os.getenv("LMNR_PROJECT_API_KEY")
+        from ola.loop import get_lmnr_var
+
+        _lmnr_base = get_lmnr_var("LMNR_BASE_URL", "http://localhost")
+        _lmnr_key = get_lmnr_var("LMNR_PROJECT_API_KEY")
         if _lmnr_key:
             Laminar.initialize(
                 project_api_key=_lmnr_key,
                 base_url=_lmnr_base,
-                http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
+                http_port=int(get_lmnr_var("LMNR_HTTP_PORT", "8000")),
                 # gRPC (default) breaks in sbx/docker sandboxes because the
                 # MITM proxy downgrades HTTP/2 → HTTP/1.x. Use OTLP/HTTP.
                 force_http=True,
