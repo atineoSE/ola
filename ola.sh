@@ -66,21 +66,25 @@ ola-policy-sync() {
     done < "$whitelist"
   fi
 
-  # 2. Sync hostnames from *_BASE_URL variables in .env
+  # 2. Source .env and sync hostnames from *_BASE_URL env vars
   if [ -f "$env_file" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      [[ -z "$line" || "$line" == \#* ]] && continue
-      # Match VAR_BASE_URL=value (with or without quotes)
-      if [[ "$line" =~ ^[A-Z_]*_BASE_URL=[\"\']?(https?://[^\"\']*)[\"\']?$ ]]; then
-        local url="${BASH_REMATCH[1]}"
-        local host
-        host="$(_ola_host_from_url "$url")"
-        if [ -n "$host" ] && [ "$host" != "localhost" ] && [[ "$host" != 127.* ]]; then
-          sbx policy allow network "$host,*.$host" 2>/dev/null
-          count=$((count + 1))
-        fi
+    local _ola_urls
+    _ola_urls="$(
+      set -a
+      source "$env_file" 2>/dev/null
+      env | grep '_BASE_URL=' | while IFS='=' read -r key val; do
+        echo "$val"
+      done
+    )"
+    local url host
+    for url in $_ola_urls; do
+      [[ "$url" == https://* || "$url" == http://* ]] || continue
+      host="$(_ola_host_from_url "$url")"
+      if [ -n "$host" ] && [ "$host" != "localhost" ] && [[ "$host" != 127.* ]]; then
+        sbx policy allow network "$host,*.$host" 2>/dev/null
+        count=$((count + 1))
       fi
-    done < "$env_file"
+    done
   fi
 
 
