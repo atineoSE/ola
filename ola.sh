@@ -68,14 +68,11 @@ ola-policy-sync() {
 
   # 2. Source .env and sync hostnames from *_BASE_URL env vars
   if [ -f "$env_file" ]; then
+    local _ola_env
+    _ola_env="$(set -a; source "$env_file" 2>/dev/null; env)"
+
     local _ola_urls
-    _ola_urls="$(
-      set -a
-      source "$env_file" 2>/dev/null
-      env | grep '_BASE_URL=' | while IFS='=' read -r key val; do
-        echo "$val"
-      done
-    )"
+    _ola_urls="$(echo "$_ola_env" | grep '_BASE_URL=' | while IFS='=' read -r key val; do echo "$val"; done)"
     local url host
     for url in $_ola_urls; do
       [[ "$url" == https://* || "$url" == http://* ]] || continue
@@ -85,8 +82,26 @@ ola-policy-sync() {
         count=$((count + 1))
       fi
     done
-  fi
 
+    # 3. Laminar: if API key is in .env, allow the base URL (or localhost:<port>)
+    local _lmnr_key
+    _lmnr_key="$(grep -E '^LMNR_PROJECT_API_KEY=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
+    if [ -n "$_lmnr_key" ]; then
+      local _lmnr_base
+      _lmnr_base="$(grep -E '^LMNR_BASE_URL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
+      local _lmnr_host
+      _lmnr_host="$(_ola_host_from_url "${_lmnr_base:-http://localhost}")"
+      if [ "$_lmnr_host" = "localhost" ] || [[ "$_lmnr_host" == 127.* ]]; then
+        local _lmnr_port
+        _lmnr_port="$(grep -E '^LMNR_HTTP_PORT=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
+        sbx policy allow network "localhost:${_lmnr_port:-8000}" 2>/dev/null
+        count=$((count + 1))
+      else
+        sbx policy allow network "$_lmnr_host,*.$_lmnr_host" 2>/dev/null
+        count=$((count + 1))
+      fi
+    fi
+  fi
 
   echo "Synced $count domain(s) to sbx policy."
 }
