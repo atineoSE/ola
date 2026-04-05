@@ -150,7 +150,7 @@ setup() {
   # Ensure credentials are in place
   _sbx_exec bash -c 'test -f ~/.claude/.credentials.json' || skip "credentials not copied (run 7.2a first)"
 
-  result="$(timeout 30 _sbx_exec claude -p 'Reply with exactly: AUTH_OK' --output-format text 2>&1)" || true
+  result="$(timeout 30 sbx exec "$SBX_NAME" claude -p 'Reply with exactly: AUTH_OK' --output-format text 2>&1)" || true
   if echo "$result" | grep -qi "authentication.failed\|authentication_failed\|unauthorized"; then
     false  # fail: auth error
   fi
