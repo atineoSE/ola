@@ -9,31 +9,32 @@ from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
-_lmnr_available = False
 _lmnr_initialized = False
 
 
 def _init_laminar():
-    """Initialize Laminar lazily, only when OpenHands agent is actually used."""
-    global _lmnr_available, _lmnr_initialized
+    """Initialize Laminar with HTTP transport before OpenHands SDK is imported.
+
+    Must be called before any ``from openhands.sdk import …`` so that the
+    SDK's auto-instrumentation inherits the HTTP exporter instead of setting
+    up a gRPC exporter to api.lmnr.ai (which fails behind the sbx proxy).
+    The key is popped from the environment so the SDK doesn't re-initialize.
+    """
+    global _lmnr_initialized
     if _lmnr_initialized:
         return
     _lmnr_initialized = True
     try:
         from lmnr import Laminar
 
-        _lmnr_base = os.getenv("LMNR_BASE_URL", "http://localhost")
         _lmnr_key = os.environ.pop("LMNR_PROJECT_API_KEY", None)
         if _lmnr_key:
             Laminar.initialize(
                 project_api_key=_lmnr_key,
-                base_url=_lmnr_base,
+                base_url=os.getenv("LMNR_BASE_URL", "http://localhost"),
                 http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
-                # gRPC (default) breaks in sbx/docker sandboxes because the
-                # MITM proxy downgrades HTTP/2 → HTTP/1.x. Use OTLP/HTTP.
                 force_http=True,
             )
-            _lmnr_available = True
     except ImportError:
         pass
 
@@ -183,73 +184,11 @@ class OpenHandsAgent(Agent):
             token_callbacks=[tracker.on_token],
         )
 
-        labels = labels or {}
-        folder = labels.get("folder", "")
-        phase = labels.get("phase", "")
-
-        if _lmnr_available:
-            try:
-                return self._run_with_tracing(
-                    conversation,
-                    prompt,
-                    model_name,
-                    folder,
-                    phase,
-                    get_agent_final_response,
-                    tracker,
-                )
-            except Exception:
-                logger.warning(
-                    "Tracing failed, retrying without tracing", exc_info=True
-                )
-
         conversation.send_message(prompt)
         conversation.run()
         output = get_agent_final_response(conversation.state.events) or ""
         stats = self._extract_stats(conversation, model_name, tracker)
         return AgentResponse(output=output, success=True, stats=stats)
-
-    def _run_with_tracing(
-        self,
-        conversation,
-        prompt: str,
-        model_name: str,
-        folder: str,
-        phase: str,
-        get_agent_final_response,
-        tracker: _TTFTTracker,
-    ) -> AgentResponse:
-        """Run conversation inside a Laminar span with trace metadata."""
-        from lmnr import Laminar
-
-        span_name = f"ola-{self.mnemonic}"
-        if folder:
-            span_name += f"/{folder}"
-        if phase:
-            span_name += f"/{phase}"
-
-        tags = [f"agent:{self.mnemonic}"]
-        if phase:
-            tags.append(phase)
-
-        metadata = {"model": model_name}
-        ver = self.version()
-        if ver:
-            metadata["agent_version"] = ver
-
-        with Laminar.start_as_current_span(
-            name=span_name,
-            user_id=f"ola-{self.full_name.lower().replace(' ', '')}",
-            session_id=folder,
-            tags=tags,
-            metadata=metadata,
-        ):
-            conversation.send_message(prompt)
-            conversation.run()
-            output = get_agent_final_response(conversation.state.events) or ""
-            stats = self._extract_stats(conversation, model_name, tracker)
-            Laminar.set_span_output(output[:500] if output else "")
-            return AgentResponse(output=output, success=True, stats=stats)
 
     def _extract_stats(
         self, conversation, model: str = "", tracker: _TTFTTracker | None = None
