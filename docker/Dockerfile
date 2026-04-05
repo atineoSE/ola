@@ -10,8 +10,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource.sh && \
 RUN npm install -g @anthropic-ai/claude-code
 
 # Claude Code config: bypass onboarding and enable skip-permissions
-RUN mkdir -p ~/.claude && \
-    echo '{"completedOnboarding": true}' > ~/.claude/.claude.json && \
+RUN echo '{"hasCompletedOnboarding": true}' > ~/.claude.json && \
     mkdir -p ~/.claude/settings && \
     echo '{"permissions":{"allow":["*"],"deny":[]}}' > ~/.claude/settings/settings.json
 
