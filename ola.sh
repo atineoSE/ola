@@ -155,38 +155,33 @@ ola-sandbox() {
   if sbx ls 2>/dev/null | grep -q "$name"; then
     # Refresh credentials on reconnect
     _ola_inject_credentials "$name" "$cred_src"
-    sbx run claude --name "$name"
+    sbx run "$name"
     return
   fi
 
   # Ensure balanced network policy is active (deny-all + common dev allowlist)
-  sbx policy set-default balanced
+  sbx policy set-default balanced 2>/dev/null || true
 
   # Apply project-specific network allowlist (additive to balanced policy)
   ola-policy-sync "$agent_dir"
 
-  # Create and run with custom template + read-only agent mount
-  # sbx handles proxy and network policy (balanced mode)
-  # Credentials are copied in after sandbox starts (OAuth token from host)
-  sbx run claude \
-    --name "$name" \
-    --template "${OLA_SBX_IMAGE:-ola/ola:latest}" \
-    "$code_dir" "$agent_dir:ro" &
-  local sbx_pid=$!
+  # Create sandbox non-interactively, then attach.
+  # The template extends docker/sandbox-templates:shell, so the agent is "shell".
+  # sbx pulls templates from a registry (not the local Docker daemon), so the
+  # image must be pushed to a registry first (see README).
+  local image="${OLA_SBX_IMAGE:-ghcr.io/atineose/ola:latest}"
 
-  # Wait for sandbox to be ready, then inject credentials
-  local elapsed=0
-  while ! sbx ls 2>/dev/null | grep -q "$name"; do
-    if [ $elapsed -ge 60 ]; then
-      echo "Warning: sandbox not ready after 60s, skipping credential injection" >&2
-      break
-    fi
-    sleep 2
-    elapsed=$((elapsed + 2))
-  done
+  sbx create shell \
+    --name "$name" \
+    --template "$image" \
+    -q \
+    "$code_dir" "$agent_dir:ro" || {
+    echo "Error: failed to create sandbox '$name'" >&2
+    return 1
+  }
 
   _ola_inject_credentials "$name" "$cred_src"
 
-  # Bring sbx run back to foreground
-  wait "$sbx_pid"
+  # Attach to the sandbox (foreground, interactive)
+  sbx run "$name"
 }

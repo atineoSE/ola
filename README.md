@@ -70,13 +70,15 @@ sbx policy set-default balanced
 
 > **Note:** We use a Claude subscription (OAuth), not an API key. The `ola-sandbox` helper copies `~/.claude/.credentials.json` from your host into the sandbox on each creation/reconnection.
 
-### Build the template image
+### Build and push the template image
 
-Use `--no-cache` to ensure the latest versions of Claude Code, OpenHands, and ola are installed:
+The template extends `docker/sandbox-templates:shell` and must be pushed to an OCI registry — sbx pulls templates from a registry directly and does not use the local Docker daemon's image store.
 
 ```bash
-docker build -f docker/Dockerfile -t ola/ola:latest .
+docker build -f docker/Dockerfile -t ghcr.io/atineose/ola:latest --push .
 ```
+
+Add `--no-cache` to force fresh installs of Claude Code, OpenHands, and ola.
 
 ### Shell helpers
 
@@ -129,7 +131,8 @@ If you prefer not to use the helper:
 
 ```bash
 cd project/src
-sbx run --name my-sandbox --template ola/ola:latest claude . ../agent:ro
+sbx create shell --name my-sandbox --template ghcr.io/atineose/ola:latest . ../agent:ro
+sbx run my-sandbox
 ```
 
 Place a `.env` file in the workspace for OpenHands env vars (`LLM_API_KEY`, etc.).

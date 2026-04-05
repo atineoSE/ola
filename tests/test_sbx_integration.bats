@@ -3,26 +3,14 @@
 # These tests require a running sbx environment — skipped if sbx is not installed.
 #
 # Run:   bats tests/test_sbx_integration.bats
-# Env:   OLA_SBX_IMAGE — override template image (default: ola/ola:latest)
+# Env:   OLA_SBX_IMAGE — override template image (default: ghcr.io/atineose/ola:latest)
 #        SBX_TEST_TIMEOUT — seconds to wait for sandbox creation (default: 120)
 
 SBX_NAME="ola-integration-test-$$"
 TIMEOUT="${SBX_TEST_TIMEOUT:-120}"
-IMAGE="${OLA_SBX_IMAGE:-ola/ola:latest}"
+IMAGE="${OLA_SBX_IMAGE:-ghcr.io/atineose/ola:latest}"
 
 # --- Helpers ---
-
-_wait_for_sandbox() {
-  local name="$1" timeout="${2:-$TIMEOUT}"
-  local elapsed=0
-  while ! sbx ls 2>/dev/null | grep -q "$name"; do
-    if [ $elapsed -ge "$timeout" ]; then
-      return 1
-    fi
-    sleep 2
-    elapsed=$((elapsed + 2))
-  done
-}
 
 _sbx_exec() {
   sbx exec "$SBX_NAME" "$@" 2>/dev/null
@@ -47,24 +35,24 @@ setup_file() {
 docs.docker.com
 EOF
 
-  # Create the sandbox (shared across all tests in this file)
-  sbx run claude \
-    --name "$SBX_NAME" \
-    --template "$IMAGE" \
-    "$PROJECT_DIR" "$AGENT_DIR:ro" &
-  export SBX_PID=$!
+  # Create the sandbox non-interactively (shared across all tests in this file)
+  local template_flag=()
+  if [ -n "$IMAGE" ]; then
+    template_flag=(--template "$IMAGE")
+  fi
 
-  _wait_for_sandbox "$SBX_NAME" || {
-    kill "$SBX_PID" 2>/dev/null || true
+  sbx create shell \
+    --name "$SBX_NAME" \
+    "${template_flag[@]}" \
+    -q \
+    "$PROJECT_DIR" "$AGENT_DIR:ro" || {
     rm -rf "$TMPDIR_TEST"
-    echo "Sandbox creation timed out after ${TIMEOUT}s" >&2
+    echo "Sandbox creation failed" >&2
     return 1
   }
 }
 
 teardown_file() {
-  kill "$SBX_PID" 2>/dev/null || true
-  wait "$SBX_PID" 2>/dev/null || true
   if command -v sbx &>/dev/null; then
     sbx stop "$SBX_NAME" 2>/dev/null || true
     sbx rm "$SBX_NAME" 2>/dev/null || true
@@ -178,7 +166,7 @@ setup() {
 # ===== 7.7 Reconnection =====
 
 @test "7.7a: reconnection reuses existing sandbox" {
-  sbx run claude --name "$SBX_NAME" &
+  sbx run "$SBX_NAME" &
   local pid=$!
   sleep 3
 
@@ -200,7 +188,7 @@ setup() {
   sleep 2
 
   # Restart
-  sbx run claude --name "$SBX_NAME" &
+  sbx run "$SBX_NAME" &
   local pid=$!
 
   # Wait for it to come back

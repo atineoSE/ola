@@ -242,27 +242,17 @@ EOF
 
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx ls" ]
   grep -q 'sbx cp' "$SBX_LOG"
-  [[ "$(tail -1 "$SBX_LOG")" == *"sbx run claude --name my-sandbox"* ]]
+  [[ "$(tail -1 "$SBX_LOG")" == *"sbx run my-sandbox"* ]]
 }
 
 _mock_sbx_new_sandbox() {
-  local count_file="$TMPDIR_TEST/ls_count_$1"
   local sandbox_name="$1"
-  echo "0" > "$count_file"
 
   eval "
   sbx() {
     echo \"sbx \$*\" >> \"$SBX_LOG\"
     if [ \"\$1\" = \"ls\" ]; then
-      local count
-      count=\"\$(cat '$count_file' 2>/dev/null || echo 0)\"
-      count=\$((count + 1))
-      echo \"\$count\" > '$count_file'
-      if [ \"\$count\" -ge 2 ]; then
-        echo '$sandbox_name  running  0s'
-      else
-        echo 'other-sandbox  running  1h'
-      fi
+      echo 'other-sandbox  running  1h'
       return 0
     fi
   }
@@ -283,10 +273,10 @@ _mock_sbx_new_sandbox() {
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx ls" ]
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy set-default balanced" ]
   grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
-  grep -q '\--name new-sandbox' "$SBX_LOG"
-  grep -q '\--template ola/ola:latest' "$SBX_LOG"
+  grep -q 'sbx create shell --name new-sandbox --template ghcr.io/atineose/ola:latest -q' "$SBX_LOG"
   grep -q 'agent:ro' "$SBX_LOG"
   grep -q 'sbx cp' "$SBX_LOG"
+  grep -q 'sbx run new-sandbox' "$SBX_LOG"
 }
 
 @test "sandbox: OLA_SBX_IMAGE override" {
@@ -300,4 +290,5 @@ _mock_sbx_new_sandbox() {
   OLA_SBX_IMAGE="myregistry.io/custom:v2" ola-sandbox custom-sandbox
 
   grep -q '\--template myregistry.io/custom:v2' "$SBX_LOG"
+  grep -q 'sbx create shell' "$SBX_LOG"
 }
