@@ -154,7 +154,9 @@ _ola_inject_credentials() {
     return 1
   fi
   sbx exec "$name" bash -c 'mkdir -p ~/.claude' 2>/dev/null
-  sbx cp "$cred_src" "$name:/home/agent/.claude/.credentials.json" 2>/dev/null || {
+  local cred_data
+  cred_data="$(base64 < "$cred_src")"
+  sbx exec "$name" bash -c "echo '$cred_data' | base64 -d > ~/.claude/.credentials.json" 2>/dev/null || {
     echo "Warning: failed to copy credentials into sandbox." >&2
     return 1
   }
@@ -163,6 +165,8 @@ _ola_inject_credentials() {
 ola-sandbox() {
   local name="${1:?Usage: ola-sandbox <sandbox_name>}"
   local code_dir="$(pwd)"
+  local code_name="$(basename "$code_dir")"
+  local project_dir="$(cd .. && pwd)"
   local agent_dir="$(cd ../agent 2>/dev/null && pwd)"
 
   if [ -z "$agent_dir" ]; then
@@ -199,12 +203,16 @@ ola-sandbox() {
     --name "$name" \
     --template "$image" \
     -q \
-    "$code_dir" "$agent_dir:ro" || {
+    "$project_dir" || {
     echo "Error: failed to create sandbox '$name'" >&2
     return 1
   }
 
   _ola_inject_credentials "$name" "$cred_src"
+
+  # Set login shell to land in the src dir
+  sbx exec "$name" bash -c \
+    "echo 'cd $code_dir' >> ~/.bashrc" 2>/dev/null
 
   # Attach to the sandbox (foreground, interactive)
   sbx run "$name"

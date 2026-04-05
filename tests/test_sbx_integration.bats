@@ -25,7 +25,7 @@ setup_file() {
   export SBX_NAME="ola-integration-test"
   export TIMEOUT IMAGE
   export TMPDIR_TEST="$(mktemp -d)"
-  export PROJECT_DIR="$TMPDIR_TEST/project"
+  export PROJECT_DIR="$TMPDIR_TEST/src"
   export AGENT_DIR="$TMPDIR_TEST/agent"
 
   mkdir -p "$PROJECT_DIR" "$AGENT_DIR"
@@ -36,6 +36,7 @@ docs.docker.com
 EOF
 
   # Create the sandbox non-interactively (shared across all tests in this file)
+  # Mount the project dir (parent) so both src/ and agent/ are writable
   local template_flag=()
   if [ -n "$IMAGE" ]; then
     template_flag=(--template "$IMAGE")
@@ -45,7 +46,7 @@ EOF
     --name "$SBX_NAME" \
     "${template_flag[@]}" \
     -q \
-    "$PROJECT_DIR" "$AGENT_DIR:ro" || {
+    "$TMPDIR_TEST" || {
     rm -rf "$TMPDIR_TEST"
     echo "Sandbox creation failed" >&2
     return 1
@@ -84,13 +85,9 @@ setup() {
   _sbx_exec cat "$AGENT_DIR/whitelist.txt" | grep -q "docs.docker.com"
 }
 
-@test "7.1e: agent dir is read-only" {
-  run _sbx_exec touch "$AGENT_DIR/test-write"
-  # Either the write fails or the file shouldn't exist
-  if [ "$status" -eq 0 ]; then
-    run _sbx_exec test -f "$AGENT_DIR/test-write"
-    [ "$status" -ne 0 ]
-  fi
+@test "7.1e: agent dir is writable" {
+  _sbx_exec touch "$AGENT_DIR/test-write"
+  _sbx_exec rm "$AGENT_DIR/test-write"
 }
 
 @test "7.1f: claude is installed" {
@@ -138,7 +135,9 @@ setup() {
   [ -f "$host_cred" ] || skip "no host credentials (~/.claude/.credentials.json)"
 
   _sbx_exec bash -c 'mkdir -p ~/.claude'
-  sbx cp "$host_cred" "$SBX_NAME:/home/agent/.claude/.credentials.json" 2>/dev/null
+  local cred_data
+  cred_data="$(base64 < "$host_cred")"
+  _sbx_exec bash -c "echo '$cred_data' | base64 -d > ~/.claude/.credentials.json"
 
   result="$(_sbx_exec bash -c 'test -f ~/.claude/.credentials.json && echo FOUND || echo NOT_FOUND')"
   [ "$result" = "FOUND" ]
@@ -187,7 +186,7 @@ setup() {
   sbx create shell \
     --name "$SBX_NAME" \
     -q \
-    "$PROJECT_DIR" "$AGENT_DIR:ro" 2>/dev/null || true
+    "$TMPDIR_TEST" 2>/dev/null || true
 
   # Wait for it to come back
   local elapsed=0

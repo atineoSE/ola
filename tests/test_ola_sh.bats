@@ -245,7 +245,8 @@ EOF
   ola-sandbox my-sandbox
 
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx ls" ]
-  grep -q 'sbx cp' "$SBX_LOG"
+  # Credentials injected via sbx exec
+  grep -q 'sbx exec my-sandbox bash' "$SBX_LOG"
   [[ "$(tail -1 "$SBX_LOG")" == *"sbx run my-sandbox"* ]]
 }
 
@@ -282,8 +283,10 @@ _mock_sbx_new_sandbox() {
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy set-default balanced" ]
   grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
   grep -q "sbx create shell --name new-sandbox --template ghcr.io/$(whoami)/ola:latest -q" "$SBX_LOG"
-  grep -q 'agent:ro' "$SBX_LOG"
-  grep -q 'sbx cp' "$SBX_LOG"
+  # Project dir (parent of code/) is the single workspace — no :ro
+  grep -q "sbx_new$" "$SBX_LOG"
+  ! grep -q 'agent:ro' "$SBX_LOG"
+  grep -q "sbx exec new-sandbox bash" "$SBX_LOG"
   grep -q 'sbx run new-sandbox' "$SBX_LOG"
 }
 

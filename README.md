@@ -113,9 +113,10 @@ ola-sandbox my-sandbox
 ```
 
 This will:
-1. Apply project-specific network allowlist from `agent/whitelist.txt` (additive to balanced policy)
-2. Create a sandbox with `src/` as primary workspace and `agent/` mounted read-only
-3. Credentials are copied from host `~/.claude/.credentials.json` into the sandbox (OAuth token)
+1. Extract Claude OAuth credentials from macOS Keychain (`cc-credentials`)
+2. Apply project-specific network allowlist from `agent/whitelist.txt` (additive to balanced policy)
+3. Create a sandbox with the project directory (parent of `src/`) as workspace — both `src/` and `agent/` are writable
+4. Copy credentials into the sandbox and set the shell to land in `src/`
 
 Running `ola-sandbox my-sandbox` again will reconnect to the existing sandbox.
 
@@ -130,8 +131,8 @@ ola -a cc -l 5
 If you prefer not to use the helper:
 
 ```bash
-cd project/src
-sbx create shell --name my-sandbox --template ghcr.io/<your-user>/ola:latest . ../agent:ro
+cd project
+sbx create shell --name my-sandbox --template ghcr.io/<your-user>/ola:latest .
 sbx run my-sandbox
 ```
 
