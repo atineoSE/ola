@@ -145,21 +145,34 @@ ola-policy-review() {
   [ "$missing" -eq 0 ] || return 1
 }
 
-# Copy host ~/.claude/.credentials.json into a running sandbox.
-# Usage: _ola_inject_credentials <sandbox_name> <host_credentials_path>
-_ola_inject_credentials() {
-  local name="$1" cred_src="$2"
-  if [ ! -f "$cred_src" ]; then
-    echo "Warning: $cred_src not found — run 'cc-credentials' or 'claude' on the host first." >&2
+# Copy a host file into a running sandbox via base64 encoding.
+# Usage: _ola_inject_file <sandbox_name> <host_path> <sandbox_path>
+_ola_inject_file() {
+  local name="$1" src="$2" dest="$3"
+  if [ ! -f "$src" ]; then
     return 1
   fi
-  sbx exec "$name" bash -c 'mkdir -p ~/.claude' 2>/dev/null
-  local cred_data
-  cred_data="$(base64 < "$cred_src")"
-  sbx exec "$name" bash -c "echo '$cred_data' | base64 -d > ~/.claude/.credentials.json" 2>/dev/null || {
-    echo "Warning: failed to copy credentials into sandbox." >&2
-    return 1
-  }
+  local dir="${dest%/*}"
+  sbx exec "$name" bash -c "mkdir -p '$dir'" 2>/dev/null
+  local data
+  data="$(base64 < "$src")"
+  sbx exec "$name" bash -c "echo '$data' | base64 -d > '$dest'" 2>/dev/null
+}
+
+# Inject agent credentials and config into a running sandbox.
+_ola_inject_credentials() {
+  local name="$1"
+
+  # Claude Code: OAuth credentials from Keychain
+  local cc_cred="$HOME/.claude/.credentials.json"
+  if ! _ola_inject_file "$name" "$cc_cred" "~/.claude/.credentials.json"; then
+    echo "Warning: $cc_cred not found — run 'cc-credentials' or 'claude' on the host first." >&2
+  fi
+
+  # OpenHands: agent settings and CLI config
+  local oh_dir="$HOME/.openhands"
+  _ola_inject_file "$name" "$oh_dir/agent_settings.json" "~/.openhands/agent_settings.json" || true
+  _ola_inject_file "$name" "$oh_dir/cli_config.json" "~/.openhands/cli_config.json" || true
 }
 
 ola-sandbox() {
@@ -174,15 +187,13 @@ ola-sandbox() {
     return 1
   fi
 
-  local cred_src="$HOME/.claude/.credentials.json"
-
   # Extract fresh credentials from Keychain
   cc-credentials || true
 
   # Reconnect if sandbox already exists
   if sbx ls 2>/dev/null | grep -q "$name"; then
     # Refresh credentials on reconnect
-    _ola_inject_credentials "$name" "$cred_src"
+    _ola_inject_credentials "$name"
     sbx run "$name"
     return
   fi
@@ -208,7 +219,7 @@ ola-sandbox() {
     return 1
   }
 
-  _ola_inject_credentials "$name" "$cred_src"
+  _ola_inject_credentials "$name"
 
   # Set login shell to land in the src dir
   sbx exec "$name" bash -c \

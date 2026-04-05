@@ -31,8 +31,10 @@ RUN git config --global user.name "ola" && \
     git config --global user.email "ola@localhost" && \
     git config --global --add safe.directory '*'
 
-# Claude Code: on login, register alias
-RUN echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
+# Claude Code: unset proxy-managed API key so Claude uses OAuth credentials,
+# and register alias
+RUN echo 'unset ANTHROPIC_API_KEY' >> ~/.bashrc && \
+    echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
 
 # OpenHands: on login, install config from workspace and register alias
 RUN mkdir -p ~/.openhands && \
