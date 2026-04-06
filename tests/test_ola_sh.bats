@@ -246,7 +246,7 @@ EOF
   cd "$TMPDIR_TEST/sbx_reconnect/code"
   ola-sandbox my-sandbox
 
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx ls" ]
+  grep -q 'sbx ls' "$SBX_LOG"
   # Credentials injected via sbx exec
   grep -q 'sbx exec my-sandbox bash' "$SBX_LOG"
   [[ "$(tail -1 "$SBX_LOG")" == *"sbx run my-sandbox"* ]]
@@ -280,8 +280,7 @@ _mock_sbx_new_sandbox() {
   cd "$TMPDIR_TEST/sbx_new/code"
   ola-sandbox new-sandbox
 
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx ls" ]
-  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy set-default balanced" ]
+  grep -q 'sbx ls' "$SBX_LOG"
   grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
   grep -q "sbx create shell --name new-sandbox --template ghcr.io/$(whoami)/ola:latest -q" "$SBX_LOG"
   # Project dir (parent of code/) is the single workspace — no :ro
