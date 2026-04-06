@@ -216,13 +216,14 @@ def _process_folder(
             if not response.success:
                 logger.error("Seed prompt failed. Skipping folder.")
                 return
-            # Copy default loop prompt if none was provided
-            if not loop_prompt_file.exists():
-                import shutil
-
-                shutil.copy2(_DEFAULT_LOOP_PROMPT, loop_prompt_file)
-                logger.info("Copied DEFAULT-LOOP-PROMPT.md → %s", loop_prompt_file)
             _git_commit(agent_root, f"ola: {folder.name} seed")
+
+    # Copy default loop prompt if none was provided
+    if not loop_prompt_file.exists():
+        import shutil
+
+        shutil.copy2(_DEFAULT_LOOP_PROMPT, loop_prompt_file)
+        logger.info("Copied DEFAULT-LOOP-PROMPT.md → %s", loop_prompt_file)
 
     loop_prompt = read_file_if_exists(loop_prompt_file)
     if loop_prompt is None:
