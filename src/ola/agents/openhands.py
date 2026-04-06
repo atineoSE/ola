@@ -112,16 +112,14 @@ class OpenHandsAgent(Agent):
                 AgentContext,
                 Agent as OHAgent,
                 Conversation,
-                Tool,
             )
             from openhands.sdk.context import Skill
             from openhands.sdk.conversation.response_utils import (
                 get_agent_final_response,
             )
             from openhands.sdk.logger.logger import setup_logging as oh_setup_logging
+            from openhands.tools import get_default_tools
             from pydantic import SecretStr
-
-            import openhands.tools  # noqa: F401 — registers TerminalTool, FileEditorTool
         except ImportError:
             logger.error("openhands-sdk or openhands-tools is not installed")
             return AgentResponse(
@@ -157,6 +155,7 @@ class OpenHandsAgent(Agent):
             api_key=SecretStr(api_key),
             base_url=base_url,
             stream=True,
+            drop_params=True,
         )
         _env_llm_opts: list[tuple[str, str, type]] = [
             ("timeout", "LLM_TIMEOUT", int),
@@ -187,7 +186,7 @@ class OpenHandsAgent(Agent):
         )
         agent = OHAgent(
             llm=llm,
-            tools=[Tool(name="terminal"), Tool(name="file_editor")],
+            tools=get_default_tools(enable_browser=False),
             agent_context=AgentContext(skills=[network_policy]),
         )
 
