@@ -58,6 +58,14 @@ The agent folder must be its own git repository (ola initialises one if missing)
 
 Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside the subfolder. For Claude Code, `CLAUDE_CONFIG_DIR` is set to `.claude/`, giving each phase its own conversation history that persists across sandbox sessions. For OpenHands, logs and trajectories are written to `.openhands/logs/` and `.openhands/trajectories/`.
 
+## Setting up your agents
+For OpenHands:
+* Set your environment vars at the `.env` in the agent folder, including base URL, API key, model name and optional parameters. See example at `.env.example`.
+
+For Claude Code:
+* If using an Anthropic subscription, install Claude Code and login. This will store credentials in your keychain.
+* If using an API key, define it in your `.env` in the agent folder.
+
 ## Docker Sandbox
 
 Although you can run `ola` directly on your host machine, we strongly recommend using sandboxes for agent isolation. Sandboxes offer a structural barrier that prevents the agent from accessing anywhere in the filesystem and connecting to anywhere in the internet.
@@ -68,8 +76,8 @@ Note the isolation provided by docker sandboxes is much more strict that the Cla
 
 ### Prerequisites
 
-* (Required for sandboxed use of any agent) Install sbx, login, and set your default policy. The recommended policy is "balanced". See [here](https://docs.docker.com/ai/sandboxes/security/policy/#network-policies) for more information about policies.
-* (Required for sandboxed use of claude code) Install and authenticate to claude code. This will create the necessary credentials in the system keychain, which will be extracted and injected into the sandbox at `~/.claude/.credentials.json` to reuse your Anthropic subscription. Alternatively, set your ANTHROPIC_API_KEY in the agent environment and it will be used for claude code inside the sandbox.
+* Install sbx, login, and set your default policy. The recommended policy is "balanced", which defaults to deny traffic except for approved service providers and package managers. See [here](https://docs.docker.com/ai/sandboxes/security/policy/#network-policies) for more information about policies.
+* Add an `allowlist.txt` file in the agent folder to allow traffic to specific domains. They apply globally to all local sandboxes and include all subdomains.
 
 ### Build and push the template image
 
@@ -116,7 +124,7 @@ ola-sandbox my-sandbox
 
 This will:
 1. Extract Claude OAuth credentials from macOS Keychain (`cc-credentials`)
-2. Apply project-specific network allowlist from `agent/whitelist.txt` (additive to balanced policy)
+2. Apply project-specific network allowlist from `agent/allowlist.txt` (additive to balanced policy)
 3. Create a sandbox with the project directory (parent of `src/`) as workspace — both `src/` and `agent/` are writable
 4. Copy credentials into the sandbox and set the shell to land in `src/`
 
@@ -150,7 +158,7 @@ sbx policy allow network "example.com,*.example.com"  # add allow rule
 sbx policy log                        # view blocked requests
 ```
 
-Project-specific domains can be added to `agent/whitelist.txt` (one domain per line). The `ola-sandbox` helper applies these automatically on sandbox creation.
+Project-specific domains can be added to `agent/allowlist.txt` (one domain per line). The `ola-sandbox` helper applies these automatically on sandbox creation.
 
 ### Laminar tracing (OpenHands only)
 

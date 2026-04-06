@@ -41,8 +41,8 @@ _ola_host_from_url() {
   echo "$host"
 }
 
-# Sync project-specific domains from whitelist.txt and .env into sbx network policy.
-# Reads ../agent/whitelist.txt and .env (in code dir) for URL-valued variables.
+# Sync project-specific domains from allowlist.txt and .env into sbx network policy.
+# Reads ../agent/allowlist.txt and .env (in code dir) for URL-valued variables.
 # Adds each domain (plus wildcard subdomain) to the sbx balanced policy allowlist.
 # Safe to run multiple times — sbx policy allow is idempotent.
 ola-policy-sync() {
@@ -56,14 +56,14 @@ ola-policy-sync() {
 
   local count=0
 
-  # 1. Sync domains from whitelist.txt
-  local whitelist="$agent_dir/whitelist.txt"
-  if [ -f "$whitelist" ]; then
+  # 1. Sync domains from allowlist.txt
+  local allowlist="$agent_dir/allowlist.txt"
+  if [ -f "$allowlist" ]; then
     while IFS= read -r host || [ -n "$host" ]; do
       [[ -z "$host" || "$host" == \#* ]] && continue
       sbx policy allow network "$host,*.$host" 2>/dev/null
       count=$((count + 1))
-    done < "$whitelist"
+    done < "$allowlist"
   fi
 
   # 2. Source .env and sync hostnames from *_BASE_URL env vars
@@ -106,9 +106,9 @@ ola-policy-sync() {
   echo "Synced $count domain(s) to sbx policy."
 }
 
-# Review sbx network policy against project whitelist.
+# Review sbx network policy against project allowlist.
 # Lists current balanced policy rules and checks for:
-#   - Whitelist domains NOT yet covered by any policy rule
+#   - Allowlist domains NOT yet covered by any policy rule
 #   - Overly broad wildcards in the policy (for manual review)
 # Usage: ola-policy-review [agent_dir]
 ola-policy-review() {
@@ -139,16 +139,16 @@ ola-policy-review() {
     echo ""
   fi
 
-  # Check whitelist.txt domains against policy
-  local whitelist="$agent_dir/whitelist.txt"
-  if [ ! -f "$whitelist" ]; then
-    echo "No whitelist.txt found at $whitelist"
+  # Check allowlist.txt domains against policy
+  local allowlist="$agent_dir/allowlist.txt"
+  if [ ! -f "$allowlist" ]; then
+    echo "No allowlist.txt found at $allowlist"
     return 0
   fi
 
   local missing=0
   local covered=0
-  echo "=== Whitelist domain coverage ==="
+  echo "=== Allowlist domain coverage ==="
   while IFS= read -r host || [ -n "$host" ]; do
     [[ -z "$host" || "$host" == \#* ]] && continue
     if echo "$policy_output" | grep -qF "$host"; then
@@ -158,7 +158,7 @@ ola-policy-review() {
       echo "  [MISSING] $host — run: sbx policy allow network \"$host,*.$host\""
       missing=$((missing + 1))
     fi
-  done < "$whitelist"
+  done < "$allowlist"
 
   echo ""
   echo "Summary: $covered covered, $missing missing"
@@ -210,6 +210,11 @@ ola-sandbox() {
   # Extract fresh credentials from Keychain
   cc-credentials || true
 
+  # Apply project-specific network allowlist (additive to default policy).
+  # This applies immediately to all local sandboxes
+  # If policy was already added, it has no effect
+  ola-policy-sync "$agent_dir" "$agent_dir/.env"
+
   # Reconnect if sandbox already exists
   if sbx ls 2>/dev/null | grep -q "$name"; then
     # Refresh credentials on reconnect
@@ -217,12 +222,6 @@ ola-sandbox() {
     sbx run "$name"
     return
   fi
-
-  # Ensure balanced network policy is active (deny-all + common dev allowlist)
-  sbx policy set-default balanced 2>/dev/null || true
-
-  # Apply project-specific network allowlist (additive to balanced policy)
-  ola-policy-sync "$agent_dir" "$agent_dir/.env"
 
   # Create sandbox non-interactively, then attach.
   # The template extends docker/sandbox-templates:shell, so the agent is "shell".

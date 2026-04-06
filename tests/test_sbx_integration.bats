@@ -30,8 +30,8 @@ setup_file() {
 
   mkdir -p "$PROJECT_DIR" "$AGENT_DIR"
   echo "integration-test-marker" > "$PROJECT_DIR/ola-test-marker.txt"
-  cat > "$AGENT_DIR/whitelist.txt" <<'EOF'
-# Integration test whitelist
+  cat > "$AGENT_DIR/allowlist.txt" <<'EOF'
+# Integration test allowlist
 docs.docker.com
 EOF
 
@@ -84,7 +84,7 @@ setup() {
 }
 
 @test "7.1d: agent dir is mounted" {
-  _sbx_exec cat "$AGENT_DIR/whitelist.txt" | grep -q "docs.docker.com"
+  _sbx_exec cat "$AGENT_DIR/allowlist.txt" | grep -q "docs.docker.com"
 }
 
 @test "7.1e: agent dir is writable" {

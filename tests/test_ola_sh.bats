@@ -14,7 +14,7 @@ setup_file() {
   # Shared fixtures
   export AGENT_DIR="$TMPDIR_TEST/agent"
   mkdir -p "$AGENT_DIR"
-  cat > "$AGENT_DIR/whitelist.txt" <<'EOF'
+  cat > "$AGENT_DIR/allowlist.txt" <<'EOF'
 # Comment line
 docs.docker.com
 docker.io
@@ -86,18 +86,18 @@ setup() {
 
 # ===== ola-policy-sync =====
 
-@test "policy-sync: whitelist + env syncs 4 domains" {
+@test "policy-sync: allowlist + env syncs 4 domains" {
   run ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
   [ "$status" -eq 0 ]
   [ "$output" = "Synced 4 domain(s) to sbx policy." ]
 }
 
-@test "policy-sync: whitelist domain 1" {
+@test "policy-sync: allowlist domain 1" {
   ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network docs.docker.com,*.docs.docker.com" ]
 }
 
-@test "policy-sync: whitelist domain 2" {
+@test "policy-sync: allowlist domain 2" {
   ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network docker.io,*.docker.io" ]
 }
@@ -117,14 +117,14 @@ setup() {
   [ "$(wc -l < "$SBX_LOG" | tr -d ' ')" = "4" ]
 }
 
-@test "policy-sync: env-only (no whitelist)" {
+@test "policy-sync: env-only (no allowlist)" {
   mkdir -p "$TMPDIR_TEST/empty_agent"
   run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$ENV_FILE"
   [ "$status" -eq 0 ]
   [ "$output" = "Synced 2 domain(s) to sbx policy." ]
 }
 
-@test "policy-sync: whitelist-only (no env)" {
+@test "policy-sync: allowlist-only (no env)" {
   run ola-policy-sync "$AGENT_DIR" "$TMPDIR_TEST/nonexistent.env"
   [ "$status" -eq 0 ]
   [ "$output" = "Synced 2 domain(s) to sbx policy." ]
@@ -165,7 +165,7 @@ POLICY
   _mock_sbx_policy_ls
   local review_agent="$TMPDIR_TEST/review_covered"
   mkdir -p "$review_agent"
-  cat > "$review_agent/whitelist.txt" <<'EOF'
+  cat > "$review_agent/allowlist.txt" <<'EOF'
 docs.docker.com
 docker.io
 EOF
@@ -179,7 +179,7 @@ EOF
   _mock_sbx_policy_ls
   local review_agent="$TMPDIR_TEST/review_missing"
   mkdir -p "$review_agent"
-  cat > "$review_agent/whitelist.txt" <<'EOF'
+  cat > "$review_agent/allowlist.txt" <<'EOF'
 docs.docker.com
 custom-api.example.com
 EOF
@@ -193,24 +193,24 @@ EOF
   _mock_sbx_policy_ls
   local review_agent="$TMPDIR_TEST/review_broad"
   mkdir -p "$review_agent"
-  echo "docs.docker.com" > "$review_agent/whitelist.txt"
+  echo "docs.docker.com" > "$review_agent/allowlist.txt"
   run ola-policy-review "$review_agent"
   [[ "$output" == *"Broad wildcards"* ]]
 }
 
-@test "policy-review: no whitelist file" {
+@test "policy-review: no allowlist file" {
   _mock_sbx_policy_ls
-  mkdir -p "$TMPDIR_TEST/no_whitelist"
-  run ola-policy-review "$TMPDIR_TEST/no_whitelist"
+  mkdir -p "$TMPDIR_TEST/no_allowlist"
+  run ola-policy-review "$TMPDIR_TEST/no_allowlist"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"No whitelist.txt"* ]]
+  [[ "$output" == *"No allowlist.txt"* ]]
 }
 
 @test "policy-review: sbx failure" {
   sbx() { return 1; }
   export -f sbx
   mkdir -p "$TMPDIR_TEST/review_sbxfail"
-  echo "example.com" > "$TMPDIR_TEST/review_sbxfail/whitelist.txt"
+  echo "example.com" > "$TMPDIR_TEST/review_sbxfail/allowlist.txt"
   run ola-policy-review "$TMPDIR_TEST/review_sbxfail"
   [ "$status" -ne 0 ]
   [[ "$output" == *"failed to list"* ]]
@@ -228,7 +228,7 @@ EOF
 
 @test "sandbox: reconnect to existing sandbox" {
   mkdir -p "$TMPDIR_TEST/sbx_reconnect/agent" "$TMPDIR_TEST/sbx_reconnect/code"
-  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_reconnect/agent/whitelist.txt"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_reconnect/agent/allowlist.txt"
 
   # Mock security (macOS Keychain) for cc-credentials
   security() { echo '{"oauth_token":"fake"}'; }
@@ -273,7 +273,7 @@ _mock_sbx_new_sandbox() {
 
 @test "sandbox: create new sandbox" {
   mkdir -p "$TMPDIR_TEST/sbx_new/agent" "$TMPDIR_TEST/sbx_new/code"
-  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_new/agent/whitelist.txt"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_new/agent/allowlist.txt"
 
   _mock_sbx_new_sandbox "new-sandbox"
 
@@ -293,7 +293,7 @@ _mock_sbx_new_sandbox() {
 
 @test "sandbox: OLA_SBX_IMAGE override" {
   mkdir -p "$TMPDIR_TEST/sbx_custom/agent" "$TMPDIR_TEST/sbx_custom/code"
-  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_custom/agent/whitelist.txt"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_custom/agent/allowlist.txt"
 
   _mock_sbx_new_sandbox "custom-sandbox"
 
