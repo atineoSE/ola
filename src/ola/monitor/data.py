@@ -32,6 +32,7 @@ class IterationStatus:
     models: list[str] = field(default_factory=list)
     tool_ms: int = 0
     ttft_ms: int = 0
+    streamed: bool = True
     tasks_completed: int = 0
     tasks_total: int = 0
     tasks_completed_delta: int = 0
@@ -147,6 +148,11 @@ class FolderStatus:
         return sum(it.tool_ms for it in self.iterations)
 
     @property
+    def all_streamed(self) -> bool:
+        """True if every iteration used streaming (TTFT data is meaningful)."""
+        return all(it.streamed for it in self.iterations) if self.iterations else True
+
+    @property
     def total_ttft_ms(self) -> int:
         return sum(it.ttft_ms for it in self.iterations)
 
@@ -215,6 +221,7 @@ def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
                 models=record.get("models", []),
                 tool_ms=record.get("tool_ms", 0),
                 ttft_ms=record.get("ttft_ms", 0),
+                streamed=record.get("streamed", True),
                 tasks_completed=record.get("tasks_completed", 0),
                 tasks_total=record.get("tasks_total", 0),
                 tasks_completed_delta=record.get("tasks_completed_delta", 0),

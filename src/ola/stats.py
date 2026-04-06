@@ -27,3 +27,4 @@ class IterationStats(BaseModel):
     llm_ms: int = 0
     max_input_tokens: int = 0
     ttft_ms: int = 0
+    streamed: bool = True

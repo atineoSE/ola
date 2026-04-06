@@ -177,30 +177,53 @@ class OpenHandsAgent(Agent):
         if enc_reasoning is not None:
             llm_kwargs["enable_encrypted_reasoning"] = enc_reasoning.lower() == "true"
 
-        llm = LLM(**llm_kwargs)
-
         network_policy = Skill(
             name="network-policy",
             content=_POLICY_FILE.read_text(),
             trigger=None,  # always active
         )
-        agent = OHAgent(
-            llm=llm,
-            tools=get_default_tools(enable_browser=False),
-            agent_context=AgentContext(skills=[network_policy]),
-        )
-
-        tracker = _TTFTTracker()
+        tools = get_default_tools(enable_browser=False)
         persistence_dir = str(base / "trajectories")
-        conversation = Conversation(
-            agent=agent,
-            workspace=workdir,
-            persistence_dir=persistence_dir,
-            token_callbacks=[tracker.on_token],
-        )
 
-        conversation.send_message(prompt)
-        conversation.run()
+        # Try streaming first; fall back to non-streaming if the
+        # provider doesn't support it (the SDK raises AssertionError
+        # when litellm returns a non-streaming response for stream=True).
+        for attempt, use_stream in enumerate((True, False)):
+            llm_kwargs["stream"] = use_stream
+            llm = LLM(**llm_kwargs)
+
+            agent = OHAgent(
+                llm=llm,
+                tools=tools,
+                agent_context=AgentContext(skills=[network_policy]),
+            )
+
+            tracker = _TTFTTracker() if use_stream else None
+            conversation = Conversation(
+                agent=agent,
+                workspace=workdir,
+                persistence_dir=persistence_dir,
+                token_callbacks=[tracker.on_token] if tracker else [],
+            )
+
+            conversation.send_message(prompt)
+            try:
+                conversation.run()
+            except Exception as exc:
+                cause = exc.__cause__ if exc.__cause__ else exc
+                if isinstance(cause, AssertionError) and attempt == 0:
+                    logger.warning(
+                        "Streaming not supported by provider, retrying "
+                        "without streaming"
+                    )
+                    continue
+                logger.error("Conversation failed: %s", exc)
+                return AgentResponse(
+                    output=str(exc),
+                    success=False,
+                )
+            break
+
         output = get_agent_final_response(conversation.state.events) or ""
         stats = self._extract_stats(conversation, model_name, tracker)
         return AgentResponse(output=output, success=True, stats=stats)
@@ -270,6 +293,7 @@ class OpenHandsAgent(Agent):
                 llm_ms=llm_ms,
                 max_input_tokens=max_input_tokens,
                 ttft_ms=ttft_ms,
+                streamed=tracker is not None,
             )
         except Exception as e:
             logger.warning("Could not extract OH stats: %s", e)
