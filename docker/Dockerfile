@@ -1,13 +1,7 @@
 FROM docker/sandbox-templates:shell
 
-# Install Node.js (required for Claude Code CLI)
-RUN curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource.sh && \
-    sudo bash /tmp/nodesource.sh && \
-    sudo apt-get install -y nodejs && \
-    rm /tmp/nodesource.sh
-
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI (native installer — no Node.js required)
+RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Claude Code config: bypass onboarding and enable skip-permissions
 RUN echo '{"hasCompletedOnboarding": true}' > ~/.claude.json && \
