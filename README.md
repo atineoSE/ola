@@ -28,35 +28,43 @@ ola [-f <agent-folder>] [-a cc|oh] [-m MODEL] [-l LIMIT] [-v]
 | `-l, --limit` | Max iterations per subfolder | No limit |
 | `-v, --verbose` | Debug logging | Off |
 
-## Agent folder structure
+## Folder structure
 
 ```
-my-agent/
-  01-setup/
-    SEED-PROMPT.md    # Optional: runs once to generate PLAN.md
-    LOOP-PROMPT.md    # Required: prompt used each iteration
-    PLAN.md           # Optional: markdown todo list
-    .claude/          # Claude Code config dir (auto-created by ola)
-      projects/...    # conversation history auto-created by claude
-    .openhands/       # OpenHands state dir (auto-created by ola)
-      logs/
-      trajectories/
-  02-implement/
-    LOOP-PROMPT.md
-    PLAN.md
-    .claude/
-    .openhands/
+project/
+  src/                  # your source code (must be a git repo)
+  agent/                # ola agent folder (git repo created by ola if missing)
+    .env                # LLM_BASE_URL, LMNR_BASE_URL, etc. (gitignored)
+    allowlist.txt       # Optional: Domain list to allow inside the sandbox
+    01-setup/           # Plan subfolder
+      SEED-PROMPT.md    # Optional: runs once to generate PLAN.md
+      LOOP-PROMPT.md    # Optional: prompt used each iteration
+      PLAN.md           # Optional: markdown todo list
+      .claude/          # Claude Code config dir (auto-created by ola)
+        projects/...    # conversation history auto-created by claude
+      .openhands/       # OpenHands state dir (auto-created by ola)
+        logs/
+        trajectories/
+    02-implement/
+      LOOP-PROMPT.md
+      PLAN.md
+      .claude/
+      .openhands/
 ```
 
-Subfolders are processed in order. For each subfolder:
+Plan subfolders are processed in order.
 
-1. If `SEED-PROMPT.md` exists and `PLAN.md` does not, the seed prompt runs first to populate the plan.
-2. While `PLAN.md` has unchecked tasks (`- [ ]`), the agent runs `LOOP-PROMPT.md` repeatedly.
-3. Stops when all tasks are checked or the iteration limit is reached.
+A plan subfolder must contain only ONE of these two files:
+* `SEED-PROMPT.md`: this will create the `PLAN.md` file, which will drive the loop, or
+* `PLAN.md`: it already contains the plan and thus no seed is needed.
+
+While `PLAN.md` has unchecked tasks (`- [ ]`), the agent runs `LOOP-PROMPT.md` repeatedly. The agent stops when all tasks are checked or the iteration limit is reached.
+
+The `LOOP-PROMT.md` is optional and it will be initialized to a sensible default if missing. However, it is recommended that this file is manually created, since it's key to drive the agent through long-running tasks.
 
 The agent folder must be its own git repository (ola initialises one if missing). ola commits to this repo after each seed phase and loop iteration, tracking plan progress independently from your source code.
 
-Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside the subfolder. For Claude Code, `CLAUDE_CONFIG_DIR` is set to `.claude/`, giving each phase its own conversation history that persists across sandbox sessions. For OpenHands, logs and trajectories are written to `.openhands/logs/` and `.openhands/trajectories/`.
+Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside each plan subfolder. For Claude Code, `CLAUDE_CONFIG_DIR` is set to `.claude/`, giving each phase its own conversation history that persists across sandbox sessions. For OpenHands, logs and trajectories are written to `.openhands/logs/` and `.openhands/trajectories/`.
 
 ## Setting up your agents
 For OpenHands:
@@ -105,18 +113,9 @@ Add to your `.zshrc`:
 
 This provides **`ola-sandbox`** — creates or reconnects to a Docker sandbox.
 
-### Run a sandbox
+### Create a sandbox
 
-The expected directory layout is:
-
-```
-project/
-  src/     # your source code (must be a git repo)
-  agent/   # ola agent folder (git repo created by ola if missing)
-    .env   # LLM_BASE_URL, LMNR_BASE_URL, etc. (gitignored)
-```
-
-From the `src` directory:
+From the `project/src` directory:
 
 ```bash
 ola-sandbox my-sandbox
@@ -124,7 +123,7 @@ ola-sandbox my-sandbox
 
 This will:
 1. Extract Claude OAuth credentials from macOS Keychain (`cc-credentials`)
-2. Apply project-specific network allowlist from `agent/allowlist.txt` (additive to balanced policy)
+2. Apply project-specific network allowlist from `agent/allowlist.txt` (additive to default policy)
 3. Create a sandbox with the project directory (parent of `src/`) as workspace — both `src/` and `agent/` are writable
 4. Copy credentials into the sandbox and set the shell to land in `src/`
 
@@ -145,8 +144,6 @@ cd project
 sbx create shell --name my-sandbox --template ghcr.io/<your-user>/ola:latest .
 sbx run my-sandbox
 ```
-
-Place a `.env` file in the workspace for OpenHands env vars (`LLM_API_KEY`, etc.).
 
 ### Network policy
 
