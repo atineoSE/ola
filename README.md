@@ -2,6 +2,12 @@
 
 Outer Loop of Agents — A harness to run long-horizon agentic loops
 
+`ola` is a light harness that allows to run agents for long-horizon tasks. With a simple folder structure and a few markdown files, we can direct long-running tasks. The implementation follows the [Ralph Wiggum technique](https://ghuntley.com/ralph/): a way for the agent to iterate on fresh contexts as it works relentlessly against tasks in a plan file. The design is heavily influenced by [this presentation](https://youtu.be/5syeNjq2ZCU?si=a2RvALDjiXPfYqJn) from [Ray Myers](https://github.com/raymyers), Chief Architect at [OpenHands](https://openhands.dev).
+
+There are 2 agents currently supported:
+* [Claude Code](https://github.com/anthropics/claude-code)
+* [OpenHands SDK](https://github.com/OpenHands/software-agent-sdk)
+
 ## Install
 
 ```bash
@@ -54,21 +60,16 @@ Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside
 
 ## Docker Sandbox
 
-Run `ola` inside a Docker sandbox using [`sbx`](https://docs.docker.com/sandbox/) (microVM-based isolation).
+Although you can run `ola` directly on your host machine, we strongly recommend using sandboxes for agent isolation. Sandboxes offer a structural barrier that prevents the agent from accessing anywhere in the filesystem and connecting to anywhere in the internet.
+
+This repo provides a custom sandbox template and companion scripts to run `ola` inside of a docker sandox, using [`sbx`](https://docs.docker.com/sandbox/) (microVM). This provides several layers of isolation, including a network proxy to control outbound traffic. See [here](https://docs.docker.com/ai/sandboxes/security/isolation/) for more details on isolation proporties of docker sandboxes. 
+
+Note the isolation provided by docker sandboxes is much more strict that the Claude Code [sandbox feature](https://code.claude.com/docs/en/sandboxing), which doesn't offer true filesystem or network isolation, especially when combined with `--dangerously-skip-permissions`.
 
 ### Prerequisites
 
-Set up credentials and network policy once:
-
-```bash
-# Authenticate Claude on the host (creates ~/.claude/.credentials.json via OAuth)
-claude
-
-# Set default network policy to balanced (deny-all + common dev allowlist)
-sbx policy set-default balanced
-```
-
-> **Note:** We use a Claude subscription (OAuth), not an API key. The `ola-sandbox` helper copies `~/.claude/.credentials.json` from your host into the sandbox on each creation/reconnection.
+* (Required for sandboxed use of any agent) Install sbx, login, and set your default policy. The recommended policy is "balanced". See [here](https://docs.docker.com/ai/sandboxes/security/policy/#network-policies) for more information about policies.
+* (Required for sandboxed use of claude code) Install and authenticate to claude code. This will create the necessary credentials in the system keychain, which will be extracted and injected into the sandbox at `~/.claude/.credentials.json` to reuse your Anthropic subscription. Alternatively, set your ANTHROPIC_API_KEY in the agent environment and it will be used for claude code inside the sandbox.
 
 ### Build and push the template image
 
