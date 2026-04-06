@@ -1,6 +1,5 @@
 import logging
 import os
-import shutil
 import time
 from pathlib import Path
 
@@ -39,7 +38,6 @@ def _init_laminar():
         pass
 
 
-_CONFIG_FILES = ("agent_settings.json", "cli_config.json")
 _POLICY_FILE = Path(__file__).resolve().parent / "NETWORK-POLICY.md"
 
 
@@ -133,13 +131,6 @@ class OpenHandsAgent(Agent):
 
         base = Path(state_dir) if state_dir else Path(workdir)
         base.mkdir(parents=True, exist_ok=True)
-        home_oh = Path.home() / ".openhands"
-        for fname in _CONFIG_FILES:
-            src = home_oh / fname
-            dst = base / fname
-            if src.exists() and not dst.exists():
-                shutil.copy2(src, dst)
-                logger.debug("Copied %s → %s", src, dst)
         oh_setup_logging(log_to_file=True, log_dir=str(base / "logs"))
 
         api_key = os.getenv("LLM_API_KEY")
@@ -153,16 +144,41 @@ class OpenHandsAgent(Agent):
         model_name = self.model or os.getenv(
             "LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"
         )
-        base_url = os.getenv("LLM_BASE_URL")
+        base_url = os.getenv("LLM_BASE_URL") or None
 
         logger.debug("OpenHands agent using model=%s", model_name)
 
-        llm = LLM(
+        # Build LLM kwargs from .env settings, ignoring unset values so
+        # the SDK defaults apply.  This deliberately does NOT read
+        # ~/.openhands/agent_settings.json — that file is for the
+        # interactive OpenHands CLI only.
+        llm_kwargs: dict = dict(
             model=model_name,
             api_key=SecretStr(api_key),
             base_url=base_url,
             stream=True,
         )
+        _env_llm_opts: list[tuple[str, str, type]] = [
+            ("timeout", "LLM_TIMEOUT", int),
+            ("temperature", "LLM_TEMPERATURE", float),
+            ("top_p", "LLM_TOP_P", float),
+            ("max_input_tokens", "LLM_MAX_INPUT_TOKENS", int),
+            ("max_output_tokens", "LLM_MAX_OUTPUT_TOKENS", int),
+            ("reasoning_effort", "LLM_REASONING_EFFORT", str),
+            ("num_retries", "LLM_NUM_RETRIES", int),
+            ("extended_thinking_budget", "LLM_EXTENDED_THINKING_BUDGET", int),
+            ("prompt_cache_retention", "LLM_PROMPT_CACHE_RETENTION", str),
+        ]
+        for kwarg, envvar, typ in _env_llm_opts:
+            val = os.getenv(envvar)
+            if val:
+                llm_kwargs[kwarg] = typ(val)
+        # Boolean options
+        enc_reasoning = os.getenv("LLM_ENABLE_ENCRYPTED_REASONING")
+        if enc_reasoning is not None:
+            llm_kwargs["enable_encrypted_reasoning"] = enc_reasoning.lower() == "true"
+
+        llm = LLM(**llm_kwargs)
 
         network_policy = Skill(
             name="network-policy",
