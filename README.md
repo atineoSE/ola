@@ -2,7 +2,9 @@
 
 Outer Loop of Agents — A harness to run long-horizon agentic loops
 
-`ola` is a light harness that allows to run agents for long-horizon tasks. With a simple folder structure and a few markdown files, we can direct long-running tasks. The implementation follows the [Ralph Wiggum technique](https://ghuntley.com/ralph/): a way for the agent to iterate on fresh contexts as it works relentlessly against tasks in a plan file. The design is heavily influenced by [this presentation](https://youtu.be/5syeNjq2ZCU?si=a2RvALDjiXPfYqJn) from [Ray Myers](https://github.com/raymyers), Chief Architect at [OpenHands](https://openhands.dev).
+`ola` is a light harness that allows to run AI coding agents for long-horizon tasks. With a simple folder structure and a few markdown files, you can direct long-running coding tasks. 
+
+The implementation follows the [Ralph Wiggum technique](https://ghuntley.com/ralph/): a way for the agent to iterate on fresh contexts as it works relentlessly against tasks in a plan file. The design is heavily influenced by [this presentation](https://youtu.be/5syeNjq2ZCU?si=a2RvALDjiXPfYqJn) from [Ray Myers](https://github.com/raymyers), Chief Architect at [OpenHands](https://openhands.dev).
 
 There are 2 agents currently supported:
 * [Claude Code](https://github.com/anthropics/claude-code)
