@@ -28,12 +28,6 @@ LLM_MODEL="litellm_proxy/minimax-m2.5"
 LLM_API_KEY="sk-test123"
 LLM_BASE_URL="https://llm-proxy.app.all-hands.dev"
 
-# Localhost should be skipped
-# LMNR_BASE_URL=http://localhost:8000
-
-# Quoted URL
-CUSTOM_BASE_URL='https://custom-api.example.com:9090/v1'
-
 # Non-URL variables should be ignored
 LLM_TIMEOUT="300"
 EOF
@@ -84,12 +78,26 @@ setup() {
   [ "$(_ola_host_from_url "https://api.llm-proxy.dev/v1")" = "api.llm-proxy.dev" ]
 }
 
+# ===== _ola_port_from_url =====
+
+@test "port_from_url: extracts port" {
+  [ "$(_ola_port_from_url "https://example.com:8080/path")" = "8080" ]
+}
+
+@test "port_from_url: no port returns empty" {
+  [ "$(_ola_port_from_url "https://example.com/path")" = "" ]
+}
+
+@test "port_from_url: localhost with port" {
+  [ "$(_ola_port_from_url "http://localhost:11434/v1")" = "11434" ]
+}
+
 # ===== ola-policy-sync =====
 
-@test "policy-sync: allowlist + env syncs 4 domains" {
+@test "policy-sync: allowlist + remote LLM_BASE_URL syncs 3 domains" {
   run ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
   [ "$status" -eq 0 ]
-  [ "$output" = "Synced 4 domain(s) to sbx policy." ]
+  [ "$output" = "Synced 3 domain(s) to sbx policy." ]
 }
 
 @test "policy-sync: allowlist domain 1" {
@@ -102,26 +110,76 @@ setup() {
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network docker.io,*.docker.io" ]
 }
 
-@test "policy-sync: env LLM_BASE_URL" {
+@test "policy-sync: remote LLM_BASE_URL" {
   ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
   [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network llm-proxy.app.all-hands.dev,*.llm-proxy.app.all-hands.dev" ]
 }
 
-@test "policy-sync: env CUSTOM_BASE_URL" {
+@test "policy-sync: exactly 3 sbx calls" {
   ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
-  [ "$(sed -n '4p' "$SBX_LOG")" = "sbx policy allow network custom-api.example.com,*.custom-api.example.com" ]
+  [ "$(wc -l < "$SBX_LOG" | tr -d ' ')" = "3" ]
 }
 
-@test "policy-sync: exactly 4 sbx calls" {
-  ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
-  [ "$(wc -l < "$SBX_LOG" | tr -d ' ')" = "4" ]
+@test "policy-sync: LLM_BASE_URL localhost allows with port" {
+  cat > "$TMPDIR_TEST/local_llm.env" <<'EOF'
+LLM_BASE_URL=http://localhost:11434/v1
+EOF
+  mkdir -p "$TMPDIR_TEST/empty_agent"
+  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/local_llm.env"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:11434" ]
+}
+
+@test "policy-sync: LLM_BASE_URL 127.0.0.1 allows with port" {
+  cat > "$TMPDIR_TEST/loopback_llm.env" <<'EOF'
+LLM_BASE_URL=http://127.0.0.1:8080/v1
+EOF
+  mkdir -p "$TMPDIR_TEST/empty_agent"
+  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/loopback_llm.env"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:8080" ]
+}
+
+@test "policy-sync: LMNR_BASE_URL localhost with LMNR_HTTP_PORT" {
+  cat > "$TMPDIR_TEST/lmnr_local.env" <<'EOF'
+LMNR_BASE_URL=http://localhost:8000
+LMNR_HTTP_PORT=8000
+EOF
+  mkdir -p "$TMPDIR_TEST/empty_agent"
+  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/lmnr_local.env"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:8000" ]
+}
+
+@test "policy-sync: LMNR_BASE_URL localhost without LMNR_HTTP_PORT skips" {
+  cat > "$TMPDIR_TEST/lmnr_noport.env" <<'EOF'
+LMNR_BASE_URL=http://localhost:8000
+EOF
+  mkdir -p "$TMPDIR_TEST/empty_agent"
+  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/lmnr_noport.env"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 0 domain(s) to sbx policy." ]
+}
+
+@test "policy-sync: LMNR_BASE_URL remote" {
+  cat > "$TMPDIR_TEST/lmnr_remote.env" <<'EOF'
+LMNR_BASE_URL=https://api.lmnr.ai
+EOF
+  mkdir -p "$TMPDIR_TEST/empty_agent"
+  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/lmnr_remote.env"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network api.lmnr.ai,*.api.lmnr.ai" ]
 }
 
 @test "policy-sync: env-only (no allowlist)" {
   mkdir -p "$TMPDIR_TEST/empty_agent"
   run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$ENV_FILE"
   [ "$status" -eq 0 ]
-  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
 }
 
 @test "policy-sync: allowlist-only (no env)" {
@@ -130,13 +188,12 @@ setup() {
   [ "$output" = "Synced 2 domain(s) to sbx policy." ]
 }
 
-@test "policy-sync: localhost and 127.x are skipped" {
-  cat > "$TMPDIR_TEST/localhost.env" <<'EOF'
-LOCAL_BASE_URL=http://localhost:3000
-LOOPBACK_BASE_URL=http://127.0.0.1:8080
+@test "policy-sync: missing vars does nothing" {
+  cat > "$TMPDIR_TEST/empty.env" <<'EOF'
+LLM_TIMEOUT=300
 EOF
   mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/localhost.env"
+  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/empty.env"
   [ "$status" -eq 0 ]
   [ "$output" = "Synced 0 domain(s) to sbx policy." ]
 }

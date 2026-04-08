@@ -13,17 +13,16 @@ _lmnr_initialized = False
 
 def _resolve_localhost(url: str) -> str:
     """If *url* points to localhost and we're inside a sandbox, swap to
-    ``host.docker.internal`` so the exporter can reach the host machine."""
-    import socket
+    ``host.docker.internal`` so the request can reach the host machine."""
     from urllib.parse import urlparse
 
+    from ola.sandbox import is_sandbox
+
+    if not is_sandbox():
+        return url
     parsed = urlparse(url)
     if parsed.hostname not in ("localhost", "127.0.0.1"):
         return url
-    try:
-        socket.getaddrinfo("host.docker.internal", None)
-    except socket.gaierror:
-        return url  # not in a sandbox / container
     return url.replace(parsed.hostname, "host.docker.internal", 1)
 
 
@@ -44,7 +43,10 @@ def _init_laminar():
 
         _lmnr_key = os.environ.pop("LMNR_PROJECT_API_KEY", None)
         if _lmnr_key:
-            base_url = os.getenv("LMNR_BASE_URL", "http://localhost")
+            base_url = os.getenv("LMNR_BASE_URL")
+            if not base_url:
+                logger.debug("LMNR_BASE_URL not set; skipping Laminar init")
+                return
             base_url = _resolve_localhost(base_url)
             Laminar.initialize(
                 project_api_key=_lmnr_key,
@@ -161,6 +163,8 @@ class OpenHandsAgent(Agent):
             "LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"
         )
         base_url = os.getenv("LLM_BASE_URL") or None
+        if base_url:
+            base_url = _resolve_localhost(base_url)
 
         logger.debug("OpenHands agent using model=%s", model_name)
 

@@ -27,7 +27,8 @@ RUN git config --global user.name "ola" && \
 # Unset proxy-managed API keys injected by sbx — they are placeholders that
 # confuse downstream tools. Claude uses OAuth credentials instead; OpenHands
 # gets its key from the agent .env via ola.
-RUN echo 'unset ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY XAI_API_KEY MISTRAL_API_KEY NEBIUS_API_KEY' >> ~/.bashrc && \
+RUN echo 'export SANDBOX=1' >> ~/.bashrc && \
+    echo 'unset ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY XAI_API_KEY MISTRAL_API_KEY NEBIUS_API_KEY' >> ~/.bashrc && \
     echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
 
 # OpenHands: on login, install config from workspace and register alias

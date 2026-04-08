@@ -41,6 +41,18 @@ _ola_host_from_url() {
   echo "$host"
 }
 
+# Extract port from a URL string (empty if no explicit port).
+# Usage: _ola_port_from_url "https://example.com:8080/path" → "8080"
+_ola_port_from_url() {
+  local url="$1"
+  local hostport="${url#*://}"
+  hostport="${hostport%%/*}"
+  case "$hostport" in
+    *:*) echo "${hostport##*:}" ;;
+    *)   echo "" ;;
+  esac
+}
+
 # Sync project-specific domains from allowlist.txt and .env into sbx network policy.
 # Reads ../agent/allowlist.txt and .env (in code dir) for URL-valued variables.
 # Adds each domain (plus wildcard subdomain) to the sbx balanced policy allowlist.
@@ -66,36 +78,38 @@ ola-policy-sync() {
     done < "$allowlist"
   fi
 
-  # 2. Source .env and sync hostnames from *_BASE_URL env vars
+  # 2. LLM_BASE_URL: allow the LLM endpoint (no action if missing)
   if [ -f "$env_file" ]; then
-    local _ola_env
-    _ola_env="$(set -a; source "$env_file" 2>/dev/null; env)"
-
-    local _ola_urls
-    _ola_urls="$(echo "$_ola_env" | grep '_BASE_URL=' | while IFS='=' read -r key val; do echo "$val"; done)"
-    local url host
-    for url in $_ola_urls; do
-      [[ "$url" == https://* || "$url" == http://* ]] || continue
-      host="$(_ola_host_from_url "$url")"
-      if [ -n "$host" ] && [ "$host" != "localhost" ] && [[ "$host" != 127.* ]]; then
-        sbx policy allow network "$host,*.$host" 2>/dev/null
+    local _llm_base
+    _llm_base="$(grep -E '^LLM_BASE_URL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
+    if [ -n "$_llm_base" ]; then
+      local _llm_host _llm_port
+      _llm_host="$(_ola_host_from_url "$_llm_base")"
+      _llm_port="$(_ola_port_from_url "$_llm_base")"
+      if [ "$_llm_host" = "localhost" ] || [[ "$_llm_host" == 127.* ]]; then
+        if [ -n "$_llm_port" ]; then
+          sbx policy allow network "localhost:$_llm_port" 2>/dev/null
+          count=$((count + 1))
+        fi
+      elif [ -n "$_llm_host" ]; then
+        sbx policy allow network "$_llm_host,*.$_llm_host" 2>/dev/null
         count=$((count + 1))
       fi
-    done
+    fi
 
-    # 3. Laminar: if API key is in .env, allow the base URL (or localhost:<port>)
-    local _lmnr_key
-    _lmnr_key="$(grep -E '^LMNR_PROJECT_API_KEY=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
-    if [ -n "$_lmnr_key" ]; then
-      local _lmnr_base
-      _lmnr_base="$(grep -E '^LMNR_BASE_URL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
+    # 3. LMNR_BASE_URL / LMNR_HTTP_PORT: allow Laminar endpoint (no action if missing)
+    local _lmnr_base
+    _lmnr_base="$(grep -E '^LMNR_BASE_URL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
+    if [ -n "$_lmnr_base" ]; then
       local _lmnr_host
-      _lmnr_host="$(_ola_host_from_url "${_lmnr_base:-http://localhost}")"
+      _lmnr_host="$(_ola_host_from_url "$_lmnr_base")"
       if [ "$_lmnr_host" = "localhost" ] || [[ "$_lmnr_host" == 127.* ]]; then
         local _lmnr_port
         _lmnr_port="$(grep -E '^LMNR_HTTP_PORT=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
-        sbx policy allow network "localhost:${_lmnr_port:-8000}" 2>/dev/null
-        count=$((count + 1))
+        if [ -n "$_lmnr_port" ]; then
+          sbx policy allow network "localhost:$_lmnr_port" 2>/dev/null
+          count=$((count + 1))
+        fi
       else
         sbx policy allow network "$_lmnr_host,*.$_lmnr_host" 2>/dev/null
         count=$((count + 1))
