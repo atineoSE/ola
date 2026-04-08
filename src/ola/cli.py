@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ola.agents import create_agent
 from ola.loop import run_outer_loop
+from ola.sandbox import is_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,11 @@ def main() -> None:
         action="store_true",
         help="Disable debug logging",
     )
+    parser.add_argument(
+        "--skip-sandbox",
+        action="store_true",
+        help="Allow running outside a Docker sandbox",
+    )
 
     args = parser.parse_args()
 
@@ -58,6 +64,13 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    if not is_sandbox() and not args.skip_sandbox:
+        logger.error(
+            "ola is not running inside a sandbox. "
+            "Use --skip-sandbox to run outside a sandbox environment."
+        )
+        sys.exit(1)
 
     plan_path = Path(args.agent_folder).resolve()
 
