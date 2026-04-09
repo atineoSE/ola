@@ -298,7 +298,7 @@ def build_table(
                     cache_text,
                     _fmt_ratio(fs.io_ratio),
                     _fmt_time_breakdown(fs.time_breakdown),
-                    _fmt_ttft(fs.total_ttft_ms, fs.all_streamed),
+                    _fmt_ttft(fs.median_ttft_ms, fs.all_streamed),
                     _fmt_tok_per_sec(fs.llm_tok_per_sec),
                     _fmt_time(fs.total_wall_ms),
                     style=style,

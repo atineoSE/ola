@@ -323,6 +323,9 @@ def test_iteration_llm_tok_per_sec_zero_wall():
 
 
 def test_folder_llm_tok_per_sec():
+    # seed: decode = 5000 - 2000 = 3000ms → 200/3 ≈ 66.7
+    # loop-1: decode = 5000 - 1000 = 4000ms → 300/4 = 75.0
+    # median of [66.7, 75.0] = 70.83
     fs = FolderStatus(
         name="test",
         iterations=[
@@ -334,8 +337,8 @@ def test_folder_llm_tok_per_sec():
             ),
         ],
     )
-    # total output=500, total wall=10000, total tool=3000, decode=7000ms=7s
-    assert abs(fs.llm_tok_per_sec - 500 / 7) < 0.1
+    expected = (200 / 3 + 300 / 4) / 2
+    assert abs(fs.llm_tok_per_sec - expected) < 0.1
 
 
 def test_iteration_avg_input_tokens():
@@ -396,18 +399,22 @@ def test_iteration_llm_tok_per_sec_all_ttft():
     assert it.llm_tok_per_sec == 0.0
 
 
-def test_folder_total_ttft_ms():
+def test_folder_median_ttft_ms():
     fs = FolderStatus(
         name="test",
         iterations=[
             IterationStatus(phase="seed", ttft_ms=500),
             IterationStatus(phase="loop-1", ttft_ms=300),
+            IterationStatus(phase="loop-2", ttft_ms=400),
         ],
     )
-    assert fs.total_ttft_ms == 800
+    assert fs.median_ttft_ms == 400
 
 
-def test_folder_llm_tok_per_sec_with_ttft():
+def test_folder_llm_tok_per_sec_median():
+    # seed: decode = 5000 - 1000 - 500 = 3500ms → 200/3.5 ≈ 57.1
+    # loop-1: decode = 5000 - 1000 - 500 = 3500ms → 300/3.5 ≈ 85.7
+    # median of [57.1, 85.7] = 71.4
     fs = FolderStatus(
         name="test",
         iterations=[
@@ -427,9 +434,8 @@ def test_folder_llm_tok_per_sec_with_ttft():
             ),
         ],
     )
-    # total output=500, total wall=10000, total tool=2000, total ttft=1000
-    # decode = 10000 - 2000 - 1000 = 7000ms = 7s → 500/7 ≈ 71.4
-    assert abs(fs.llm_tok_per_sec - 500 / 7) < 0.1
+    expected = (200 / 3.5 + 300 / 3.5) / 2
+    assert abs(fs.llm_tok_per_sec - expected) < 0.1
 
 
 def test_parse_stats_jsonl_with_ttft():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -157,8 +158,11 @@ class FolderStatus:
         return all(it.streamed for it in self.iterations) if self.iterations else True
 
     @property
-    def total_ttft_ms(self) -> int:
-        return sum(it.ttft_ms for it in self.iterations)
+    def median_ttft_ms(self) -> int:
+        vals = [it.ttft_ms for it in self.iterations if it.ttft_ms > 0]
+        if not vals:
+            return 0
+        return round(statistics.median(vals))
 
     @property
     def io_ratio(self) -> float:
@@ -179,11 +183,11 @@ class FolderStatus:
 
     @property
     def llm_tok_per_sec(self) -> float:
-        """Aggregate output tokens per second during decode phases."""
-        decode_ms = self.total_wall_ms - self.total_tool_ms - self.total_ttft_ms
-        if decode_ms <= 0:
+        """Median tok/sec across iterations."""
+        vals = [it.llm_tok_per_sec for it in self.iterations if it.llm_tok_per_sec > 0]
+        if not vals:
             return 0.0
-        return self.total_output_tokens / (decode_ms / 1000)
+        return statistics.median(vals)
 
     @property
     def model_display(self) -> str:
