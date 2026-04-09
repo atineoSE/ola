@@ -1,11 +1,17 @@
 """Tests for loop helpers."""
 
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
 from ola.agents.base import Agent, AgentResponse
 from ola.agents.claude_code import ClaudeCodeAgent
-from ola.loop import _append_stats, _last_loop_number
+from ola.loop import (
+    _MAX_STAGNANT_LOOPS,
+    _append_stats,
+    _last_loop_number,
+    _process_folder,
+)
 from ola.monitor.data import parse_stats_jsonl
 from ola.stats import IterationStats
 
@@ -380,3 +386,94 @@ def test_cc_stream_to_stats_jsonl_roundtrip(tmp_path):
     # input_tokens = raw(200) + cache_creation(6763) + cache_read(20771)
     assert it.input_tokens == 200 + 6763 + 20771
     assert it.output_tokens == 80
+
+
+# --- Stagnation backstop tests ---
+
+
+class _StagnantAgent(Agent):
+    """Agent that always succeeds but never completes any tasks."""
+
+    mnemonic = "cc"
+    call_count = 0
+
+    def run(self, prompt, workdir, state_dir=None, labels=None):
+        self.call_count += 1
+        return AgentResponse(output="All done!", success=True, stats=IterationStats())
+
+    def version(self):
+        return "1.0.0"
+
+
+def test_stagnation_backstop_breaks_at_max(tmp_path, caplog):
+    """Loop breaks after _MAX_STAGNANT_LOOPS iterations with zero task progress."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    # PLAN.md with a task that never gets checked off (simulates parser bug)
+    (folder / "PLAN.md").write_text("- [ ] A task that never completes\n")
+    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
+
+    agent = _StagnantAgent()
+
+    with (
+        caplog.at_level(logging.WARNING, logger="ola.loop"),
+        patch("ola.loop._git_commit"),
+    ):
+        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
+
+    # Agent was called exactly _MAX_STAGNANT_LOOPS times before the loop broke
+    assert agent.call_count == _MAX_STAGNANT_LOOPS
+
+    # Warning was logged
+    assert any(
+        "No task progress" in rec.message and str(_MAX_STAGNANT_LOOPS) in rec.message
+        for rec in caplog.records
+    )
+
+    # STATS.jsonl has exactly _MAX_STAGNANT_LOOPS rows
+    recs = _read_records(folder)
+    assert len(recs) == _MAX_STAGNANT_LOOPS
+
+
+def test_stagnation_resets_on_progress(tmp_path):
+    """Stagnation counter resets when the agent makes task progress."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
+
+    # Start with 2 unchecked tasks; agent completes one on call 4
+    plan_states = []
+    for i in range(_MAX_STAGNANT_LOOPS + 2):
+        if i < _MAX_STAGNANT_LOOPS - 2:
+            plan_states.append("- [ ] Task A\n- [ ] Task B\n")
+        elif i == _MAX_STAGNANT_LOOPS - 2:
+            # Agent "completes" task A on this iteration
+            plan_states.append("- [x] Task A\n- [ ] Task B\n")
+        else:
+            plan_states.append("- [x] Task A\n- [ ] Task B\n")
+
+    call_idx = 0
+
+    class _ProgressAgent(Agent):
+        mnemonic = "cc"
+
+        def run(self, prompt, workdir, state_dir=None, labels=None):
+            nonlocal call_idx
+            # Write the next plan state BEFORE returning so count_tasks sees it
+            (folder / "PLAN.md").write_text(plan_states[min(call_idx, len(plan_states) - 1)])
+            call_idx += 1
+            return AgentResponse(output="ok", success=True, stats=IterationStats())
+
+        def version(self):
+            return "1.0.0"
+
+    # Initial plan state
+    (folder / "PLAN.md").write_text("- [ ] Task A\n- [ ] Task B\n")
+
+    agent = _ProgressAgent()
+    # Set limit high enough to observe the reset but still terminate
+    with patch("ola.loop._git_commit"):
+        _process_folder(agent, folder, limit=_MAX_STAGNANT_LOOPS + 2, agent_root=tmp_path)
+
+    # The agent ran more than _MAX_STAGNANT_LOOPS times because progress reset the counter
+    assert call_idx > _MAX_STAGNANT_LOOPS

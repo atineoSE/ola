@@ -21,6 +21,8 @@ _DEFAULT_LOOP_PROMPT = (
 
 logger = logging.getLogger(__name__)
 
+_MAX_STAGNANT_LOOPS = 5
+
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     """Run a git command, logging stderr on failure."""
@@ -237,6 +239,7 @@ def _process_folder(
     # produce duplicate phase labels (e.g. a second "loop-1").
     iteration = _last_loop_number(folder)
     iterations_this_run = 0
+    stagnant_iterations = 0
     while True:
         if not has_outstanding_tasks(folder):
             logger.info("No outstanding tasks in PLAN.md. Done with %s.", folder.name)
@@ -275,6 +278,23 @@ def _process_folder(
 
         if not response.success:
             logger.error("Agent returned failure. Stopping %s.", folder.name)
+            break
+
+        # Stagnation backstop: break if the agent keeps succeeding but
+        # makes no task progress, to avoid infinite loops from parser bugs.
+        if tasks_after == tasks_before:
+            stagnant_iterations += 1
+        else:
+            stagnant_iterations = 0
+
+        if stagnant_iterations >= _MAX_STAGNANT_LOOPS:
+            logger.warning(
+                "No task progress for %d iterations in %s"
+                " — breaking to avoid infinite loop. tasks=%s",
+                _MAX_STAGNANT_LOOPS,
+                folder.name,
+                tasks_after,
+            )
             break
 
         _git_commit(agent_root, f"ola: {folder.name} loop #{iteration}")
