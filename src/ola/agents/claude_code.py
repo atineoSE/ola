@@ -176,6 +176,10 @@ class ClaudeCodeAgent(Agent):
         rate_limit_hit: dict | None = None  # set on rejected w/o fallback
         rate_limit_warned: bool = False
 
+        # API error tracking
+        api_error_type: str | None = None
+        api_error_message: str | None = None
+
         for line in proc.stdout:
             line = line.strip()
             if not line:
@@ -202,7 +206,27 @@ class ClaudeCodeAgent(Agent):
                 inner = event["event"]
                 inner_type = inner.get("type", "")
 
-                if inner_type == "message_start" and "message" in inner:
+                # Check for error before dispatching on inner_type
+                if inner_type == "error" or (
+                    "error" in inner and isinstance(inner["error"], dict)
+                ):
+                    err = inner.get("error", inner)
+                    err_code = err.get("type", "api_error")
+                    err_msg = err.get("message", "")
+                    if err_code == "authentication_error":
+                        status.clear()
+                        proc.kill()
+                        proc.wait()
+                        raise AuthenticationError(err_msg)
+                    api_error_type = err_code
+                    api_error_message = err_msg[:500] if err_msg else None
+                    logger.error(
+                        "Anthropic API error in stream_event: %s — %s",
+                        err_code,
+                        err_msg[:200],
+                    )
+
+                elif inner_type == "message_start" and "message" in inner:
                     turn_start = time.monotonic()
                     token_start = None  # reset for new turn
                     model = inner["message"].get("model")
@@ -282,6 +306,23 @@ class ClaudeCodeAgent(Agent):
                     )
                     rate_limit_hit = info
 
+            # --- Top-level API error events ---
+
+            elif msg_type == "error":
+                err = event.get("error", event)
+                err_code = err.get("type", "api_error")
+                err_msg = err.get("message", "")
+                if err_code == "authentication_error":
+                    status.clear()
+                    proc.kill()
+                    proc.wait()
+                    raise AuthenticationError(err_msg)
+                api_error_type = err_code
+                api_error_message = err_msg[:500] if err_msg else None
+                logger.error(
+                    "Anthropic API error: %s — %s", err_code, err_msg[:200]
+                )
+
             elif msg_type == "result":
                 result_data = event
 
@@ -311,6 +352,24 @@ class ClaudeCodeAgent(Agent):
                 error_type="rate_limited",
                 error_message=f"{rl_type} limit hit, resets at {resets_iso}",
                 rate_limit_resets_at=resets_at,
+            )
+            output = result_data.get("result", "") if result_data else ""
+            return AgentResponse(output=output, success=False, stats=stats)
+
+        # API error with no successful result → return error with stats
+        if api_error_type and (
+            result_data is None or result_data.get("subtype") != "success"
+        ):
+            llm_ms = total_ttft_ms + total_decode_ms
+            stats = IterationStats(
+                input_tokens=0,
+                output_tokens=0,
+                models=sorted(models_seen) if models_seen else [],
+                max_input_tokens=max_input_tokens,
+                ttft_ms=total_ttft_ms,
+                llm_ms=llm_ms,
+                error_type=api_error_type,
+                error_message=api_error_message,
             )
             output = result_data.get("result", "") if result_data else ""
             return AgentResponse(output=output, success=False, stats=stats)

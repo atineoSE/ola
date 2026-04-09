@@ -532,3 +532,175 @@ class TestErrorResultSubtype:
         resp = _run_stream(lines)
         assert not resp.success
         assert resp.stats.error_type == "unknown_error"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic API error detection tests
+# ---------------------------------------------------------------------------
+
+def _api_error_event(error_type: str = "api_error", message: str = "Server error") -> str:
+    """Top-level {"type": "error"} event."""
+    return json.dumps({
+        "type": "error",
+        "error": {"type": error_type, "message": message},
+    })
+
+
+def _stream_event_error(error_type: str = "api_error", message: str = "Server error") -> str:
+    """stream_event wrapper with an inner error."""
+    return _stream_event({
+        "type": "error",
+        "error": {"type": error_type, "message": message},
+    })
+
+
+class TestApiErrorDetection:
+    def test_top_level_overloaded_error(self, caplog):
+        """Top-level overloaded_error → error_type in stats, success=False."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _api_error_event("overloaded_error", "Overloaded"),
+        ]
+        with caplog.at_level(logging.ERROR, logger="ola.agents.claude_code"):
+            resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats is not None
+        assert resp.stats.error_type == "overloaded_error"
+        assert resp.stats.error_message == "Overloaded"
+        assert any("overloaded_error" in r.message for r in caplog.records)
+
+    def test_top_level_rate_limit_error(self):
+        """Top-level rate_limit_error → captured as error_type."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _api_error_event("rate_limit_error", "Too many requests"),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "rate_limit_error"
+        assert resp.stats.error_message == "Too many requests"
+
+    def test_top_level_invalid_request_error(self):
+        """Top-level invalid_request_error → captured."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _api_error_event("invalid_request_error", "Bad request body"),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "invalid_request_error"
+        assert resp.stats.error_message == "Bad request body"
+
+    def test_top_level_api_error_generic(self):
+        """Top-level api_error → captured."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _api_error_event("api_error", "Internal server error"),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "api_error"
+
+    def test_top_level_authentication_error_raises(self):
+        """Top-level authentication_error → raises AuthenticationError."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _api_error_event("authentication_error", "Invalid API key"),
+        ]
+        proc = _make_proc(lines)
+        agent = ClaudeCodeAgent()
+        with pytest.raises(AuthenticationError):
+            agent._stream(proc, "test prompt")
+
+    def test_stream_event_wrapped_error(self, caplog):
+        """stream_event wrapping an error → error_type in stats."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _stream_event_error("overloaded_error", "Server busy"),
+        ]
+        with caplog.at_level(logging.ERROR, logger="ola.agents.claude_code"):
+            resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "overloaded_error"
+        assert resp.stats.error_message == "Server busy"
+        assert any("overloaded_error" in r.message for r in caplog.records)
+
+    def test_stream_event_wrapped_authentication_error_raises(self):
+        """stream_event wrapping authentication_error → raises AuthenticationError."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _stream_event_error("authentication_error", "Bad key"),
+        ]
+        proc = _make_proc(lines)
+        agent = ClaudeCodeAgent()
+        with pytest.raises(AuthenticationError):
+            agent._stream(proc, "test prompt")
+
+    def test_stream_event_with_error_field(self):
+        """stream_event inner dict has 'error' field (not type=error) → detected."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _stream_event({
+                "type": "message_delta",
+                "error": {"type": "rate_limit_error", "message": "429 hit"},
+            }),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "rate_limit_error"
+        assert resp.stats.error_message == "429 hit"
+
+    def test_api_error_message_truncated(self):
+        """Long API error messages are truncated to 500 chars."""
+        long_msg = "x" * 1000
+        lines = [
+            json.dumps({"type": "system"}),
+            _api_error_event("api_error", long_msg),
+        ]
+        resp = _run_stream(lines)
+        assert len(resp.stats.error_message) == 500
+
+    def test_api_error_does_not_override_successful_result(self):
+        """If an API error occurred but a successful result follows, result wins."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _message_delta(),
+            _result(subtype="success"),
+        ]
+        resp = _run_stream(lines)
+        assert resp.success
+        assert resp.stats.error_type is None
+
+    def test_api_error_with_failed_result_uses_api_error(self):
+        """API error + non-success result → api error_type takes precedence."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _api_error_event("overloaded_error", "Server overloaded"),
+            _message_delta(),
+            _result(subtype="error_during_execution", result_text="Failed"),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "overloaded_error"
+
+    def test_api_error_preserves_partial_timing(self):
+        """API error after message_start preserves models and max_input_tokens."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(model="claude-sonnet-4-20250514", input_tokens=100,
+                           cache_creation=200, cache_read=300),
+            _content_block_start(),
+            _api_error_event("overloaded_error", "Busy"),
+        ]
+        resp = _run_stream(lines)
+        assert resp.stats.models == ["claude-sonnet-4-20250514"]
+        assert resp.stats.max_input_tokens == 600
+        assert resp.stats.ttft_ms >= 0
