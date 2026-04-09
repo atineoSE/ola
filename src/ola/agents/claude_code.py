@@ -362,6 +362,13 @@ class ClaudeCodeAgent(Agent):
             sorted(models_seen) if models_seen else ([self.model] if self.model else [])
         )
 
+        subtype = data.get("subtype", "")
+        error_type: str | None = None
+        error_message: str | None = None
+        if subtype != "success":
+            error_type = subtype or "unknown_error"
+            error_message = output[:500] if output else None
+
         stats = IterationStats(
             input_tokens=input_tokens + cache_creation + cache_read,
             output_tokens=usage.get("output_tokens", 0),
@@ -372,6 +379,8 @@ class ClaudeCodeAgent(Agent):
             max_input_tokens=max_input_tokens,
             ttft_ms=ttft_ms,
             llm_ms=llm_ms,
+            error_type=error_type,
+            error_message=error_message,
         )
 
         return AgentResponse(output=output, success=success, stats=stats)

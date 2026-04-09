@@ -67,10 +67,11 @@ def _result(
     num_turns: int = 1,
     duration_api_ms: int = 0,
     subtype: str = "success",
+    result_text: str = "Done.",
 ) -> str:
     d = {
         "type": "result",
-        "result": "Done.",
+        "result": result_text,
         "subtype": subtype,
         "num_turns": num_turns,
         "usage": {
@@ -451,3 +452,83 @@ class TestRateLimitEvents:
         assert not resp.success
         assert resp.stats.error_type == "rate_limited"
         assert "seven_day_opus" in resp.stats.error_message
+
+
+# ---------------------------------------------------------------------------
+# Error result subtype tests
+# ---------------------------------------------------------------------------
+
+class TestErrorResultSubtype:
+    def test_error_result_subtype_captured(self):
+        """Result with subtype != 'success' → error_type and error_message populated."""
+        error_text = "Tool execution failed: command returned exit code 1"
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _message_delta(),
+            _result(
+                subtype="error_during_execution",
+                result_text=error_text,
+            ),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats is not None
+        assert resp.stats.error_type == "error_during_execution"
+        assert resp.stats.error_message == error_text
+
+    def test_error_max_turns_subtype(self):
+        """error_max_turns subtype is captured correctly."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _message_delta(),
+            _result(
+                subtype="error_max_turns",
+                result_text="Max turns reached.",
+            ),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "error_max_turns"
+        assert resp.stats.error_message == "Max turns reached."
+
+    def test_error_message_truncated_to_500_chars(self):
+        """Long error text is truncated to 500 characters."""
+        long_text = "x" * 1000
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _message_delta(),
+            _result(
+                subtype="error_during_execution",
+                result_text=long_text,
+            ),
+        ]
+        resp = _run_stream(lines)
+        assert resp.stats.error_message == "x" * 500
+        assert len(resp.stats.error_message) == 500
+
+    def test_success_subtype_has_no_error(self):
+        """Success result → no error_type or error_message."""
+        lines = _single_turn_lines()
+        resp = _run_stream(lines)
+        assert resp.success
+        assert resp.stats.error_type is None
+        assert resp.stats.error_message is None
+
+    def test_empty_subtype_treated_as_error(self):
+        """Missing/empty subtype → error_type='unknown_error'."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _message_delta(),
+            _result(subtype="", result_text="Something went wrong."),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "unknown_error"
