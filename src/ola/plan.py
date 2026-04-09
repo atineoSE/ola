@@ -3,6 +3,40 @@
 import re
 from pathlib import Path
 
+_CHECKBOX_RE = re.compile(r"^[ \t]*[-*+] \[( |x|X)\] ")
+_FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
+
+
+def _count_checkboxes(text: str) -> tuple[int, int]:
+    """Walk *text* line-by-line, skipping fenced code blocks.
+
+    Returns (checked, checked + unchecked).
+
+    Known limitations: indented (4-space) code blocks and setext headings
+    are not detected — only backtick and tilde fences.
+    """
+    checked = 0
+    unchecked = 0
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _CHECKBOX_RE.match(line)
+        if m:
+            if m.group(1) == " ":
+                unchecked += 1
+            else:
+                checked += 1
+    return checked, checked + unchecked
+
+
+def parse_task_counts(text: str) -> tuple[int, int]:
+    """Canonical string-in parser: return (completed, total) from markdown text."""
+    return _count_checkboxes(text)
+
 
 def discover_plan_folders(plan_path: Path) -> list[Path]:
     """Return sorted subfolders of the plan path, or empty list if none."""
@@ -21,7 +55,8 @@ def has_outstanding_tasks(plan_path: Path) -> bool:
     if not plan_file.exists():
         return False
     content = plan_file.read_text()
-    return bool(re.search(r"- \[ \]", content))
+    completed, total = parse_task_counts(content)
+    return total > completed
 
 
 def count_tasks(folder: Path) -> tuple[int, int]:
@@ -30,9 +65,7 @@ def count_tasks(folder: Path) -> tuple[int, int]:
     if not plan_file.exists():
         return 0, 0
     content = plan_file.read_text()
-    completed = len(re.findall(r"- \[x\]", content, re.IGNORECASE))
-    unchecked = len(re.findall(r"- \[ \]", content))
-    return completed, completed + unchecked
+    return parse_task_counts(content)
 
 
 def read_file_if_exists(path: Path) -> str | None:
