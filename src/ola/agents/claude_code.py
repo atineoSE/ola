@@ -376,7 +376,20 @@ class ClaudeCodeAgent(Agent):
 
         if result_data is None:
             stderr = proc.stderr.read() if proc.stderr else ""
-            return AgentResponse(output=stderr, success=proc.returncode == 0)
+            llm_ms = total_ttft_ms + total_decode_ms
+            stats = IterationStats(
+                input_tokens=0,
+                output_tokens=0,
+                models=sorted(models_seen) if models_seen else [],
+                max_input_tokens=max_input_tokens,
+                ttft_ms=total_ttft_ms,
+                llm_ms=llm_ms,
+                error_type="no_result_event",
+                error_message=(stderr[:500] if stderr else None),
+            )
+            return AgentResponse(
+                output=stderr, success=proc.returncode == 0, stats=stats
+            )
 
         llm_ms = total_ttft_ms + total_decode_ms
 

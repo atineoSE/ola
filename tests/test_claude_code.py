@@ -704,3 +704,64 @@ class TestApiErrorDetection:
         assert resp.stats.models == ["claude-sonnet-4-20250514"]
         assert resp.stats.max_input_tokens == 600
         assert resp.stats.ttft_ms >= 0
+
+
+# ---------------------------------------------------------------------------
+# Crashed iteration (no result event) tests
+# ---------------------------------------------------------------------------
+
+class TestNoResultEvent:
+    def test_no_result_event_preserves_partial_stats(self):
+        """Stream with message_start + content_block_start but no result event
+        → returned stats carry models, max_input_tokens, ttft_ms, and
+        error_type='no_result_event'."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(
+                model="claude-sonnet-4-20250514",
+                input_tokens=100,
+                cache_creation=200,
+                cache_read=300,
+            ),
+            _content_block_start(),
+            # Stream ends abruptly — no message_delta, no result
+        ]
+        resp = _run_stream(lines, returncode=1)
+        assert not resp.success
+        assert resp.stats is not None
+        assert resp.stats.error_type == "no_result_event"
+        assert resp.stats.models == ["claude-sonnet-4-20250514"]
+        assert resp.stats.max_input_tokens == 600
+        assert resp.stats.ttft_ms >= 0
+
+    def test_no_result_event_stderr_in_error_message(self):
+        """When CLI crashes with stderr output, it appears in error_message."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(model="claude-sonnet-4-20250514"),
+            _content_block_start(),
+        ]
+        proc = _make_proc(lines, returncode=1)
+        proc.stderr.read.return_value = "Segmentation fault (core dumped)"
+        agent = ClaudeCodeAgent()
+        resp = agent._stream(proc, "test prompt")
+        assert resp.stats.error_type == "no_result_event"
+        assert resp.stats.error_message == "Segmentation fault (core dumped)"
+
+    def test_no_result_event_stderr_truncated(self):
+        """Long stderr is truncated to 500 chars in error_message."""
+        lines = [json.dumps({"type": "system"})]
+        proc = _make_proc(lines, returncode=1)
+        proc.stderr.read.return_value = "x" * 1000
+        agent = ClaudeCodeAgent()
+        resp = agent._stream(proc, "test prompt")
+        assert resp.stats.error_type == "no_result_event"
+        assert len(resp.stats.error_message) == 500
+
+    def test_no_result_event_empty_stream(self):
+        """Completely empty stream (no events at all) still gets stats."""
+        lines = []
+        resp = _run_stream(lines, returncode=1)
+        assert resp.stats.error_type == "no_result_event"
+        assert resp.stats.models == []
+        assert resp.stats.max_input_tokens == 0
