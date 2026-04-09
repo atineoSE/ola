@@ -28,3 +28,6 @@ class IterationStats(BaseModel):
     max_input_tokens: int = 0
     ttft_ms: int = 0
     streamed: bool = True
+    error_type: str | None = None
+    error_message: str | None = None
+    rate_limit_resets_at: int | None = None

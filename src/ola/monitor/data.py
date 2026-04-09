@@ -38,6 +38,9 @@ class IterationStatus:
     tasks_total: int = 0
     tasks_completed_delta: int = 0
     max_input_tokens: int = 0
+    error_type: str | None = None
+    error_message: str | None = None
+    rate_limit_resets_at: int | None = None
 
     @property
     def agent_display(self) -> str:
@@ -221,6 +224,9 @@ def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
                 tasks_total=record.get("tasks_total", 0),
                 tasks_completed_delta=record.get("tasks_completed_delta", 0),
                 max_input_tokens=record.get("max_input_tokens", 0),
+                error_type=record.get("error_type"),
+                error_message=record.get("error_message"),
+                rate_limit_resets_at=record.get("rate_limit_resets_at"),
             )
         )
     return iterations

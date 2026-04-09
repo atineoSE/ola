@@ -561,3 +561,54 @@ def test_folder_all_streamed_all_true():
         ],
     )
     assert fs.all_streamed is True
+
+
+# --- Error field tests ---
+
+
+def test_parse_stats_jsonl_with_error_fields():
+    """STATS row with error fields is parsed correctly."""
+    line = (
+        '{"phase": "loop-3", "wall_ms": 500, "input_tokens": 10, "output_tokens": 0,'
+        ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
+        ' "error_type": "rate_limited", "error_message": "five_hour limit hit",'
+        ' "rate_limit_resets_at": 1700000000}\n'
+    )
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].error_type == "rate_limited"
+    assert iterations[0].error_message == "five_hour limit hit"
+    assert iterations[0].rate_limit_resets_at == 1700000000
+
+
+def test_parse_stats_jsonl_backward_compat_error_fields():
+    """Old STATS.jsonl without error fields defaults to None."""
+    line = '{"phase": "seed", "wall_ms": 1000}\n'
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].error_type is None
+    assert iterations[0].error_message is None
+    assert iterations[0].rate_limit_resets_at is None
+
+
+def test_iteration_stats_error_fields_in_model_dump():
+    """IterationStats error fields round-trip through model_dump (used by _append_stats)."""
+    from ola.stats import IterationStats
+
+    stats = IterationStats(
+        error_type="rate_limited",
+        error_message="five_hour limit hit, resets at 2024-01-01T00:00:00",
+        rate_limit_resets_at=1700000000,
+    )
+    dumped = stats.model_dump()
+    assert dumped["error_type"] == "rate_limited"
+    assert dumped["error_message"].startswith("five_hour")
+    assert dumped["rate_limit_resets_at"] == 1700000000
+
+
+def test_iteration_stats_error_fields_default_none():
+    """IterationStats error fields default to None."""
+    from ola.stats import IterationStats
+
+    stats = IterationStats()
+    assert stats.error_type is None
+    assert stats.error_message is None
+    assert stats.rate_limit_resets_at is None
