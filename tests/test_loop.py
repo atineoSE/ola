@@ -1,8 +1,10 @@
 """Tests for loop helpers."""
 
 import json
+from unittest.mock import MagicMock, patch
 
 from ola.agents.base import Agent, AgentResponse
+from ola.agents.claude_code import ClaudeCodeAgent
 from ola.loop import _append_stats, _last_loop_number
 from ola.monitor.data import parse_stats_jsonl
 from ola.stats import IterationStats
@@ -243,3 +245,138 @@ def test_last_loop_number_non_numeric_suffix(tmp_path):
     ]
     (tmp_path / "STATS.jsonl").write_text("\n".join(lines) + "\n")
     assert _last_loop_number(tmp_path) == 2
+
+
+# --- End-to-end roundtrip sentinel ---
+
+
+def _make_proc(lines: list[str], returncode: int = 0) -> MagicMock:
+    """Return a mock Popen whose stdout yields *lines* as NDJSON."""
+    proc = MagicMock()
+    proc.stdin = MagicMock()
+    proc.stdout = iter(l + "\n" for l in lines)
+    proc.stderr = MagicMock()
+    proc.stderr.read.return_value = ""
+    proc.returncode = returncode
+    proc.wait.return_value = returncode
+    proc.kill = MagicMock()
+    return proc
+
+
+def _stream_event(inner: dict) -> str:
+    return json.dumps({"type": "stream_event", "event": inner})
+
+
+def _cc_stream_lines() -> list[str]:
+    """Canned CC stream with --include-partial-messages output (two turns)."""
+    msg_start_1 = _stream_event({
+        "type": "message_start",
+        "message": {
+            "model": "claude-sonnet-4-20250514",
+            "usage": {
+                "input_tokens": 5,
+                "cache_creation_input_tokens": 6663,
+                "cache_read_input_tokens": 15771,
+            },
+        },
+    })
+    cbs_1 = _stream_event({"type": "content_block_start"})
+    md_1 = _stream_event({"type": "message_delta"})
+
+    msg_start_2 = _stream_event({
+        "type": "message_start",
+        "message": {
+            "model": "claude-sonnet-4-20250514",
+            "usage": {
+                "input_tokens": 10,
+                "cache_creation_input_tokens": 100,
+                "cache_read_input_tokens": 5000,
+            },
+        },
+    })
+    cbs_2 = _stream_event({"type": "content_block_start"})
+    md_2 = _stream_event({"type": "message_delta"})
+
+    result = json.dumps({
+        "type": "result",
+        "result": "Done.",
+        "subtype": "success",
+        "num_turns": 2,
+        "usage": {
+            "input_tokens": 200,
+            "output_tokens": 80,
+            "cache_creation_input_tokens": 6763,
+            "cache_read_input_tokens": 20771,
+        },
+    })
+
+    return [
+        json.dumps({"type": "system"}),
+        msg_start_1, cbs_1, md_1,
+        msg_start_2, cbs_2, md_2,
+        result,
+    ]
+
+
+def test_cc_stream_to_stats_jsonl_roundtrip(tmp_path):
+    """Regression sentinel: CC stream → IterationStats → STATS.jsonl → parse.
+
+    Asserts that every column ola-top displays would render non-zero values
+    for the fields that were silently broken by dbcc23b: models,
+    max_input_tokens, ttft_ms, llm_ms.
+    """
+    # Simulate wall-clock time so TTFT and decode are non-zero.
+    # Per turn: message_start → content_block_start → message_delta
+    # Turn 1: ttft = 0.100s, decode = 0.200s
+    # Turn 2: ttft = 0.150s, decode = 0.250s
+    clock = iter([
+        0.0,    # turn 1 message_start  → turn_start
+        0.100,  # turn 1 content_block_start → token_start (ttft=100ms)
+        0.300,  # turn 1 message_delta (decode=200ms)
+        0.500,  # turn 2 message_start  → turn_start
+        0.650,  # turn 2 content_block_start → token_start (ttft=150ms)
+        0.900,  # turn 2 message_delta (decode=250ms)
+    ])
+
+    # Step 1: Run _stream() on a mocked CC process with faked time.
+    proc = _make_proc(_cc_stream_lines())
+    agent = ClaudeCodeAgent()
+    with patch("ola.agents.claude_code.time") as mock_time:
+        mock_time.monotonic = lambda: next(clock)
+        response = agent._stream(proc, "test prompt")
+    stats = response.stats
+
+    # Step 2: Write via _append_stats.
+    _append_stats(
+        tmp_path, "loop-1", stats, wall_ms=10000,
+        agent=agent, tasks_before=(0, 3), tasks_after=(1, 3),
+    )
+
+    # Step 3: Read back via parse_stats_jsonl.
+    text = (tmp_path / "STATS.jsonl").read_text()
+    iterations = parse_stats_jsonl(text)
+    assert len(iterations) == 1
+    it = iterations[0]
+
+    # Step 4: The four fields that dbcc23b silently zeroed MUST be non-zero.
+    assert it.models, "models must not be empty"
+    assert it.max_input_tokens > 0, "max_input_tokens must be non-zero"
+    assert it.ttft_ms > 0, "ttft_ms must be non-zero"
+    assert it.llm_ms > 0, "llm_ms must be non-zero"
+
+    # Verify specific values for extra confidence.
+    assert "claude-sonnet-4-20250514" in it.models
+    # max_input_tokens should be the larger turn: 5 + 6663 + 15771 = 22439
+    assert it.max_input_tokens == 5 + 6663 + 15771
+    # ttft_ms = 100 + 150 = 250, llm_ms = ttft + decode(200+250) ≈ 700
+    # Allow ±1ms for int() truncation of float arithmetic.
+    assert abs(it.ttft_ms - 250) <= 1
+    assert abs(it.llm_ms - 700) <= 1
+
+    # tool_ms should be derived (wall_ms - llm_ms) and positive.
+    assert it.tool_ms == 10000 - it.llm_ms
+
+    # Token fields from result.usage should survive the roundtrip.
+    # input_tokens = raw(200) + cache_creation(6763) + cache_read(20771)
+    assert it.input_tokens == 200 + 6763 + 20771
+    assert it.output_tokens == 80
