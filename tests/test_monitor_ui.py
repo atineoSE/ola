@@ -11,6 +11,7 @@ from rich.console import Console
 from ola.monitor.data import FolderStatus, IterationStatus
 from ola.monitor.ui import (
     ViewMode,
+    _build_display_rows,
     _cache_style,
     _find_active_index,
     _fmt_ratio,
@@ -19,6 +20,7 @@ from ola.monitor.ui import (
     _fmt_tok_per_sec,
     _fmt_tokens,
     _fmt_ttft,
+    _folder_row_index,
     _read_key,
     build_table,
 )
@@ -259,8 +261,9 @@ class TestHeaderFooter:
         table = build_table(folders, agent_path=Path("/tmp/agent"))
         text = _render_table_text(table)
         assert "quit" in text
-        assert "navigate" in text
-        assert "expand/collapse" in text
+        assert "move" in text
+        assert "page" in text
+        assert "expand" in text
 
     def test_header_without_path(self):
         """Header should work when no agent_path is provided."""
@@ -423,6 +426,124 @@ class TestFmtTimeBreakdown:
 
     def test_all_llm(self):
         assert _fmt_time_breakdown((100.0, 0.0)) == "100/0%"
+
+
+class TestBuildDisplayRows:
+    def test_no_expanded(self):
+        folders = [
+            FolderStatus(name="a", iterations=[IterationStatus(phase="seed")]),
+            FolderStatus(name="b", iterations=[IterationStatus(phase="seed")]),
+        ]
+        rows = _build_display_rows(folders, set())
+        assert rows == [("folder", 0, -1), ("folder", 1, -1)]
+
+    def test_one_expanded(self):
+        folders = [
+            FolderStatus(
+                name="a",
+                iterations=[
+                    IterationStatus(phase="seed"),
+                    IterationStatus(phase="loop-1"),
+                ],
+            ),
+            FolderStatus(name="b", iterations=[IterationStatus(phase="seed")]),
+        ]
+        rows = _build_display_rows(folders, {"a"})
+        assert rows == [
+            ("folder", 0, -1),
+            ("iter", 0, 0),
+            ("iter", 0, 1),
+            ("folder", 1, -1),
+        ]
+
+    def test_folder_row_index(self):
+        rows = [
+            ("folder", 0, -1),
+            ("iter", 0, 0),
+            ("iter", 0, 1),
+            ("folder", 1, -1),
+            ("folder", 2, -1),
+        ]
+        assert _folder_row_index(rows, 0) == 0
+        assert _folder_row_index(rows, 1) == 3
+        assert _folder_row_index(rows, 2) == 4
+        # Missing folder falls back to 0
+        assert _folder_row_index(rows, 99) == 0
+
+
+class TestViewport:
+    def _big_folder(self, n_iters):
+        return [
+            FolderStatus(
+                name="big",
+                tasks_completed=1,
+                tasks_total=2,
+                iterations=[
+                    IterationStatus(phase=f"loop-{i}", wall_ms=1000)
+                    for i in range(n_iters)
+                ],
+            )
+        ]
+
+    def test_max_rows_truncates(self):
+        """A window smaller than the total clamps the row count."""
+        folders = self._big_folder(20)
+        # 1 folder + 20 iters = 21 display rows
+        table = build_table(folders, expanded={"big"}, max_rows=5)
+        assert table.row_count == 5
+
+    def test_offset_skips_rows(self):
+        """offset advances the window into the iteration list."""
+        folders = self._big_folder(20)
+        table = build_table(folders, expanded={"big"}, offset=10, max_rows=5)
+        assert table.row_count == 5
+        text = _render_table_text(table)
+        # display_rows[10:15] = iters 9..13
+        assert "loop-9" in text
+        assert "loop-13" in text
+        # rows outside the window are absent
+        assert "loop-0 " not in text
+        assert "loop-19" not in text
+
+    def test_offset_clamped_to_end(self):
+        """An out-of-range offset clamps to the last full window."""
+        folders = self._big_folder(20)
+        table = build_table(folders, expanded={"big"}, offset=999, max_rows=5)
+        assert table.row_count == 5
+        text = _render_table_text(table)
+        # Window snaps to display_rows[16:21] = iters 15..19
+        assert "loop-19" in text
+
+    def test_max_rows_none_renders_all(self):
+        folders = self._big_folder(20)
+        table = build_table(folders, expanded={"big"}, max_rows=None)
+        assert table.row_count == 21
+
+    def test_cursor_on_iteration_row(self):
+        """Cursor highlight follows the flat row index, including iter rows."""
+        folders = self._big_folder(5)
+        # Flat rows: 0=folder, 1=iter0, 2=iter1, ...
+        table = build_table(folders, expanded={"big"}, cursor=2)
+        assert "reverse" not in (table.rows[0].style or "")
+        assert "reverse" not in (table.rows[1].style or "")
+        assert "reverse" in (table.rows[2].style or "")
+
+    def test_cursor_visible_in_window(self):
+        """Cursor outside the rendered window does not crash and the window is honored."""
+        folders = self._big_folder(20)
+        # Cursor at row 15 but window is rows 0..4 — build_table doesn't
+        # adjust offset itself, that's run_live's job. Just verify it renders.
+        table = build_table(
+            folders, expanded={"big"}, cursor=15, offset=0, max_rows=5
+        )
+        assert table.row_count == 5
+
+    def test_indicator_in_title(self):
+        folders = self._big_folder(20)
+        table = build_table(folders, expanded={"big"}, cursor=3, max_rows=5)
+        text = _render_table_text(table)
+        # cursor 3 of 21 rows (1-indexed display)
+        assert "4/21" in text
 
 
 class TestMetricsMode:

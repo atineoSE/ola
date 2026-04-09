@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import select
+import shutil
 import sys
 import termios
 import time as _time
@@ -16,6 +17,10 @@ from rich.table import Table
 from rich.text import Text
 
 from ola.monitor.data import FolderStatus, read_agent_folder
+
+# Terminal lines reserved for table chrome (title, borders, header, separator,
+# bottom border, caption, plus a small safety margin for wrapped title text).
+_TABLE_CHROME_ROWS = 8
 
 
 class ViewMode(Enum):
@@ -92,6 +97,34 @@ def _cache_style(pct: float) -> str:
     return "red"
 
 
+def _build_display_rows(
+    folders: list[FolderStatus], expanded: set[str]
+) -> list[tuple[str, int, int]]:
+    """Flatten folders + expanded iterations into a single ordered list.
+
+    Each entry is (kind, folder_idx, iter_idx). For folder rows iter_idx is -1.
+    The order matches the visual order of the rendered table, so a flat index
+    into this list directly addresses one row on screen.
+    """
+    rows: list[tuple[str, int, int]] = []
+    for fi, fs in enumerate(folders):
+        rows.append(("folder", fi, -1))
+        if fs.name in expanded:
+            for ii in range(len(fs.iterations)):
+                rows.append(("iter", fi, ii))
+    return rows
+
+
+def _folder_row_index(
+    rows: list[tuple[str, int, int]], folder_idx: int
+) -> int:
+    """Return the display row index of the given folder, or 0 if not found."""
+    for ridx, row in enumerate(rows):
+        if row[0] == "folder" and row[1] == folder_idx:
+            return ridx
+    return 0
+
+
 def _find_active_index(folders: list[FolderStatus]) -> int | None:
     """Find the index of the currently-active folder.
 
@@ -110,28 +143,52 @@ def build_table(
     cursor: int | None = None,
     agent_path: Path | None = None,
     mode: ViewMode = ViewMode.TASK,
+    offset: int = 0,
+    max_rows: int | None = None,
 ) -> Table:
     """Build a rich Table from a list of FolderStatus objects.
 
     Args:
         folders: List of folder statuses to display.
         expanded: Set of folder names whose iterations should be shown.
-        cursor: Index of the currently highlighted folder (0-based), or None.
+        cursor: Display row index of the highlighted row (0-based), or None.
+            With expansion, this indexes into the flat list of folder + iter
+            rows in visual order, so the cursor can land on iteration sub-rows.
         agent_path: Path to the agent folder, shown in the header.
         mode: Which view mode to render (TASK or METRICS).
+        offset: Index of the first display row to render. Used for viewport
+            scrolling so long iteration lists don't overflow the terminal.
+        max_rows: Maximum data rows to render. None means render all rows
+            (used by tests and one-shot output).
     """
     if expanded is None:
         expanded = set()
 
     active_idx = _find_active_index(folders)
 
-    # Header: tool name, mode, agent path
+    display_rows = _build_display_rows(folders, expanded)
+    total_rows = len(display_rows)
+
+    if max_rows is None:
+        actual_offset = 0
+        visible_rows = display_rows
+    else:
+        max_rows = max(1, max_rows)
+        max_offset = max(0, total_rows - max_rows)
+        actual_offset = max(0, min(offset, max_offset))
+        visible_rows = display_rows[actual_offset : actual_offset + max_rows]
+
+    # Header: tool name, mode, scroll indicator, agent path
     path_str = str(agent_path) if agent_path else ""
     mode_label = mode.value.upper()
+    cursor_pos = (cursor + 1) if (cursor is not None and total_rows) else 0
+    indicator = f"{cursor_pos}/{total_rows}"
     title = Text.assemble(
         ("ola-top", "bold cyan"),
         ("  ", ""),
         (f"[{mode_label}]", "bold magenta"),
+        ("  ", ""),
+        (indicator, "dim"),
         ("  ", ""),
         (path_str, "dim"),
     )
@@ -143,9 +200,13 @@ def build_table(
         ("m", "bold"),
         (": mode  ", "dim"),
         ("\u2191\u2193", "bold"),
-        (": navigate  ", "dim"),
+        (": move  ", "dim"),
+        ("PgUp/PgDn", "bold"),
+        (": page  ", "dim"),
+        ("g/G", "bold"),
+        (": top/bot  ", "dim"),
         ("Enter", "bold"),
-        (": expand/collapse", "dim"),
+        (": expand", "dim"),
     )
 
     table = Table(title=title, caption=caption, expand=True, show_header=True)
@@ -170,114 +231,117 @@ def build_table(
         table.add_column("Tok/s", justify="right")
         table.add_column("Time", justify="right")
 
-    for idx, fs in enumerate(folders):
-        is_active = idx == active_idx
+    for vis_idx, (kind, fi, ii) in enumerate(visible_rows):
+        flat_idx = actual_offset + vis_idx
+        is_cursor = cursor is not None and flat_idx == cursor
+        fs = folders[fi]
 
-        # Determine row style based on task status
-        if fs.tasks_total == 0:
-            style = "dim"
-        elif fs.tasks_completed >= fs.tasks_total:
-            style = "green"
-        elif is_active:
-            style = "bold yellow"
-        else:
-            style = "yellow"
+        if kind == "folder":
+            is_active = fi == active_idx
 
-        # Highlight the cursor row
-        is_cursor = cursor is not None and idx == cursor
-        if is_cursor:
-            style = f"reverse {style}" if style else "reverse"
-
-        # Show expand indicator when there are iterations
-        prefix = ""
-        if fs.iterations:
-            prefix = "\u25bc " if fs.name in expanded else "\u25b6 "
-
-        # Active folder gets a marker
-        active_marker = "\u25cf " if is_active else ""
-        folder_cell = f"{active_marker}{prefix}{fs.name}"
-
-        if mode == ViewMode.TASK:
-            # Color tasks per-cell
-            tasks_str = f"{fs.tasks_completed}/{fs.tasks_total}"
-            if fs.tasks_total > 0 and fs.tasks_completed >= fs.tasks_total:
-                tasks_text = Text(tasks_str, style="green")
-            elif fs.tasks_total > 0:
-                tasks_text = Text(tasks_str, style="yellow")
+            # Determine row style based on task status
+            if fs.tasks_total == 0:
+                style = "dim"
+            elif fs.tasks_completed >= fs.tasks_total:
+                style = "green"
+            elif is_active:
+                style = "bold yellow"
             else:
-                tasks_text = Text(tasks_str, style="dim")
+                style = "yellow"
 
-            turns_str = str(fs.total_num_turns) if fs.total_num_turns else ""
-            table.add_row(
-                str(idx + 1),
-                folder_cell,
-                fs.agent_display,
-                fs.model_display,
-                tasks_text,
-                turns_str,
-                _fmt_time(fs.total_wall_ms),
-                style=style,
-            )
-        else:  # METRICS
-            cache_pct_val = fs.cache_hit_rate
-            cache_text = Text(
-                f"{cache_pct_val:.0f}%", style=_cache_style(cache_pct_val)
-            )
+            if is_cursor:
+                style = f"reverse {style}" if style else "reverse"
 
-            table.add_row(
-                str(idx + 1),
-                folder_cell,
-                _fmt_tokens(fs.total_input_tokens),
-                _fmt_tokens(fs.total_output_tokens),
-                _fmt_tokens(fs.avg_input_tokens),
-                _fmt_tokens(fs.max_input_tokens),
-                cache_text,
-                _fmt_ratio(fs.io_ratio),
-                _fmt_time_breakdown(fs.time_breakdown),
-                _fmt_ttft(fs.total_ttft_ms, fs.all_streamed),
-                _fmt_tok_per_sec(fs.llm_tok_per_sec),
-                _fmt_time(fs.total_wall_ms),
-                style=style,
-            )
+            # Show expand indicator when there are iterations
+            prefix = ""
+            if fs.iterations:
+                prefix = "\u25bc " if fs.name in expanded else "\u25b6 "
 
-        # Render iteration sub-rows when expanded
-        if fs.name in expanded:
-            for it in fs.iterations:
-                if mode == ViewMode.TASK:
-                    delta = it.tasks_completed_delta
-                    delta_str = str(delta) if delta else ""
-                    it_turns_str = str(it.num_turns) if it.num_turns else ""
-                    table.add_row(
-                        "",
-                        f"  \u2514 {it.phase}",
-                        "",
-                        "",
-                        delta_str,
-                        it_turns_str,
-                        _fmt_time(it.wall_ms),
-                        style="dim",
-                    )
-                else:  # METRICS
-                    it_cache_val = it.cache_hit_rate
-                    it_cache_text = Text(
-                        f"{it_cache_val:.0f}%",
-                        style=_cache_style(it_cache_val),
-                    )
-                    table.add_row(
-                        "",
-                        f"  \u2514 {it.phase}",
-                        _fmt_tokens(it.input_tokens),
-                        _fmt_tokens(it.output_tokens),
-                        _fmt_tokens(it.avg_input_tokens),
-                        _fmt_tokens(it.max_input_tokens),
-                        it_cache_text,
-                        _fmt_ratio(it.io_ratio),
-                        _fmt_time_breakdown(it.time_breakdown),
-                        _fmt_ttft(it.ttft_ms, it.streamed),
-                        _fmt_tok_per_sec(it.llm_tok_per_sec),
-                        _fmt_time(it.wall_ms),
-                        style="dim",
-                    )
+            # Active folder gets a marker
+            active_marker = "\u25cf " if is_active else ""
+            folder_cell = f"{active_marker}{prefix}{fs.name}"
+
+            if mode == ViewMode.TASK:
+                # Color tasks per-cell
+                tasks_str = f"{fs.tasks_completed}/{fs.tasks_total}"
+                if fs.tasks_total > 0 and fs.tasks_completed >= fs.tasks_total:
+                    tasks_text = Text(tasks_str, style="green")
+                elif fs.tasks_total > 0:
+                    tasks_text = Text(tasks_str, style="yellow")
+                else:
+                    tasks_text = Text(tasks_str, style="dim")
+
+                turns_str = str(fs.total_num_turns) if fs.total_num_turns else ""
+                table.add_row(
+                    str(fi + 1),
+                    folder_cell,
+                    fs.agent_display,
+                    fs.model_display,
+                    tasks_text,
+                    turns_str,
+                    _fmt_time(fs.total_wall_ms),
+                    style=style,
+                )
+            else:  # METRICS
+                cache_pct_val = fs.cache_hit_rate
+                cache_text = Text(
+                    f"{cache_pct_val:.0f}%", style=_cache_style(cache_pct_val)
+                )
+
+                table.add_row(
+                    str(fi + 1),
+                    folder_cell,
+                    _fmt_tokens(fs.total_input_tokens),
+                    _fmt_tokens(fs.total_output_tokens),
+                    _fmt_tokens(fs.avg_input_tokens),
+                    _fmt_tokens(fs.max_input_tokens),
+                    cache_text,
+                    _fmt_ratio(fs.io_ratio),
+                    _fmt_time_breakdown(fs.time_breakdown),
+                    _fmt_ttft(fs.total_ttft_ms, fs.all_streamed),
+                    _fmt_tok_per_sec(fs.llm_tok_per_sec),
+                    _fmt_time(fs.total_wall_ms),
+                    style=style,
+                )
+        else:  # iter row
+            it = fs.iterations[ii]
+            iter_style = "reverse dim" if is_cursor else "dim"
+
+            if mode == ViewMode.TASK:
+                delta = it.tasks_completed_delta
+                delta_str = str(delta) if delta else ""
+                it_turns_str = str(it.num_turns) if it.num_turns else ""
+                table.add_row(
+                    "",
+                    f"  \u2514 {it.phase}",
+                    "",
+                    "",
+                    delta_str,
+                    it_turns_str,
+                    _fmt_time(it.wall_ms),
+                    style=iter_style,
+                )
+            else:  # METRICS
+                it_cache_val = it.cache_hit_rate
+                it_cache_text = Text(
+                    f"{it_cache_val:.0f}%",
+                    style=_cache_style(it_cache_val),
+                )
+                table.add_row(
+                    "",
+                    f"  \u2514 {it.phase}",
+                    _fmt_tokens(it.input_tokens),
+                    _fmt_tokens(it.output_tokens),
+                    _fmt_tokens(it.avg_input_tokens),
+                    _fmt_tokens(it.max_input_tokens),
+                    it_cache_text,
+                    _fmt_ratio(it.io_ratio),
+                    _fmt_time_breakdown(it.time_breakdown),
+                    _fmt_ttft(it.ttft_ms, it.streamed),
+                    _fmt_tok_per_sec(it.llm_tok_per_sec),
+                    _fmt_time(it.wall_ms),
+                    style=iter_style,
+                )
 
     return table
 
@@ -305,71 +369,146 @@ def _read_key(fd: int) -> str | None:
 
 
 def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
-    """Run the live-updating TUI with keyboard controls."""
-    print("\033[2J\033[H", end="", flush=True)  # clear screen, cursor to top
+    """Run the live-updating TUI with keyboard controls.
+
+    Uses the alternate screen buffer (top-style) and a viewport-scrolled
+    table so long iteration lists never overflow the terminal.
+    """
     expanded: set[str] = set()
-    cursor = 0
+    cursor = 0  # display row index (folder + iter rows in visual order)
+    offset = 0  # first display row currently visible
     mode = ViewMode.TASK
 
     folders = read_agent_folder(agent_path)
 
-    # Save terminal settings and switch to raw mode
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
+
+    def viewport_height() -> int:
+        return max(
+            1, shutil.get_terminal_size((80, 24)).lines - _TABLE_CHROME_ROWS
+        )
+
+    def clamp_view() -> None:
+        """Keep cursor in bounds and scroll offset so cursor stays visible."""
+        nonlocal cursor, offset
+        rows = _build_display_rows(folders, expanded)
+        total = len(rows)
+        if total == 0:
+            cursor = 0
+            offset = 0
+            return
+        cursor = max(0, min(cursor, total - 1))
+        max_r = viewport_height()
+        if cursor < offset:
+            offset = cursor
+        elif cursor >= offset + max_r:
+            offset = cursor - max_r + 1
+        max_offset = max(0, total - max_r)
+        offset = max(0, min(offset, max_offset))
+
     try:
         tty.setcbreak(fd)
+        clamp_view()
 
         with Live(
-            build_table(folders, expanded, cursor, agent_path, mode),
+            build_table(
+                folders,
+                expanded,
+                cursor,
+                agent_path,
+                mode,
+                offset=offset,
+                max_rows=viewport_height(),
+            ),
             refresh_per_second=4,
+            screen=True,
         ) as live:
             last_refresh = _time.monotonic()
+            last_size = shutil.get_terminal_size((80, 24))
             while True:
                 key = _read_key(fd)
-
                 needs_update = False
 
                 if key == "q" or key == "\x03":  # q or Ctrl-C
                     break
                 elif key == "m":
-                    mode = ViewMode.METRICS if mode == ViewMode.TASK else ViewMode.TASK
+                    mode = (
+                        ViewMode.METRICS if mode == ViewMode.TASK else ViewMode.TASK
+                    )
                     needs_update = True
                 elif key == "\x1b[A":  # Up arrow
-                    if folders and cursor > 0:
+                    if cursor > 0:
                         cursor -= 1
                         needs_update = True
                 elif key == "\x1b[B":  # Down arrow
-                    if folders and cursor < len(folders) - 1:
+                    rows = _build_display_rows(folders, expanded)
+                    if cursor < len(rows) - 1:
                         cursor += 1
                         needs_update = True
+                elif key == "\x1b[5~":  # PgUp
+                    cursor = max(0, cursor - viewport_height())
+                    needs_update = True
+                elif key == "\x1b[6~":  # PgDn
+                    rows = _build_display_rows(folders, expanded)
+                    cursor = min(
+                        max(0, len(rows) - 1), cursor + viewport_height()
+                    )
+                    needs_update = True
+                elif key == "g":  # Home
+                    cursor = 0
+                    needs_update = True
+                elif key == "G":  # End
+                    rows = _build_display_rows(folders, expanded)
+                    cursor = max(0, len(rows) - 1)
+                    needs_update = True
                 elif key == "\r" or key == "\n":  # Enter
-                    if folders:
-                        name = folders[cursor].name
-                        expanded ^= {name}
+                    rows = _build_display_rows(folders, expanded)
+                    if rows:
+                        _, fi, _ = rows[cursor]
+                        expanded ^= {folders[fi].name}
+                        # Snap cursor back to the folder row so collapsing
+                        # from inside an iter row doesn't dangle.
+                        cursor = _folder_row_index(
+                            _build_display_rows(folders, expanded), fi
+                        )
                         needs_update = True
                 elif key and key.isdigit() and key != "0":
-                    # Number keys 1-9 toggle that folder
+                    # Number keys 1-9 jump to and toggle that folder
                     idx = int(key) - 1
                     if 0 <= idx < len(folders):
-                        cursor = idx
                         expanded ^= {folders[idx].name}
+                        cursor = _folder_row_index(
+                            _build_display_rows(folders, expanded), idx
+                        )
                         needs_update = True
 
                 # Periodic data refresh
                 now = _time.monotonic()
                 if now - last_refresh >= refresh_interval:
                     folders = read_agent_folder(agent_path)
-                    # Clamp cursor
-                    if folders:
-                        cursor = min(cursor, len(folders) - 1)
-                    else:
-                        cursor = 0
                     last_refresh = now
                     needs_update = True
 
+                # Repaint on terminal resize so the viewport tracks SIGWINCH
+                current_size = shutil.get_terminal_size((80, 24))
+                if current_size != last_size:
+                    last_size = current_size
+                    needs_update = True
+
                 if needs_update:
+                    clamp_view()
                     live.update(
-                        build_table(folders, expanded, cursor, agent_path, mode)
+                        build_table(
+                            folders,
+                            expanded,
+                            cursor,
+                            agent_path,
+                            mode,
+                            offset=offset,
+                            max_rows=viewport_height(),
+                        ),
+                        refresh=True,
                     )
 
                 _time.sleep(0.05)  # ~20 FPS input polling
