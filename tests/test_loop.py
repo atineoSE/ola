@@ -613,3 +613,54 @@ def test_rate_limit_sleep_interrupted_by_user(tmp_path):
 
     # Agent was called once before the interrupt
     assert agent.call_count == 1
+
+
+# --- KeyboardInterrupt stats recording test ---
+
+
+class _InterruptingAgent(Agent):
+    """Agent that raises KeyboardInterrupt on the first call."""
+
+    mnemonic = "cc"
+    call_count = 0
+
+    def run(self, prompt, workdir, state_dir=None, labels=None):
+        self.call_count += 1
+        raise KeyboardInterrupt
+
+    def version(self):
+        return "1.0.0"
+
+
+def test_keyboard_interrupt_writes_stats_row(tmp_path, caplog):
+    """SIGINT mid-iteration writes a final STATS row with error_type='interrupted'."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+
+    agent = _InterruptingAgent()
+
+    with (
+        caplog.at_level(logging.INFO, logger="ola.loop"),
+        patch("ola.loop._git_commit"),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _process_folder(agent, folder, limit=5, agent_root=tmp_path)
+
+    # Agent was called once before the interrupt
+    assert agent.call_count == 1
+
+    # A STATS row was written with error_type="interrupted"
+    recs = _read_records(folder)
+    assert len(recs) == 1
+    assert recs[0]["error_type"] == "interrupted"
+    assert recs[0]["error_message"] == "KeyboardInterrupt during iteration"
+    assert recs[0]["phase"] == "loop-1"
+    assert recs[0]["wall_ms"] >= 0
+
+    # Info log was emitted
+    assert any(
+        "Interrupted during iteration" in rec.message and "Stats row written" in rec.message
+        for rec in caplog.records
+    )

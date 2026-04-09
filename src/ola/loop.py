@@ -260,9 +260,32 @@ def _process_folder(
         tasks_before = count_tasks(folder)
         t0 = time.monotonic()
         labels = {"folder": folder.name, "phase": f"loop-{iteration}"}
-        response = agent.run(
-            effective_prompt, workdir, state_dir=state_dir, labels=labels
-        )
+        try:
+            response = agent.run(
+                effective_prompt, workdir, state_dir=state_dir, labels=labels
+            )
+        except KeyboardInterrupt:
+            wall_ms = int((time.monotonic() - t0) * 1000)
+            stats = IterationStats(
+                error_type="interrupted",
+                error_message="KeyboardInterrupt during iteration",
+            )
+            tasks_after = count_tasks(folder)
+            _append_stats(
+                folder,
+                f"loop-{iteration}",
+                stats,
+                wall_ms,
+                agent,
+                tasks_before,
+                tasks_after,
+            )
+            logger.info(
+                "Interrupted during iteration %d of %s. Stats row written.",
+                iteration,
+                folder.name,
+            )
+            raise
         wall_ms = int((time.monotonic() - t0) * 1000)
         tasks_after = count_tasks(folder)
         label = f"LOOP #{iteration}"
