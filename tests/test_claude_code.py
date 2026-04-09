@@ -329,3 +329,125 @@ class TestStreamParser:
             _run_stream(lines)
 
         assert not any("divergence" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit event tests
+# ---------------------------------------------------------------------------
+
+def _rate_limit_event(
+    status: str = "rejected",
+    resets_at: int | None = None,
+    rate_limit_type: str = "five_hour",
+    utilization: float = 1.0,
+    fallback: bool = False,
+) -> str:
+    info: dict = {
+        "status": status,
+        "rateLimitType": rate_limit_type,
+        "utilization": utilization,
+        "unifiedRateLimitFallbackAvailable": fallback,
+    }
+    if resets_at is not None:
+        info["resetsAt"] = resets_at
+    return json.dumps({
+        "type": "rate_limit_event",
+        "rate_limit_info": info,
+        "uuid": "test-uuid",
+        "session_id": "test-session",
+    })
+
+
+class TestRateLimitEvents:
+    def test_rate_limit_rejected_populates_stats(self):
+        """Rejected rate limit (no fallback) → error_type=rate_limited in stats."""
+        resets_at = 1700000000
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _rate_limit_event(status="rejected", resets_at=resets_at, fallback=False),
+            # No result event — stream ends after rate limit rejection
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats is not None
+        assert resp.stats.error_type == "rate_limited"
+        assert resp.stats.rate_limit_resets_at == resets_at
+        assert "five_hour" in resp.stats.error_message
+        assert "2023" in resp.stats.error_message  # ISO timestamp from epoch
+
+    def test_rate_limit_rejected_with_fallback_is_not_failure(self, caplog):
+        """Rejected + fallback available → CLI handles it, not a failure."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _rate_limit_event(
+                status="rejected", resets_at=1700000000, fallback=True,
+            ),
+            _message_delta(),
+            _result(),
+        ]
+        with caplog.at_level(logging.INFO, logger="ola.agents.claude_code"):
+            resp = _run_stream(lines)
+        assert resp.success
+        assert resp.stats.error_type is None
+        assert any("fallback" in r.message for r in caplog.records)
+
+    def test_rate_limit_warning_logs_once(self, caplog):
+        """allowed_warning logs exactly once, includes type and utilization."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _rate_limit_event(
+                status="allowed_warning", utilization=0.85,
+                rate_limit_type="five_hour", resets_at=1700000000,
+            ),
+            # Second warning event — should NOT produce another log
+            _rate_limit_event(
+                status="allowed_warning", utilization=0.90,
+                rate_limit_type="five_hour", resets_at=1700000000,
+            ),
+            _message_delta(),
+            _result(),
+        ]
+        with caplog.at_level(logging.WARNING, logger="ola.agents.claude_code"):
+            resp = _run_stream(lines)
+        assert resp.success
+        warning_records = [
+            r for r in caplog.records if "rate limit approaching" in r.message
+        ]
+        assert len(warning_records) == 1
+        assert "five_hour" in warning_records[0].message
+        assert "85%" in warning_records[0].message
+
+    def test_rate_limit_allowed_is_noop(self, caplog):
+        """allowed status is silently ignored."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _rate_limit_event(status="allowed", utilization=0.3),
+            _message_delta(),
+            _result(),
+        ]
+        with caplog.at_level(logging.DEBUG, logger="ola.agents.claude_code"):
+            resp = _run_stream(lines)
+        assert resp.success
+        assert not any("rate limit" in r.message.lower() for r in caplog.records)
+
+    def test_rate_limit_seven_day_opus_bucket(self):
+        """seven_day_opus bucket type is surfaced in error_message."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _rate_limit_event(
+                status="rejected", resets_at=1700000000,
+                rate_limit_type="seven_day_opus", fallback=False,
+            ),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "rate_limited"
+        assert "seven_day_opus" in resp.stats.error_message

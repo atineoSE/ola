@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
@@ -171,6 +172,10 @@ class ClaudeCodeAgent(Agent):
         turn_start: float | None = None
         token_start: float | None = None
 
+        # Rate-limit tracking
+        rate_limit_hit: dict | None = None  # set on rejected w/o fallback
+        rate_limit_warned: bool = False
+
         for line in proc.stdout:
             line = line.strip()
             if not line:
@@ -238,11 +243,77 @@ class ClaudeCodeAgent(Agent):
                         name = block.get("name", "?")
                         status.update(f"[tool] {name}")
 
+            # --- Rate-limit events from CC CLI ---
+
+            elif msg_type == "rate_limit_event":
+                info = event.get("rate_limit_info", {})
+                rl_status = info.get("status", "")
+                rl_type = info.get("rateLimitType", "unknown")
+                utilization = info.get("utilization", 0)
+                resets_at = info.get("resetsAt")
+                fallback = info.get("unifiedRateLimitFallbackAvailable", False)
+
+                if rl_status == "allowed_warning" and not rate_limit_warned:
+                    rate_limit_warned = True
+                    resets_str = (
+                        datetime.fromtimestamp(resets_at, tz=timezone.utc)
+                        .isoformat(timespec="seconds")
+                        if resets_at
+                        else "unknown"
+                    )
+                    logger.warning(
+                        "CC rate limit approaching: %s at %.0f%% utilization, "
+                        "resets at %s",
+                        rl_type,
+                        utilization * 100,
+                        resets_str,
+                    )
+                elif rl_status == "rejected" and fallback:
+                    logger.info(
+                        "CC rate limit rejected (%s) but fallback available — "
+                        "CLI will use cheaper model",
+                        rl_type,
+                    )
+                elif rl_status == "rejected" and not fallback:
+                    logger.warning(
+                        "CC rate limit rejected: %s, resets at %s",
+                        rl_type,
+                        resets_at,
+                    )
+                    rate_limit_hit = info
+
             elif msg_type == "result":
                 result_data = event
 
         status.clear()
         proc.wait()
+
+        # Rate-limited with no successful result → return error with reset info
+        if rate_limit_hit and (
+            result_data is None or result_data.get("subtype") != "success"
+        ):
+            resets_at = rate_limit_hit.get("resetsAt")
+            rl_type = rate_limit_hit.get("rateLimitType", "unknown")
+            resets_iso = (
+                datetime.fromtimestamp(resets_at, tz=timezone.utc)
+                .isoformat(timespec="seconds")
+                if resets_at
+                else "unknown"
+            )
+            llm_ms = total_ttft_ms + total_decode_ms
+            stats = IterationStats(
+                input_tokens=0,
+                output_tokens=0,
+                models=sorted(models_seen) if models_seen else [],
+                max_input_tokens=max_input_tokens,
+                ttft_ms=total_ttft_ms,
+                llm_ms=llm_ms,
+                error_type="rate_limited",
+                error_message=f"{rl_type} limit hit, resets at {resets_iso}",
+                rate_limit_resets_at=resets_at,
+            )
+            output = result_data.get("result", "") if result_data else ""
+            return AgentResponse(output=output, success=False, stats=stats)
 
         if result_data is None:
             stderr = proc.stderr.read() if proc.stderr else ""
