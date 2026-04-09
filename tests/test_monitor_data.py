@@ -51,6 +51,15 @@ def test_parse_task_counts_all_done():
     assert total == 2
 
 
+def test_parse_task_counts_ignores_code_block():
+    """Cross-module guard: monitor's parse_task_counts delegates to plan.py
+    and correctly skips fenced code blocks."""
+    text = "- [x] Real task\n```bash\necho '- [ ] fake'\n```\n"
+    completed, total = parse_task_counts(text)
+    assert completed == 1
+    assert total == 1
+
+
 def test_parse_stats_jsonl():
     iterations = parse_stats_jsonl(SAMPLE_STATS)
     assert len(iterations) == 2

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ola.plan import parse_task_counts
 from ola.stats import cache_hit_rate as _cache_hit_rate
 
 
@@ -191,13 +191,6 @@ class FolderStatus:
                 if m and m not in seen:
                     seen.append(m)
         return ", ".join(seen)
-
-
-def parse_task_counts(plan_text: str) -> tuple[int, int]:
-    """Parse PLAN.md text and return (completed, total) task counts."""
-    completed = len(re.findall(r"- \[x\]", plan_text, re.IGNORECASE))
-    unchecked = len(re.findall(r"- \[ \]", plan_text))
-    return completed, completed + unchecked
 
 
 def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
