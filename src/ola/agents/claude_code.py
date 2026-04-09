@@ -105,6 +105,7 @@ class ClaudeCodeAgent(Agent):
             "--output-format",
             "stream-json",
             "--verbose",
+            "--include-partial-messages",
             "-p",
         ]
         if self.model:
@@ -146,15 +147,15 @@ class ClaudeCodeAgent(Agent):
     def _stream(self, proc: subprocess.Popen, prompt: str) -> AgentResponse:
         """Read NDJSON stream, show rolling status, return final result.
 
-        Processes three granular Anthropic API streaming event types to get
-        per-turn TTFT and decode timing:
+        The CC CLI emits granular Anthropic API events wrapped inside
+        ``stream_event`` envelopes (requires ``--include-partial-messages``):
 
-            message_start ─[prefill]─> content_block_start ─[decode]─> message_delta
-                 │                            │                             │
-            turn begins              first token generated            turn ends
+            stream_event{message_start} ─> stream_event{content_block_start}
+                                           ─> stream_event{message_delta}
 
-        The higher-level ``assistant`` events are still processed for the
-        rolling status display but no longer carry timing responsibility.
+        We unwrap the envelope and dispatch on the inner event type to get
+        per-turn TTFT and decode timing.  The higher-level ``assistant``
+        events are still used for the rolling status display.
         """
         proc.stdin.write(prompt)
         proc.stdin.close()
@@ -190,32 +191,42 @@ class ClaudeCodeAgent(Agent):
                     event.get("message", {}).get("content", [{}])[0].get("text", "")
                 )
 
-            # --- Granular timing events ---
+            # --- Unwrap stream_event envelope and dispatch ---
 
-            if msg_type == "message_start" and "message" in event:
-                turn_start = time.monotonic()
-                token_start = None  # reset for new turn
-                model = event["message"].get("model")
-                if model:
-                    models_seen.add(model)
-                # Track per-turn input tokens for max context size
-                msg_usage = event["message"].get("usage", {})
-                turn_input = msg_usage.get("input_tokens", 0)
-                if turn_input > max_input_tokens:
-                    max_input_tokens = turn_input
+            if msg_type == "stream_event" and "event" in event:
+                inner = event["event"]
+                inner_type = inner.get("type", "")
 
-            elif msg_type == "content_block_start":
-                # First content block in this turn marks end of prefill
-                if turn_start is not None and token_start is None:
-                    token_start = time.monotonic()
-                    total_ttft_ms += int((token_start - turn_start) * 1000)
+                if inner_type == "message_start" and "message" in inner:
+                    turn_start = time.monotonic()
+                    token_start = None  # reset for new turn
+                    model = inner["message"].get("model")
+                    if model:
+                        models_seen.add(model)
+                    # Sum all three prompt-token buckets for max context
+                    msg_usage = inner["message"].get("usage", {})
+                    turn_input = (
+                        msg_usage.get("input_tokens", 0)
+                        + msg_usage.get("cache_creation_input_tokens", 0)
+                        + msg_usage.get("cache_read_input_tokens", 0)
+                    )
+                    if turn_input > max_input_tokens:
+                        max_input_tokens = turn_input
 
-            elif msg_type == "message_delta":
-                # Turn complete — accumulate decode time
-                if token_start is not None:
-                    total_decode_ms += int((time.monotonic() - token_start) * 1000)
-                turn_start = None
-                token_start = None
+                elif inner_type == "content_block_start":
+                    # First content block in this turn marks end of prefill
+                    if turn_start is not None and token_start is None:
+                        token_start = time.monotonic()
+                        total_ttft_ms += int((token_start - turn_start) * 1000)
+
+                elif inner_type == "message_delta":
+                    # Turn complete — accumulate decode time
+                    if token_start is not None:
+                        total_decode_ms += int(
+                            (time.monotonic() - token_start) * 1000
+                        )
+                    turn_start = None
+                    token_start = None
 
             # --- Status display from assistant events (no timing) ---
 
@@ -238,6 +249,19 @@ class ClaudeCodeAgent(Agent):
             return AgentResponse(output=stderr, success=proc.returncode == 0)
 
         llm_ms = total_ttft_ms + total_decode_ms
+
+        # Warn if measured llm_ms diverges significantly from CLI-reported
+        api_ms_reported = result_data.get("duration_api_ms", 0)
+        if api_ms_reported > 0 and llm_ms > 0:
+            delta = abs(llm_ms - api_ms_reported)
+            rel = delta / api_ms_reported
+            if delta > 1000 and rel > 0.20:
+                logger.warning(
+                    "CC llm_ms divergence: measured=%dms, result.duration_api_ms=%dms "
+                    "(delta=%dms, %.0f%%) — possible CLI format change",
+                    llm_ms, api_ms_reported, delta, rel * 100,
+                )
+
         return self._parse_result(
             result_data,
             models_seen,
