@@ -2,11 +2,15 @@
 
 import json
 import logging
+import time
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from ola.agents.base import Agent, AgentResponse
 from ola.agents.claude_code import ClaudeCodeAgent
 from ola.loop import (
+    _MAX_RATE_LIMIT_WAIT_SEC,
     _MAX_STAGNANT_LOOPS,
     _append_stats,
     _last_loop_number,
@@ -477,3 +481,135 @@ def test_stagnation_resets_on_progress(tmp_path):
 
     # The agent ran more than _MAX_STAGNANT_LOOPS times because progress reset the counter
     assert call_idx > _MAX_STAGNANT_LOOPS
+
+
+# --- Rate-limit sleep-and-resume tests ---
+
+
+class _RateLimitAgent(Agent):
+    """Agent that returns rate_limited on configurable iterations."""
+
+    mnemonic = "cc"
+
+    def __init__(self, rate_limit_iterations, resets_at):
+        self.rate_limit_iterations = set(rate_limit_iterations)
+        self.resets_at = resets_at
+        self.call_count = 0
+
+    def run(self, prompt, workdir, state_dir=None, labels=None):
+        self.call_count += 1
+        if self.call_count in self.rate_limit_iterations:
+            stats = IterationStats(
+                error_type="rate_limited",
+                error_message=f"five_hour limit hit, resets at {self.resets_at}",
+                rate_limit_resets_at=self.resets_at,
+            )
+            return AgentResponse(output="Rate limited", success=False, stats=stats)
+        stats = IterationStats()
+        return AgentResponse(output="ok", success=True, stats=stats)
+
+    def version(self):
+        return "1.0.0"
+
+
+def test_rate_limit_sleep_and_resume(tmp_path, caplog):
+    """Rate-limited iteration sleeps and resumes; loop does NOT break."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
+    # Two tasks: agent "completes" one on call 2 (after waking from sleep)
+    (folder / "PLAN.md").write_text("- [ ] Task A\n- [ ] Task B\n")
+
+    resets_at = int(time.time()) + 3
+    agent = _RateLimitAgent(rate_limit_iterations={1}, resets_at=resets_at)
+
+    call_idx = [0]
+    original_run = agent.run
+
+    def tracking_run(prompt, workdir, state_dir=None, labels=None):
+        result = original_run(prompt, workdir, state_dir=state_dir, labels=labels)
+        call_idx[0] += 1
+        # On second real call, complete task A
+        if agent.call_count == 2:
+            (folder / "PLAN.md").write_text("- [x] Task A\n- [x] Task B\n")
+        return result
+
+    agent.run = tracking_run
+
+    sleep_durations = []
+    real_time = time.time
+
+    with (
+        caplog.at_level(logging.WARNING, logger="ola.loop"),
+        patch("ola.loop._git_commit"),
+        patch("ola.loop.time.sleep", side_effect=lambda d: sleep_durations.append(d)),
+        patch("ola.loop.time.time", side_effect=real_time),
+    ):
+        _process_folder(agent, folder, limit=5, agent_root=tmp_path)
+
+    # Agent was called twice: once rate-limited, once successful
+    assert agent.call_count == 2
+
+    # Sleep was called with roughly resets_at - now + 10s buffer
+    assert len(sleep_durations) == 1
+    assert 3 <= sleep_durations[0] <= 15
+
+    # STATS.jsonl has 2 rows: rate_limited + clean
+    recs = _read_records(folder)
+    assert len(recs) == 2
+    assert recs[0]["error_type"] == "rate_limited"
+    assert recs[1]["error_type"] is None
+
+
+def test_rate_limit_cap_exceeds_stops_loop(tmp_path, caplog):
+    """Loop breaks when rate limit reset is too far in the future."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+
+    resets_at = int(time.time()) + 9 * 3600  # 9 hours, above 8h cap
+    agent = _RateLimitAgent(rate_limit_iterations={1}, resets_at=resets_at)
+
+    with (
+        caplog.at_level(logging.ERROR, logger="ola.loop"),
+        patch("ola.loop._git_commit"),
+    ):
+        _process_folder(agent, folder, limit=5, agent_root=tmp_path)
+
+    # Agent was called once then loop broke
+    assert agent.call_count == 1
+
+    # Error was logged
+    assert any(
+        "Rate limit reset too far away" in rec.message for rec in caplog.records
+    )
+
+    # No sleep was called (loop broke before sleeping)
+    recs = _read_records(folder)
+    assert len(recs) == 1
+    assert recs[0]["error_type"] == "rate_limited"
+
+
+def test_rate_limit_sleep_interrupted_by_user(tmp_path):
+    """KeyboardInterrupt during rate-limit sleep propagates cleanly."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+
+    resets_at = int(time.time()) + 60
+    agent = _RateLimitAgent(rate_limit_iterations={1}, resets_at=resets_at)
+
+    real_time = time.time
+
+    with (
+        patch("ola.loop._git_commit"),
+        patch("ola.loop.time.sleep", side_effect=KeyboardInterrupt),
+        patch("ola.loop.time.time", side_effect=real_time),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _process_folder(agent, folder, limit=5, agent_root=tmp_path)
+
+    # Agent was called once before the interrupt
+    assert agent.call_count == 1

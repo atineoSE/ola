@@ -4,6 +4,7 @@ import json
 import logging
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
@@ -22,6 +23,7 @@ _DEFAULT_LOOP_PROMPT = (
 logger = logging.getLogger(__name__)
 
 _MAX_STAGNANT_LOOPS = 5
+_MAX_RATE_LIMIT_WAIT_SEC = 8 * 3600  # 8 hours — safety cap for rate-limit sleeps
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
@@ -275,6 +277,33 @@ def _process_folder(
             tasks_before,
             tasks_after,
         )
+
+        # Rate-limit sleep-and-resume: don't treat as a fatal failure.
+        if (
+            response.stats.error_type == "rate_limited"
+            and response.stats.rate_limit_resets_at
+        ):
+            wait_sec = max(0, response.stats.rate_limit_resets_at - time.time()) + 10
+            if wait_sec > _MAX_RATE_LIMIT_WAIT_SEC:
+                logger.error(
+                    "Rate limit reset too far away (%ds). Stopping.", int(wait_sec)
+                )
+                break
+            reset_ts = datetime.fromtimestamp(
+                response.stats.rate_limit_resets_at
+            ).isoformat(timespec="seconds")
+            logger.warning(
+                "Rate limit hit. Sleeping %ds until %s, then resuming %s.",
+                int(wait_sec),
+                reset_ts,
+                folder.name,
+            )
+            try:
+                time.sleep(wait_sec)
+            except KeyboardInterrupt:
+                logger.info("Sleep interrupted by user. Stopping %s.", folder.name)
+                raise
+            continue
 
         if not response.success:
             logger.error("Agent returned failure. Stopping %s.", folder.name)
