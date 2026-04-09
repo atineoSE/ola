@@ -441,3 +441,114 @@ def test_parse_stats_jsonl_backward_compat_ttft():
     )
     iterations = parse_stats_jsonl(line)
     assert iterations[0].ttft_ms == 0
+
+
+# --- llm_ms field tests ---
+
+
+def test_parse_stats_jsonl_with_llm_ms():
+    """llm_ms field is read correctly."""
+    line = (
+        '{"phase": "seed", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
+        ' "llm_ms": 3000}\n'
+    )
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].llm_ms == 3000
+
+
+def test_parse_stats_jsonl_backward_compat_llm_ms():
+    """Old STATS.jsonl without llm_ms field defaults to 0."""
+    line = (
+        '{"phase": "seed", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1}\n'
+    )
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].llm_ms == 0
+
+
+# --- Backward compatibility for other fields ---
+
+
+def test_parse_stats_jsonl_backward_compat_models():
+    """Missing models field defaults to empty list."""
+    line = '{"phase": "seed", "wall_ms": 1000}\n'
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].models == []
+
+
+def test_parse_stats_jsonl_backward_compat_streamed():
+    """Missing streamed field defaults to True."""
+    line = '{"phase": "seed", "wall_ms": 1000}\n'
+    iterations = parse_stats_jsonl(line)
+    assert iterations[0].streamed is True
+
+
+def test_parse_stats_jsonl_backward_compat_minimal():
+    """Minimal record with only phase — all other fields default."""
+    line = '{"phase": "seed", "wall_ms": 500}\n'
+    iterations = parse_stats_jsonl(line)
+    it = iterations[0]
+    assert it.phase == "seed"
+    assert it.wall_ms == 500
+    assert it.input_tokens == 0
+    assert it.output_tokens == 0
+    assert it.cache_read_tokens == 0
+    assert it.cache_creation_tokens == 0
+    assert it.num_turns == 0
+    assert it.models == []
+    assert it.tool_ms == 0
+    assert it.llm_ms == 0
+    assert it.max_input_tokens == 0
+    assert it.ttft_ms == 0
+    assert it.streamed is True
+    assert it.agent == ""
+    assert it.agent_version == ""
+    assert it.tasks_completed == 0
+    assert it.tasks_total == 0
+    assert it.tasks_completed_delta == 0
+
+
+# --- FolderStatus property tests ---
+
+
+def test_folder_model_display():
+    """model_display deduplicates and preserves order across iterations."""
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", models=["claude-3-opus", "claude-3-sonnet"]),
+            IterationStatus(phase="loop-1", models=["claude-3-opus"]),
+        ],
+    )
+    assert fs.model_display == "claude-3-opus, claude-3-sonnet"
+
+
+def test_folder_model_display_empty():
+    """No models across any iteration returns empty string."""
+    fs = FolderStatus(name="test", iterations=[IterationStatus(phase="seed")])
+    assert fs.model_display == ""
+
+
+def test_folder_all_streamed_mixed():
+    """Mixed streamed flags → all_streamed is False."""
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", streamed=True),
+            IterationStatus(phase="loop-1", streamed=False),
+        ],
+    )
+    assert fs.all_streamed is False
+
+
+def test_folder_all_streamed_all_true():
+    """All streamed=True → all_streamed is True."""
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="seed", streamed=True),
+            IterationStatus(phase="loop-1", streamed=True),
+        ],
+    )
+    assert fs.all_streamed is True

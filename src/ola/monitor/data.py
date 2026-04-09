@@ -31,6 +31,7 @@ class IterationStatus:
     agent_version: str = ""
     models: list[str] = field(default_factory=list)
     tool_ms: int = 0
+    llm_ms: int = 0
     ttft_ms: int = 0
     streamed: bool = True
     tasks_completed: int = 0
@@ -220,6 +221,7 @@ def parse_stats_jsonl(stats_text: str) -> list[IterationStatus]:
                 agent_version=record.get("agent_version", ""),
                 models=record.get("models", []),
                 tool_ms=record.get("tool_ms", 0),
+                llm_ms=record.get("llm_ms", 0),
                 ttft_ms=record.get("ttft_ms", 0),
                 streamed=record.get("streamed", True),
                 tasks_completed=record.get("tasks_completed", 0),
