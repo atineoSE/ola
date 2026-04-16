@@ -216,6 +216,16 @@ ola-sandbox() {
   local project_dir="$(cd .. && pwd)"
   local agent_dir="$(cd ../agent 2>/dev/null && pwd)"
 
+  # Fail fast if sbx is not authenticated — unauthenticated sbx commands stall.
+  local _sbx_out
+  _sbx_out="$(sbx ls 2>&1)"
+  if [ $? -ne 0 ]; then
+    echo "Error: sbx is not authenticated or unavailable." >&2
+    echo "$_sbx_out" >&2
+    echo "Run 'sbx login' and ensure Docker Desktop is running, then retry." >&2
+    return 1
+  fi
+
   if [ -z "$agent_dir" ]; then
     echo "Error: ../agent directory not found relative to $(pwd)" >&2
     return 1
@@ -230,7 +240,7 @@ ola-sandbox() {
   ola-policy-sync "$agent_dir" "$agent_dir/.env"
 
   # Reconnect if sandbox already exists
-  if sbx ls 2>/dev/null | grep -q "$name"; then
+  if sbx ls 2>&1 | grep -q "$name"; then
     # Refresh credentials on reconnect
     _ola_inject_credentials "$name"
     sbx run "$name"
