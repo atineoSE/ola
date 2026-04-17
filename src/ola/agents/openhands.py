@@ -189,6 +189,7 @@ class OpenHandsAgent(Agent):
             ("num_retries", "LLM_NUM_RETRIES", int),
             ("extended_thinking_budget", "LLM_EXTENDED_THINKING_BUDGET", int),
             ("prompt_cache_retention", "LLM_PROMPT_CACHE_RETENTION", str),
+            ("usage_id", "LLM_USAGE_ID", str),
         ]
         for kwarg, envvar, typ in _env_llm_opts:
             val = os.getenv(envvar)
