@@ -130,8 +130,10 @@ class OpenHandsAgent(Agent):
             from openhands.sdk import (
                 LLM,
                 AgentContext,
-                Agent as OHAgent,
                 Conversation,
+            )
+            from openhands.sdk import (
+                Agent as OHAgent,
             )
             from openhands.sdk.context import Skill
             from openhands.sdk.conversation.response_utils import (
@@ -159,9 +161,7 @@ class OpenHandsAgent(Agent):
                 success=False,
             )
 
-        model_name = self.model or os.getenv(
-            "LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"
-        )
+        model_name = self.model or os.getenv("LLM_MODEL")
         base_url = os.getenv("LLM_BASE_URL") or None
         if base_url:
             base_url = _resolve_localhost(base_url)
