@@ -163,14 +163,18 @@ def run_outer_loop(
 
     _ensure_git(plan_path)
 
-    folders = discover_plan_folders(plan_path)
-    if not folders:
-        logger.info("No subfolders found in %s. Nothing to do.", plan_path)
-        return
-
-    for folder in folders:
-        logger.info("Processing: %s", folder.name)
-        _process_folder(agent, folder, limit, plan_path)
+    processed: set[Path] = set()
+    while True:
+        folders = discover_plan_folders(plan_path)
+        remaining = [f for f in folders if f not in processed]
+        if not remaining:
+            if not processed:
+                logger.info("No subfolders found in %s. Nothing to do.", plan_path)
+            break
+        for folder in remaining:
+            logger.info("Processing: %s", folder.name)
+            _process_folder(agent, folder, limit, plan_path)
+            processed.add(folder)
 
 
 def _process_folder(
