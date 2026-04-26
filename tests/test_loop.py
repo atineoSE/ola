@@ -10,9 +10,9 @@ import pytest
 from ola.agents.base import Agent, AgentResponse
 from ola.agents.claude_code import ClaudeCodeAgent
 from ola.loop import (
-    _MAX_RATE_LIMIT_WAIT_SEC,
     _MAX_STAGNANT_LOOPS,
     _append_stats,
+    _git_commit,
     _last_loop_number,
     _process_folder,
 )
@@ -132,8 +132,12 @@ def test_append_stats_task_tracking(tmp_path):
     """Task tracking fields are computed from before/after tuples."""
     stats = IterationStats()
     _append_stats(
-        tmp_path, "loop-1", stats, wall_ms=1000,
-        tasks_before=(2, 5), tasks_after=(4, 5),
+        tmp_path,
+        "loop-1",
+        stats,
+        wall_ms=1000,
+        tasks_before=(2, 5),
+        tasks_after=(4, 5),
     )
     rec = _read_record(tmp_path)
     assert rec["tasks_completed"] == 4
@@ -171,8 +175,13 @@ def test_stats_roundtrip_contract(tmp_path):
     )
     agent = _FakeAgent()
     _append_stats(
-        tmp_path, "loop-1", stats, wall_ms=8000,
-        agent=agent, tasks_before=(1, 5), tasks_after=(3, 5),
+        tmp_path,
+        "loop-1",
+        stats,
+        wall_ms=8000,
+        agent=agent,
+        tasks_before=(1, 5),
+        tasks_after=(3, 5),
     )
 
     text = (tmp_path / "STATS.jsonl").read_text()
@@ -264,7 +273,7 @@ def _make_proc(lines: list[str], returncode: int = 0) -> MagicMock:
     """Return a mock Popen whose stdout yields *lines* as NDJSON."""
     proc = MagicMock()
     proc.stdin = MagicMock()
-    proc.stdout = iter(l + "\n" for l in lines)
+    proc.stdout = iter(line + "\n" for line in lines)
     proc.stderr = MagicMock()
     proc.stderr.read.return_value = ""
     proc.returncode = returncode
@@ -279,51 +288,61 @@ def _stream_event(inner: dict) -> str:
 
 def _cc_stream_lines() -> list[str]:
     """Canned CC stream with --include-partial-messages output (two turns)."""
-    msg_start_1 = _stream_event({
-        "type": "message_start",
-        "message": {
-            "model": "claude-sonnet-4-20250514",
-            "usage": {
-                "input_tokens": 5,
-                "cache_creation_input_tokens": 6663,
-                "cache_read_input_tokens": 15771,
+    msg_start_1 = _stream_event(
+        {
+            "type": "message_start",
+            "message": {
+                "model": "claude-sonnet-4-20250514",
+                "usage": {
+                    "input_tokens": 5,
+                    "cache_creation_input_tokens": 6663,
+                    "cache_read_input_tokens": 15771,
+                },
             },
-        },
-    })
+        }
+    )
     cbs_1 = _stream_event({"type": "content_block_start"})
     md_1 = _stream_event({"type": "message_delta"})
 
-    msg_start_2 = _stream_event({
-        "type": "message_start",
-        "message": {
-            "model": "claude-sonnet-4-20250514",
-            "usage": {
-                "input_tokens": 10,
-                "cache_creation_input_tokens": 100,
-                "cache_read_input_tokens": 5000,
+    msg_start_2 = _stream_event(
+        {
+            "type": "message_start",
+            "message": {
+                "model": "claude-sonnet-4-20250514",
+                "usage": {
+                    "input_tokens": 10,
+                    "cache_creation_input_tokens": 100,
+                    "cache_read_input_tokens": 5000,
+                },
             },
-        },
-    })
+        }
+    )
     cbs_2 = _stream_event({"type": "content_block_start"})
     md_2 = _stream_event({"type": "message_delta"})
 
-    result = json.dumps({
-        "type": "result",
-        "result": "Done.",
-        "subtype": "success",
-        "num_turns": 2,
-        "usage": {
-            "input_tokens": 200,
-            "output_tokens": 80,
-            "cache_creation_input_tokens": 6763,
-            "cache_read_input_tokens": 20771,
-        },
-    })
+    result = json.dumps(
+        {
+            "type": "result",
+            "result": "Done.",
+            "subtype": "success",
+            "num_turns": 2,
+            "usage": {
+                "input_tokens": 200,
+                "output_tokens": 80,
+                "cache_creation_input_tokens": 6763,
+                "cache_read_input_tokens": 20771,
+            },
+        }
+    )
 
     return [
         json.dumps({"type": "system"}),
-        msg_start_1, cbs_1, md_1,
-        msg_start_2, cbs_2, md_2,
+        msg_start_1,
+        cbs_1,
+        md_1,
+        msg_start_2,
+        cbs_2,
+        md_2,
         result,
     ]
 
@@ -339,14 +358,16 @@ def test_cc_stream_to_stats_jsonl_roundtrip(tmp_path):
     # Per turn: message_start → content_block_start → message_delta
     # Turn 1: ttft = 0.100s, decode = 0.200s
     # Turn 2: ttft = 0.150s, decode = 0.250s
-    clock = iter([
-        0.0,    # turn 1 message_start  → turn_start
-        0.100,  # turn 1 content_block_start → token_start (ttft=100ms)
-        0.300,  # turn 1 message_delta (decode=200ms)
-        0.500,  # turn 2 message_start  → turn_start
-        0.650,  # turn 2 content_block_start → token_start (ttft=150ms)
-        0.900,  # turn 2 message_delta (decode=250ms)
-    ])
+    clock = iter(
+        [
+            0.0,  # turn 1 message_start  → turn_start
+            0.100,  # turn 1 content_block_start → token_start (ttft=100ms)
+            0.300,  # turn 1 message_delta (decode=200ms)
+            0.500,  # turn 2 message_start  → turn_start
+            0.650,  # turn 2 content_block_start → token_start (ttft=150ms)
+            0.900,  # turn 2 message_delta (decode=250ms)
+        ]
+    )
 
     # Step 1: Run _stream() on a mocked CC process with faked time.
     proc = _make_proc(_cc_stream_lines())
@@ -358,8 +379,13 @@ def test_cc_stream_to_stats_jsonl_roundtrip(tmp_path):
 
     # Step 2: Write via _append_stats.
     _append_stats(
-        tmp_path, "loop-1", stats, wall_ms=10000,
-        agent=agent, tasks_before=(0, 3), tasks_after=(1, 3),
+        tmp_path,
+        "loop-1",
+        stats,
+        wall_ms=10000,
+        agent=agent,
+        tasks_before=(0, 3),
+        tasks_after=(1, 3),
     )
 
     # Step 3: Read back via parse_stats_jsonl.
@@ -464,7 +490,9 @@ def test_stagnation_resets_on_progress(tmp_path):
         def run(self, prompt, workdir, state_dir=None, labels=None):
             nonlocal call_idx
             # Write the next plan state BEFORE returning so count_tasks sees it
-            (folder / "PLAN.md").write_text(plan_states[min(call_idx, len(plan_states) - 1)])
+            (folder / "PLAN.md").write_text(
+                plan_states[min(call_idx, len(plan_states) - 1)]
+            )
             call_idx += 1
             return AgentResponse(output="ok", success=True, stats=IterationStats())
 
@@ -477,7 +505,9 @@ def test_stagnation_resets_on_progress(tmp_path):
     agent = _ProgressAgent()
     # Set limit high enough to observe the reset but still terminate
     with patch("ola.loop._git_commit"):
-        _process_folder(agent, folder, limit=_MAX_STAGNANT_LOOPS + 2, agent_root=tmp_path)
+        _process_folder(
+            agent, folder, limit=_MAX_STAGNANT_LOOPS + 2, agent_root=tmp_path
+        )
 
     # The agent ran more than _MAX_STAGNANT_LOOPS times because progress reset the counter
     assert call_idx > _MAX_STAGNANT_LOOPS
@@ -581,9 +611,7 @@ def test_rate_limit_cap_exceeds_stops_loop(tmp_path, caplog):
     assert agent.call_count == 1
 
     # Error was logged
-    assert any(
-        "Rate limit reset too far away" in rec.message for rec in caplog.records
-    )
+    assert any("Rate limit reset too far away" in rec.message for rec in caplog.records)
 
     # No sleep was called (loop broke before sleeping)
     recs = _read_records(folder)
@@ -661,6 +689,43 @@ def test_keyboard_interrupt_writes_stats_row(tmp_path, caplog):
 
     # Info log was emitted
     assert any(
-        "Interrupted during iteration" in rec.message and "Stats row written" in rec.message
+        "Interrupted during iteration" in rec.message
+        and "Stats row written" in rec.message
         for rec in caplog.records
     )
+
+
+# --- Stale git lock tests ---
+
+
+def test_git_commit_removes_stale_lock(tmp_path, caplog):
+    """_git_commit removes index.lock and logs a warning when it exists."""
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    lock = git_dir / "index.lock"
+    lock.write_text("")
+
+    with (
+        caplog.at_level(logging.WARNING, logger="ola.loop"),
+        patch("ola.loop._git"),
+        patch("ola.loop.subprocess.run", return_value=MagicMock(returncode=0)),
+    ):
+        _git_commit(tmp_path, "test message")
+
+    assert not lock.exists()
+    assert any("stale" in rec.message.lower() for rec in caplog.records)
+
+
+def test_git_commit_no_lock_no_warning(tmp_path, caplog):
+    """_git_commit does not warn when no stale lock exists."""
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+
+    with (
+        caplog.at_level(logging.WARNING, logger="ola.loop"),
+        patch("ola.loop._git"),
+        patch("ola.loop.subprocess.run", return_value=MagicMock(returncode=0)),
+    ):
+        _git_commit(tmp_path, "test message")
+
+    assert not any("stale" in rec.message.lower() for rec in caplog.records)

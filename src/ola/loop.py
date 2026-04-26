@@ -52,6 +52,10 @@ def _ensure_git(cwd: Path) -> None:
 
 def _git_commit(cwd: Path, message: str) -> None:
     """Stage all changes and commit. No-op if working tree is clean."""
+    lock = cwd / ".git" / "index.lock"
+    if lock.exists():
+        logger.warning("Removing stale git lock file %s", lock)
+        lock.unlink()
     _git(cwd, "add", "-A")
     result = subprocess.run(
         ["git", "diff", "--cached", "--quiet"], cwd=cwd, capture_output=True
