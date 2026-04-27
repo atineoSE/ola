@@ -3,6 +3,7 @@
 import argparse
 import logging
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 from ola.agents import create_agent
@@ -55,6 +56,11 @@ def main() -> None:
         "--skip-sandbox",
         action="store_true",
         help="Allow running outside a Docker sandbox",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {version('ola')}",
     )
 
     args = parser.parse_args()
