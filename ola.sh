@@ -197,11 +197,14 @@ _ola_inject_file() {
 _ola_inject_credentials() {
   local name="$1"
 
-  # Claude Code: OAuth credentials from Keychain
-  local cc_cred="$HOME/.claude/.credentials.json"
+  # Claude Code: OAuth credentials, user config, and settings
+  local cc_dir="$HOME/.claude"
+  local cc_cred="$cc_dir/.credentials.json"
   if ! _ola_inject_file "$name" "$cc_cred" "\$HOME/.claude/.credentials.json"; then
     echo "Warning: $cc_cred not found — run 'cc-credentials' or 'claude' on the host first." >&2
   fi
+  _ola_inject_file "$name" "$cc_dir/.claude.json" "\$HOME/.claude/.claude.json" || true
+  _ola_inject_file "$name" "$cc_dir/settings.json" "\$HOME/.claude/settings.json" || true
 
   # OpenHands: agent settings and CLI config
   local oh_dir="$HOME/.openhands"

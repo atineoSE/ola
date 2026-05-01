@@ -15,6 +15,7 @@ from ola.stats import IterationStats
 logger = logging.getLogger(__name__)
 
 _BOOTSTRAP_FILES = (".credentials.json", ".claude.json", "settings.json")
+_ALWAYS_REFRESH = {".credentials.json"}
 _STATUS_LINES = 3
 _MAX_LINE_LEN = 72
 
@@ -121,7 +122,7 @@ class ClaudeCodeAgent(Agent):
             for fname in _BOOTSTRAP_FILES:
                 src = home_claude / fname
                 dst = sd / fname
-                if src.exists() and not dst.exists():
+                if src.exists() and (fname in _ALWAYS_REFRESH or not dst.exists()):
                     shutil.copy2(src, dst)
                     logger.debug("Copied %s -> %s", src, dst)
             env = {**os.environ, "CLAUDE_CONFIG_DIR": str(sd)}
