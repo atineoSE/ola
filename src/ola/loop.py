@@ -50,17 +50,22 @@ def _ensure_git(cwd: Path) -> None:
         _git_commit(cwd, "Initial commit")
 
 
-def _git_commit(cwd: Path, message: str) -> None:
-    """Stage all changes and commit. No-op if working tree is clean."""
+def _clear_lock(cwd: Path) -> None:
     lock = cwd / ".git" / "index.lock"
     if lock.exists():
         logger.warning("Removing stale git lock file %s", lock)
         lock.unlink()
+
+
+def _git_commit(cwd: Path, message: str) -> None:
+    """Stage all changes and commit. No-op if working tree is clean."""
+    _clear_lock(cwd)
     _git(cwd, "add", "-A")
     result = subprocess.run(
         ["git", "diff", "--cached", "--quiet"], cwd=cwd, capture_output=True
     )
     if result.returncode != 0:  # there are staged changes
+        _clear_lock(cwd)
         _git(cwd, "commit", "-m", message)
         logger.info("Committed: %s", message)
     else:
