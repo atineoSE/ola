@@ -94,7 +94,7 @@ Note the isolation provided by docker sandboxes is much more strict that the Cla
 The template extends `docker/sandbox-templates:shell` and must be pushed to an OCI registry — sbx pulls templates from a registry directly and does not use the local Docker daemon's image store.
 
 ```bash
-docker build -f docker/Dockerfile -t ghcr.io/<your-user>/ola:latest --push .
+docker build -f docker/Dockerfile -t ghcr.io/$(whoami)/ola:latest --push .
 ```
 
 Add `--no-cache` to force fresh installs of Claude Code, OpenHands, and ola.
@@ -143,7 +143,7 @@ If you prefer not to use the helper:
 
 ```bash
 cd project
-sbx create shell --name my-sandbox --template ghcr.io/<your-user>/ola:latest .
+sbx create shell --name my-sandbox --template ghcr.io/$(whoami)/ola:latest .
 sbx run my-sandbox
 ```
 
