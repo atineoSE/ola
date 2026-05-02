@@ -1,4 +1,7 @@
-.PHONY: test test-py test-sh test-integration sandbox-dev
+.PHONY: install test test-py test-sh test-integration sandbox-dev
+
+install: ## Install ola CLI globally in editable mode (changes take effect immediately)
+	uv tool install --editable .
 
 test: test-py test-sh ## Run python + shell tests (default)
 
