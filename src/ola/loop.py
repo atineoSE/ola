@@ -54,22 +54,21 @@ def _clear_lock(cwd: Path) -> None:
     lock = cwd / ".git" / "index.lock"
     if lock.exists():
         logger.warning("Removing stale git lock file %s", lock)
-        lock.unlink(missing_ok=True)
+        lock.unlink()
 
 
 def _git_commit(cwd: Path, message: str) -> None:
     """Stage all changes and commit. No-op if working tree is clean."""
     _clear_lock(cwd)
     _git(cwd, "add", "-A")
-    result = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"], cwd=cwd, capture_output=True
-    )
-    if result.returncode != 0:  # there are staged changes
-        _clear_lock(cwd)
-        _git(cwd, "commit", "-m", message)
+    result = subprocess.run(["git", "commit", "-m", message], cwd=cwd, capture_output=True)
+    if result.returncode == 0:
         logger.info("Committed: %s", message)
-    else:
+    elif result.returncode == 1 and b"nothing to commit" in result.stdout:
         logger.debug("Nothing to commit after: %s", message)
+    else:
+        logger.error("git commit failed: %s", result.stderr.decode(errors="replace"))
+        result.check_returncode()
 
 
 def _format_tokens(n: int) -> str:
