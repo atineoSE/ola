@@ -251,15 +251,20 @@ ola-sandbox() {
   fi
 
   # Create sandbox non-interactively, then attach.
-  # The template extends docker/sandbox-templates:shell, so the agent is "shell".
-  # sbx pulls templates from a registry (not the local Docker daemon), so the
-  # image must be pushed to a registry first (see README).
+  # Default image is pulled from the registry. Set OLA_SBX_IMAGE to a local
+  # tag (no registry host) to load from the local Docker daemon instead —
+  # useful during ola development (see: make sandbox-dev).
   local image="${OLA_SBX_IMAGE:-ghcr.io/$(whoami)/ola:latest}"
+  local create_flags=(-q)
+  if [[ "$image" != *"/"* ]]; then
+    # No registry host — load from local Docker daemon
+    create_flags+=(--load-local-template)
+  fi
 
   sbx create shell \
     --name "$name" \
     --template "$image" \
-    -q \
+    "${create_flags[@]}" \
     "$project_dir" || {
     echo "Error: failed to create sandbox '$name'" >&2
     return 1
