@@ -99,10 +99,10 @@ docker build --no-cache -f docker/Dockerfile -t ghcr.io/$(whoami)/ola:latest --p
 
 ### Dev flow (local image, no registry push)
 
-When iterating on ola itself, build a local image and point `ola-sandbox` at it. If `OLA_SBX_IMAGE` contains no `/`, `ola-sandbox` automatically passes `--load-local-template` to sbx, loading from the local Docker daemon instead of the registry.
+When iterating on ola itself, build a local image and load it into sbx's image store, then point `ola-sandbox` at it via `OLA_SBX_IMAGE`.
 
 ```bash
-make sandbox-dev                                  # builds ola:dev locally
+make sandbox-dev                                  # builds ola:dev and loads it into sbx
 OLA_SBX_IMAGE=ola:dev ola-sandbox my-sandbox      # creates sandbox from local image
 ```
 

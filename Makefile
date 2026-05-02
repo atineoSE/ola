@@ -14,5 +14,8 @@ test-sh: ## Run shell unit tests (requires bats: npm install -g bats bats-suppor
 test-integration: ## Run sbx integration tests (requires sbx)
 	bats tests/test_sbx_integration.bats
 
-sandbox-dev: ## Build local dev image (use with: OLA_SBX_IMAGE=ola:dev ola-sandbox <name>)
+sandbox-dev: ## Build local dev image and load into sbx (use with: OLA_SBX_IMAGE=ola:dev ola-sandbox <name>)
 	docker build --no-cache -f docker/Dockerfile -t ola:dev .
+	docker save ola:dev -o /tmp/ola-dev.tar
+	sbx template load /tmp/ola-dev.tar
+	rm /tmp/ola-dev.tar

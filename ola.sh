@@ -251,20 +251,15 @@ ola-sandbox() {
   fi
 
   # Create sandbox non-interactively, then attach.
-  # Default image is pulled from the registry. Set OLA_SBX_IMAGE to a local
-  # tag (no registry host) to load from the local Docker daemon instead —
-  # useful during ola development (see: make sandbox-dev).
+  # Default image is pulled from the registry. For local dev builds, run
+  # 'make sandbox-dev' first to load ola:dev into sbx's image store, then
+  # set OLA_SBX_IMAGE=ola:dev.
   local image="${OLA_SBX_IMAGE:-ghcr.io/$(whoami)/ola:latest}"
-  local create_flags=(-q)
-  if [[ "$image" != *"/"* ]]; then
-    # No registry host — load from local Docker daemon
-    create_flags+=(--load-local-template)
-  fi
 
   sbx create shell \
     --name "$name" \
     --template "$image" \
-    "${create_flags[@]}" \
+    -q \
     "$project_dir" || {
     echo "Error: failed to create sandbox '$name'" >&2
     return 1
