@@ -54,7 +54,7 @@ def _clear_lock(cwd: Path) -> None:
     lock = cwd / ".git" / "index.lock"
     if lock.exists():
         logger.warning("Removing stale git lock file %s", lock)
-        lock.unlink()
+        lock.unlink(missing_ok=True)
 
 
 def _git_commit(cwd: Path, message: str) -> None:
