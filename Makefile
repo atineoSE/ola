@@ -12,4 +12,4 @@ test-integration: ## Run sbx integration tests (requires sbx)
 	bats tests/test_sbx_integration.bats
 
 sandbox-dev: ## Build local dev image (use with: OLA_SBX_IMAGE=ola:dev ola-sandbox <name>)
-	docker build -f docker/Dockerfile -t ola:dev .
+	docker build --no-cache -f docker/Dockerfile -t ola:dev .

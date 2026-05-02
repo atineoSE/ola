@@ -94,10 +94,8 @@ Note the isolation provided by docker sandboxes is much more strict that the Cla
 The template extends `docker/sandbox-templates:shell` and must be pushed to an OCI registry — sbx normally pulls templates from a registry directly and does not use the local Docker daemon's image store.
 
 ```bash
-docker build -f docker/Dockerfile -t ghcr.io/$(whoami)/ola:latest --push .
+docker build --no-cache -f docker/Dockerfile -t ghcr.io/$(whoami)/ola:latest --push .
 ```
-
-Add `--no-cache` to force fresh installs of Claude Code, OpenHands, and ola.
 
 ### Dev flow (local image, no registry push)
 
