@@ -60,8 +60,11 @@ def _clear_lock(cwd: Path) -> None:
 def _git_commit(cwd: Path, message: str) -> None:
     """Stage all changes and commit. No-op if working tree is clean."""
     _clear_lock(cwd)
-    _git(cwd, "add", "-A")
-    result = subprocess.run(["git", "commit", "-m", message], cwd=cwd, capture_output=True)
+    result = subprocess.run(
+        ["sh", "-c", 'git add -A && git commit -m "$1"', "_", message],
+        cwd=cwd,
+        capture_output=True,
+    )
     if result.returncode == 0:
         logger.info("Committed: %s", message)
     elif result.returncode == 1 and b"nothing to commit" in result.stdout:
