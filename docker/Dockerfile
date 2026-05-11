@@ -1,4 +1,4 @@
-FROM docker/sandbox-templates:shell
+FROM docker/sandbox-templates:shell-docker
 
 # Install Claude Code CLI (native installer — no Node.js required)
 RUN curl -fsSL https://claude.ai/install.sh | bash
@@ -41,4 +41,5 @@ RUN set -e && \
     uv --version && \
     claude --version && \
     openhands --version && \
+    docker --version && \
     git config --global user.name | grep -q ola

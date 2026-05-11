@@ -91,7 +91,7 @@ Note the isolation provided by docker sandboxes is much more strict that the Cla
 
 ### Build and push the template image
 
-The template extends `docker/sandbox-templates:shell` and must be pushed to an OCI registry — sbx normally pulls templates from a registry directly and does not use the local Docker daemon's image store.
+The template extends `docker/sandbox-templates:shell-docker` (the `-docker` variant bundles Docker Engine, so agents can run containers inside the sandbox) and must be pushed to an OCI registry — sbx normally pulls templates from a registry directly and does not use the local Docker daemon's image store.
 
 ```bash
 docker build --no-cache -f docker/Dockerfile -t ghcr.io/$(whoami)/ola:latest --push .
