@@ -3,10 +3,8 @@ FROM docker/sandbox-templates:shell-docker
 # Install Claude Code CLI (native installer — no Node.js required)
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Claude Code config: bypass onboarding and enable skip-permissions
-RUN echo '{"hasCompletedOnboarding": true}' > ~/.claude.json && \
-    mkdir -p ~/.claude/settings && \
-    echo '{"permissions":{"allow":["*"],"deny":[]}}' > ~/.claude/settings/settings.json
+# Claude Code config: bypass onboarding
+RUN echo '{"hasCompletedOnboarding": true}' > ~/.claude.json
 
 # Install uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
