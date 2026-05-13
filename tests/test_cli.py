@@ -61,3 +61,20 @@ class TestSandboxGate:
             main()
             mock_create.assert_called_once()
             mock_loop.assert_called_once()
+
+
+class TestAgentSelection:
+    """Verify -a flag routes the requested agent name into create_agent."""
+
+    @pytest.mark.parametrize("flag", ["codex", "cx"])
+    def test_codex_flag_reaches_create_agent(self, tmp_path, flag):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}),
+            patch("sys.argv", ["ola", "-a", flag, "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent") as mock_create,
+            patch("ola.cli.run_outer_loop"),
+        ):
+            main()
+            mock_create.assert_called_once_with(flag, model=None)

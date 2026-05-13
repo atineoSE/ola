@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument(
         "-a",
         "--agent",
-        choices=["openhands", "oh", "claude-code", "cc"],
+        choices=["openhands", "oh", "claude-code", "cc", "codex", "cx"],
         default="cc",
         help="Agent to use (default: cc)",
     )
