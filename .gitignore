@@ -6,5 +6,4 @@ dist/
 build/
 .venv/
 .env
-.claude
 .DS_Store

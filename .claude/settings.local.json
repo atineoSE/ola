@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit:*)",
+      "WebFetch(domain:docs.docker.com)",
+      "WebFetch(domain:api.anthropic.com)",
+      "WebFetch(domain:pypi.org)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
