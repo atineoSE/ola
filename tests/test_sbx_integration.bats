@@ -127,6 +127,14 @@ setup() {
   _sbx_exec bash -c 'grep -q "alias oh=" $HOME/.bashrc'
 }
 
+@test "7.1n: codex is installed" {
+  _sbx_exec which codex
+}
+
+@test "7.1o: cx alias exists" {
+  _sbx_exec bash -c 'grep -q "alias cx=" $HOME/.bashrc'
+}
+
 # ===== 7.2 Authentication via .credentials.json =====
 
 @test "7.2a: credentials copied into sandbox" {
