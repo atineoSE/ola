@@ -17,5 +17,6 @@ test-integration: ## Run sbx integration tests (requires sbx)
 sandbox-dev: ## Build local dev image and load into sbx (use with: OLA_SBX_IMAGE=ola:dev ola-sandbox <name>)
 	docker build --no-cache -f docker/Dockerfile -t ola:dev .
 	docker save ola:dev -o /tmp/ola-dev.tar
+	sbx template rm ola:dev 2>/dev/null || true
 	sbx template load /tmp/ola-dev.tar
 	rm /tmp/ola-dev.tar
