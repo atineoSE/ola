@@ -6,9 +6,10 @@ Outer Loop of Agents — A harness to run long-horizon agentic loops
 
 The implementation follows the [Ralph Wiggum technique](https://ghuntley.com/ralph/): a way for the agent to iterate on fresh contexts as it works relentlessly against tasks in a plan file. The design is heavily influenced by [this presentation](https://youtu.be/5syeNjq2ZCU?si=a2RvALDjiXPfYqJn) from [Ray Myers](https://github.com/raymyers), Chief Architect at [OpenHands](https://openhands.dev).
 
-There are 2 agents currently supported:
+There are 3 agents currently supported:
 * [Claude Code](https://github.com/anthropics/claude-code)
 * [OpenHands SDK](https://github.com/OpenHands/software-agent-sdk)
+* [Codex](https://github.com/openai/codex)
 
 ## Install
 
@@ -19,13 +20,13 @@ uv tool install .
 ## Usage
 
 ```bash
-ola [-f <agent-folder>] [-a cc|oh] [-m MODEL] [-l LIMIT] [-v]
+ola [-f <agent-folder>] [-a cc|oh|codex] [-m MODEL] [-l LIMIT] [-v]
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-f, --agent-folder` | Path to the agent folder | `../agent` |
-| `-a, --agent` | Agent: `cc`/`claude-code` or `oh`/`openhands` | `cc` |
+| `-a, --agent` | Agent: `cc`/`claude-code`, `oh`/`openhands`, or `cx`/`codex` | `cc` |
 | `-m, --model` | Model name | Agent default |
 | `-l, --limit` | Max iterations per subfolder | No limit |
 | `-v, --verbose` | Debug logging | Off |
@@ -47,11 +48,15 @@ project/
       .openhands/       # OpenHands state dir (auto-created by ola)
         logs/
         trajectories/
+      .codex/           # Codex state dir (auto-created by ola)
+        config.toml     # generated per-phase by ola
+        last.txt        # last assistant message written by codex
     02-implement/
       LOOP-PROMPT.md
       PLAN.md
       .claude/
       .openhands/
+      .codex/
 ```
 
 Plan subfolders are processed in order.
@@ -174,6 +179,8 @@ Set `LMNR_PROJECT_API_KEY` and `LMNR_BASE_URL` in `.env` to enable trace export 
 
 > **Note:** gRPC export (the default in the Laminar SDK) does not work inside Docker sandboxes. The sbx proxy downgrades HTTP/2 to HTTP/1.x, which breaks gRPC. ola uses `force_http=True` to avoid this entirely.
 
+> **Codex tracing is not wired.** The Codex agent (`-a codex`) consumes the `codex exec --json` event stream directly; there is no SDK auto-instrumentation path, so Laminar export is OpenHands-only.
+
 ## ola-top
 
 A `top`-like terminal dashboard for monitoring agent progress in real time. Shows task completion, token usage, cache hit rates, and wall time for each phase — with per-iteration drill-down.
@@ -206,3 +213,5 @@ Example output:
 **Claude Code** (`cc`) — calls `claude --dangerously-skip-permissions -p <prompt>` as a subprocess. When run via ola, `CLAUDE_CONFIG_DIR` is set to the phase's `.claude/` directory, giving each phase its own conversation history.
 
 **OpenHands** (`oh`) — uses the OpenHands SDK (`LLM` + `Conversation`). Requires `LLM_API_KEY` (and optionally `LLM_MODEL`, `LLM_BASE_URL`) set in the environment or a `.env` file. SDK logs and conversation trajectories are saved to `<subfolder>/.openhands/logs/` and `<subfolder>/.openhands/trajectories/`.
+
+**Codex** (`cx` / `codex`) — calls `codex exec --json --ephemeral` as a subprocess and consumes its JSONL event stream. Reuses the same `LLM_*` vars as OpenHands (`LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`, plus an optional `LLM_WIRE_API` override that defaults to `"responses"`). On each iteration, ola generates `<subfolder>/.codex/config.toml` pointing codex at the configured base URL via a `[model_providers.ola]` block (with `env_key = "LLM_API_KEY"`), and sets `CODEX_HOME=<subfolder>/.codex/` so the per-phase config is picked up. See `.claude/skills/codex/SKILL.md` for the underlying CLI + event-stream contract.
