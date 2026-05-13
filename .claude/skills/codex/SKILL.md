@@ -110,23 +110,23 @@ codex exec --json --ephemeral -C . -o final.txt \
 
 Each line of `codex exec --json` is one JSON object. Parse line-by-line; don't try to load the whole stream as one document.
 
-### Top-level shape
-
-```json
-{
-  "timestamp": "2026-05-13T09:33:52.589Z",
-  "type": "event_msg | response_item | session_meta | turn_context",
-  "payload": { "...depends on type..." }
-}
-```
+> Format documented here is the **v0.130.0** stream. Older codex builds (≤ ~0.110) emitted a `session_meta` / `turn_context` / `event_msg` / `response_item` envelope under a `payload` key; that format is gone in current builds.
 
 ### Event types that carry the metadata a harness usually wants
 
-1. **`session_meta`** — run/session info: id, cwd, CLI version, model_provider, git branch/commit, etc. Emit-once, near the start.
-2. **`turn_context`** — effective runtime config for the turn: model, approval policy, sandbox policy, cwd, date/timezone.
-3. **`event_msg`** with `payload.type == "token_count"` — usage: `input_tokens`, `output_tokens`, `reasoning_output_tokens`, totals, context window, rate-limit info.
-4. **`event_msg`** with `payload.type == "task_complete"` — completion: `turn_id`, often `last_agent_message`.
-5. **`response_item`** — model/user/developer messages and tool-call records: `message`, `function_call`, `function_call_output`, etc.
+1. **`thread.started`** — `{ type, thread_id }`. Emitted once at the start.
+2. **`turn.started`** — no payload of interest. Marks the beginning of an LLM turn (may repeat in multi-turn sessions).
+3. **`item.started`** / **`item.completed`** — `{ type, item: { id, type, ... } }`. The `item.type` discriminator selects the shape:
+   - `agent_message` — `{ id, type, text }`. The model's reply for this turn. Track the latest one as the run's `last_agent_message`.
+   - `command_execution` — `{ id, type, command, aggregated_output, exit_code, status }`. A shell command the agent ran.
+   - Other tool/item types (reasoning, file edits, etc.) — handle defensively; the set grows as new tools land.
+4. **`turn.completed`** — `{ type, usage: { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens } }`. Per-turn usage. **Sum across turns** for cumulative totals; the largest single-turn `input_tokens` is your context-window high-water mark.
+5. **`turn.failed`** — `{ type, error: { message } }`. Turn-level failure (e.g. provider rejected the request).
+6. **`error`** — `{ type, message }`. Stream-level error.
+
+A run is **successful** when at least one `turn.completed` is seen and no `turn.failed` / `error` event appears.
+
+The effective model name is **not** surfaced in the stream — harnesses should record the model they configured (top-level `model` in `config.toml` or `-m <model>` override).
 
 ### Practical extraction with `jq`
 
@@ -135,9 +135,10 @@ Pull just the metadata-bearing events:
 ```bash
 codex exec --json "your prompt" | jq -c '
   select(
-    .type == "session_meta" or
-    .type == "turn_context" or
-    (.type == "event_msg" and (.payload.type == "token_count" or .payload.type == "task_complete"))
+    .type == "thread.started" or
+    .type == "turn.completed" or
+    .type == "turn.failed" or
+    (.type == "item.completed" and .item.type == "agent_message")
   )'
 ```
 
@@ -147,13 +148,16 @@ codex exec --json "your prompt" | jq -c '
 import json, subprocess
 
 proc = subprocess.Popen(
-    ["codex", "exec", "--json", "--ephemeral", "-C", ".", prompt],
+    ["codex", "exec", "--json", "--ephemeral",
+     "--dangerously-bypass-approvals-and-sandbox", "-C", ".", prompt],
     stdout=subprocess.PIPE, text=True,
 )
 
+thread_id = None
 last_message = None
-usage = None
-session_id = None
+input_tokens = output_tokens = cached = 0
+turn_completed = False
+turn_error = None
 
 for line in proc.stdout:
     line = line.strip()
@@ -161,19 +165,31 @@ for line in proc.stdout:
         continue
     evt = json.loads(line)
     t = evt.get("type")
-    payload = evt.get("payload", {})
 
-    if t == "session_meta":
-        session_id = payload.get("id")
-    elif t == "event_msg" and payload.get("type") == "token_count":
-        usage = payload
-    elif t == "event_msg" and payload.get("type") == "task_complete":
-        last_message = payload.get("last_agent_message")
+    if t == "thread.started":
+        thread_id = evt.get("thread_id")
+    elif t == "item.completed":
+        item = evt.get("item") or {}
+        if item.get("type") == "agent_message":
+            last_message = item.get("text")
+    elif t == "turn.completed":
+        turn_completed = True
+        u = evt.get("usage") or {}
+        input_tokens += u.get("input_tokens", 0) or 0
+        output_tokens += u.get("output_tokens", 0) or 0
+        cached += u.get("cached_input_tokens", 0) or 0
+    elif t in ("turn.failed", "error"):
+        turn_error = (evt.get("error") or {}).get("message") or evt.get("message")
 
 proc.wait()
+success = turn_completed and turn_error is None
 ```
 
 Stream events as they arrive — don't buffer to the end. That gives the harness live progress for monitors/logs and avoids losing partial output if the run is killed.
+
+### Sandboxing flag
+
+Without `--dangerously-bypass-approvals-and-sandbox`, `codex exec` runs with a read-only sandbox and will refuse to edit files. Pass that flag when you are *already* running inside an externally-isolated environment (e.g. an ola docker sandbox). For unsandboxed local runs, prefer `-s workspace-write` and let codex prompt for approvals.
 
 ---
 

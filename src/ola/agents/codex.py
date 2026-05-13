@@ -125,6 +125,7 @@ class CodexAgent(Agent):
             "exec",
             "--json",
             "--ephemeral",
+            "--dangerously-bypass-approvals-and-sandbox",
             "-C",
             workdir,
             "-o",
@@ -163,12 +164,18 @@ class CodexAgent(Agent):
     def _stream(self, proc: subprocess.Popen) -> AgentResponse:
         status = _StatusDisplay()
         models_seen: set[str] = set()
+        # The codex v0.130.0 event stream doesn't surface the effective model;
+        # fall back to whatever we configured.
+        configured_model = self.model or os.getenv("LLM_MODEL") or ""
+        if configured_model:
+            models_seen.add(configured_model)
         last_agent_message: str | None = None
         input_tokens = 0
         output_tokens = 0
         cache_read_tokens = 0
         max_input_tokens = 0
-        task_complete_seen = False
+        turn_completed = False
+        turn_error: str | None = None
 
         for line in proc.stdout:
             line = line.strip()
@@ -181,49 +188,50 @@ class CodexAgent(Agent):
                 continue
 
             evt_type = event.get("type", "")
-            payload = event.get("payload") or {}
 
-            if evt_type == "session_meta":
-                logger.debug(
-                    "Codex session_meta: id=%s provider=%s",
-                    payload.get("id"),
-                    payload.get("model_provider"),
-                )
+            if evt_type == "thread.started":
+                logger.debug("Codex thread started: id=%s", event.get("thread_id"))
 
-            elif evt_type == "turn_context":
-                model = payload.get("model")
-                if model:
-                    models_seen.add(model)
+            elif evt_type == "turn.started":
+                pass
 
-            elif evt_type == "event_msg":
-                inner_type = payload.get("type", "")
-                if inner_type == "token_count":
-                    info = payload.get("info") or {}
-                    total = info.get("total_token_usage") or {}
-                    last = info.get("last_token_usage") or {}
-                    in_total = int(total.get("input_tokens", 0) or 0)
-                    out_total = int(total.get("output_tokens", 0) or 0)
-                    cache_total = int(total.get("cached_input_tokens", 0) or 0)
-                    input_tokens = in_total
-                    output_tokens = out_total
-                    cache_read_tokens = cache_total
-                    last_in = int(last.get("input_tokens", 0) or 0)
-                    if last_in > max_input_tokens:
-                        max_input_tokens = last_in
-                elif inner_type == "task_complete":
-                    task_complete_seen = True
-                    msg = payload.get("last_agent_message")
-                    if msg:
-                        last_agent_message = msg
+            elif evt_type == "item.started":
+                self._render_item_status(event.get("item") or {}, status)
 
-            elif evt_type == "response_item":
-                self._render_status(payload, status)
+            elif evt_type == "item.completed":
+                item = event.get("item") or {}
+                self._render_item_status(item, status)
+                if item.get("type") == "agent_message":
+                    txt = item.get("text")
+                    if txt:
+                        last_agent_message = txt
+
+            elif evt_type == "turn.completed":
+                turn_completed = True
+                usage = event.get("usage") or {}
+                in_tok = int(usage.get("input_tokens", 0) or 0)
+                out_tok = int(usage.get("output_tokens", 0) or 0)
+                cached = int(usage.get("cached_input_tokens", 0) or 0)
+                input_tokens += in_tok
+                output_tokens += out_tok
+                cache_read_tokens += cached
+                if in_tok > max_input_tokens:
+                    max_input_tokens = in_tok
+
+            elif evt_type == "turn.failed":
+                err = event.get("error") or {}
+                turn_error = err.get("message") if isinstance(err, dict) else str(err)
+
+            elif evt_type == "error":
+                turn_error = event.get("message") or turn_error
 
         status.clear()
         proc.wait()
 
-        if not task_complete_seen:
+        success = turn_completed and turn_error is None
+        if not success:
             stderr = proc.stderr.read() if proc.stderr else ""
+            error_message = turn_error or (stderr[:500] if stderr else None)
             stats = IterationStats(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
@@ -233,11 +241,11 @@ class CodexAgent(Agent):
                 ttft_ms=0,
                 llm_ms=0,
                 streamed=False,
-                error_type="no_task_complete",
-                error_message=(stderr[:500] if stderr else None),
+                error_type="turn_failed" if turn_error else "no_task_complete",
+                error_message=error_message,
             )
             return AgentResponse(
-                output=last_agent_message or stderr,
+                output=last_agent_message or turn_error or stderr,
                 success=False,
                 stats=stats,
             )
@@ -258,18 +266,17 @@ class CodexAgent(Agent):
             stats=stats,
         )
 
-    def _render_status(self, payload: dict, status: _StatusDisplay) -> None:
+    def _render_item_status(self, item: dict, status: _StatusDisplay) -> None:
         """Push a status line for an assistant message or tool call."""
-        if not isinstance(payload, dict):
+        if not isinstance(item, dict):
             return
-        item_type = payload.get("type", "")
-        if item_type == "message" and payload.get("role") == "assistant":
-            for block in payload.get("content") or []:
-                if not isinstance(block, dict):
-                    continue
-                text = block.get("text") or ""
-                if text:
-                    status.update(text)
-        elif item_type == "function_call":
-            name = payload.get("name") or "?"
-            status.update(f"[tool] {name}")
+        item_type = item.get("type", "")
+        if item_type == "agent_message":
+            text = item.get("text") or ""
+            if text:
+                status.update(text)
+        elif item_type == "command_execution":
+            cmd = item.get("command") or "?"
+            status.update(f"[cmd] {cmd}")
+        elif item_type:
+            status.update(f"[{item_type}]")

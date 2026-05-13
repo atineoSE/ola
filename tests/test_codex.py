@@ -8,81 +8,85 @@ from ola.agents.codex import CodexAgent, _build_config_toml
 
 
 # ---------------------------------------------------------------------------
-# Helpers — synthetic codex JSONL event stream
+# Helpers — synthetic codex JSONL event stream (v0.130.0 format)
 # ---------------------------------------------------------------------------
 
 
-def _session_meta(id_: str = "sess-1", provider: str = "ola") -> str:
+def _thread_started(thread_id: str = "thr-1") -> str:
+    return json.dumps({"type": "thread.started", "thread_id": thread_id})
+
+
+def _turn_started() -> str:
+    return json.dumps({"type": "turn.started"})
+
+
+def _item_agent_message(text: str, item_id: str = "item_msg") -> str:
     return json.dumps(
         {
-            "type": "session_meta",
-            "payload": {"id": id_, "model_provider": provider},
+            "type": "item.completed",
+            "item": {"id": item_id, "type": "agent_message", "text": text},
         }
     )
 
 
-def _turn_context(model: str = "gpt-4.1") -> str:
+def _item_command_started(command: str = "ls", item_id: str = "item_cmd") -> str:
     return json.dumps(
         {
-            "type": "turn_context",
-            "payload": {"model": model},
-        }
-    )
-
-
-def _response_item_assistant(text: str) -> str:
-    return json.dumps(
-        {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
+            "type": "item.started",
+            "item": {
+                "id": item_id,
+                "type": "command_execution",
+                "command": command,
+                "aggregated_output": "",
+                "exit_code": None,
+                "status": "in_progress",
             },
         }
     )
 
 
-def _response_item_tool(name: str = "shell") -> str:
-    return json.dumps(
-        {
-            "type": "response_item",
-            "payload": {"type": "function_call", "name": name},
-        }
-    )
-
-
-def _token_count(
-    total_input: int = 100,
-    total_output: int = 50,
-    total_cached: int = 20,
-    last_input: int = 60,
+def _item_command_completed(
+    command: str = "ls",
+    item_id: str = "item_cmd",
+    output: str = "",
+    exit_code: int = 0,
 ) -> str:
     return json.dumps(
         {
-            "type": "event_msg",
-            "payload": {
-                "type": "token_count",
-                "info": {
-                    "total_token_usage": {
-                        "input_tokens": total_input,
-                        "output_tokens": total_output,
-                        "cached_input_tokens": total_cached,
-                    },
-                    "last_token_usage": {"input_tokens": last_input},
-                },
+            "type": "item.completed",
+            "item": {
+                "id": item_id,
+                "type": "command_execution",
+                "command": command,
+                "aggregated_output": output,
+                "exit_code": exit_code,
+                "status": "completed",
             },
         }
     )
 
 
-def _task_complete(message: str = "All done.") -> str:
+def _turn_completed(
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    cached_input_tokens: int = 20,
+    reasoning_output_tokens: int = 0,
+) -> str:
     return json.dumps(
         {
-            "type": "event_msg",
-            "payload": {"type": "task_complete", "last_agent_message": message},
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": input_tokens,
+                "cached_input_tokens": cached_input_tokens,
+                "output_tokens": output_tokens,
+                "reasoning_output_tokens": reasoning_output_tokens,
+            },
         }
     )
+
+
+def _turn_failed(message: str = "boom") -> str:
+    return json.dumps({"type": "turn.failed", "error": {"message": message}})
 
 
 def _make_proc(lines: list[str], stderr: str = "", returncode: int = 0) -> MagicMock:
@@ -95,9 +99,12 @@ def _make_proc(lines: list[str], stderr: str = "", returncode: int = 0) -> Magic
     return proc
 
 
-def _run_stream(lines: list[str], stderr: str = "", returncode: int = 0):
+def _run_stream(
+    lines: list[str], stderr: str = "", returncode: int = 0, model: str | None = None
+):
     proc = _make_proc(lines, stderr=stderr, returncode=returncode)
-    return CodexAgent()._stream(proc)
+    agent = CodexAgent(model=model)
+    return agent._stream(proc)
 
 
 # ---------------------------------------------------------------------------
@@ -108,15 +115,12 @@ def _run_stream(lines: list[str], stderr: str = "", returncode: int = 0):
 class TestStreamParser:
     def test_happy_path_returns_success_and_stats(self):
         lines = [
-            _session_meta(),
-            _turn_context(model="gpt-4.1"),
-            _response_item_assistant("Working on it"),
-            _token_count(
-                total_input=100, total_output=50, total_cached=20, last_input=80
-            ),
-            _task_complete(message="All done."),
+            _thread_started(),
+            _turn_started(),
+            _item_agent_message("All done."),
+            _turn_completed(input_tokens=100, output_tokens=50, cached_input_tokens=20),
         ]
-        resp = _run_stream(lines)
+        resp = _run_stream(lines, model="gpt-4.1")
         assert resp.success is True
         assert resp.output == "All done."
         s = resp.stats
@@ -124,99 +128,98 @@ class TestStreamParser:
         assert s.output_tokens == 50
         assert s.cache_read_tokens == 20
         assert s.models == ["gpt-4.1"]
-        assert s.max_input_tokens == 80
+        assert s.max_input_tokens == 100
         assert s.streamed is False
         assert s.llm_ms == 0
         assert s.ttft_ms == 0
         assert s.error_type is None
 
-    def test_token_count_overwrites_not_sums(self):
+    def test_multiple_turns_sum_usage(self):
         lines = [
-            _session_meta(),
-            _turn_context(),
-            _token_count(
-                total_input=50, total_output=25, total_cached=5, last_input=50
-            ),
-            _token_count(
-                total_input=200, total_output=80, total_cached=40, last_input=120
-            ),
-            _task_complete(),
+            _thread_started(),
+            _turn_started(),
+            _item_agent_message("partial", item_id="m1"),
+            _turn_completed(input_tokens=50, output_tokens=25, cached_input_tokens=5),
+            _turn_started(),
+            _item_agent_message("final", item_id="m2"),
+            _turn_completed(input_tokens=200, output_tokens=80, cached_input_tokens=40),
         ]
-        resp = _run_stream(lines)
+        resp = _run_stream(lines, model="gpt-4.1")
         s = resp.stats
-        assert s.input_tokens == 200  # latest event wins, not sum
-        assert s.output_tokens == 80
-        assert s.cache_read_tokens == 40
+        assert s.input_tokens == 250  # summed across turns
+        assert s.output_tokens == 105
+        assert s.cache_read_tokens == 45
+        assert s.max_input_tokens == 200  # largest single-turn input
+        assert resp.output == "final"  # latest agent_message wins
 
-    def test_max_input_tokens_tracks_max_across_events(self):
-        lines = [
-            _session_meta(),
-            _turn_context(),
-            _token_count(last_input=100),
-            _token_count(last_input=500),
-            _token_count(last_input=200),
-            _task_complete(),
-        ]
-        resp = _run_stream(lines)
-        assert resp.stats.max_input_tokens == 500
-
-    def test_turn_context_collects_models(self):
-        lines = [
-            _session_meta(),
-            _turn_context(model="gpt-4.1"),
-            _turn_context(model="gpt-4.1"),  # duplicate
-            _turn_context(model="o3-mini"),
-            _task_complete(),
-        ]
-        resp = _run_stream(lines)
-        assert resp.stats.models == ["gpt-4.1", "o3-mini"]
+    def test_models_seeded_from_configured_model(self):
+        lines = [_thread_started(), _turn_completed()]
+        resp = _run_stream(lines, model="o3-mini")
+        assert resp.stats.models == ["o3-mini"]
 
     def test_malformed_json_lines_skipped(self):
         lines = [
             "not json {{{",
             "",
-            _session_meta(),
-            _token_count(total_input=10, total_output=5, total_cached=0, last_input=10),
+            _thread_started(),
+            _turn_started(),
             "another bad line",
-            _task_complete(message="ok"),
+            _item_agent_message("ok"),
+            _turn_completed(input_tokens=10, output_tokens=5, cached_input_tokens=0),
         ]
-        resp = _run_stream(lines)
+        resp = _run_stream(lines, model="gpt-4.1")
         assert resp.success is True
         assert resp.stats.input_tokens == 10
+        assert resp.output == "ok"
 
-    def test_no_task_complete_returns_failure(self):
+    def test_no_turn_completed_returns_failure(self):
         lines = [
-            _session_meta(),
-            _turn_context(),
-            _token_count(),
-            # No task_complete
+            _thread_started(),
+            _turn_started(),
+            _item_agent_message("partial"),
+            # No turn.completed
         ]
-        resp = _run_stream(lines, stderr="codex crashed", returncode=1)
+        resp = _run_stream(lines, stderr="codex crashed", returncode=1, model="m")
         assert resp.success is False
         assert resp.stats.error_type == "no_task_complete"
         assert resp.stats.error_message == "codex crashed"
 
-    def test_no_task_complete_truncates_long_stderr(self):
-        lines = [_session_meta()]
+    def test_no_turn_completed_truncates_long_stderr(self):
+        lines = [_thread_started()]
         long_err = "x" * 1000
-        resp = _run_stream(lines, stderr=long_err, returncode=1)
+        resp = _run_stream(lines, stderr=long_err, returncode=1, model="m")
         assert resp.stats.error_type == "no_task_complete"
         assert len(resp.stats.error_message) == 500
 
     def test_empty_stream_no_task_complete(self):
-        resp = _run_stream([], returncode=1)
+        resp = _run_stream([], returncode=1, model="m")
         assert resp.success is False
         assert resp.stats.error_type == "no_task_complete"
 
-    def test_response_item_tool_call_does_not_crash(self):
+    def test_turn_failed_marks_failure(self):
         lines = [
-            _session_meta(),
-            _response_item_tool(name="shell"),
-            _response_item_assistant("hello"),
-            _task_complete(),
+            _thread_started(),
+            _turn_started(),
+            _item_agent_message("trying"),
+            _turn_failed("provider rejected request"),
         ]
-        resp = _run_stream(lines)
+        resp = _run_stream(lines, model="m")
+        assert resp.success is False
+        assert resp.stats.error_type == "turn_failed"
+        assert "provider rejected" in (resp.stats.error_message or "")
+
+    def test_command_execution_items_do_not_crash(self):
+        lines = [
+            _thread_started(),
+            _turn_started(),
+            _item_command_started("ls", item_id="c1"),
+            _item_command_completed("ls", item_id="c1", output="file\n"),
+            _item_agent_message("done"),
+            _turn_completed(),
+        ]
+        resp = _run_stream(lines, model="m")
         assert resp.success is True
+        assert resp.output == "done"
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +281,13 @@ class TestConfigGeneration:
             captured["kwargs"] = kwargs
             proc = MagicMock()
             proc.stdout = iter(
-                line + "\n" for line in [_session_meta(), _task_complete(message="ok")]
+                line + "\n"
+                for line in [
+                    _thread_started(),
+                    _turn_started(),
+                    _item_agent_message("ok"),
+                    _turn_completed(),
+                ]
             )
             proc.stderr = MagicMock()
             proc.stderr.read.return_value = ""
@@ -376,6 +385,7 @@ class TestConfigGeneration:
         _resp, captured, state_dir = self._spawn_capture(tmp_path, env)
         cmd = captured["cmd"]
         assert cmd[:4] == ["codex", "exec", "--json", "--ephemeral"]
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
         assert "-C" in cmd
         assert "-o" in cmd
         # -o points at <state_dir>/last.txt
