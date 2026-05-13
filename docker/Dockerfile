@@ -6,6 +6,10 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # Claude Code config: bypass onboarding
 RUN echo '{"hasCompletedOnboarding": true}' > ~/.claude.json
 
+# Install Codex CLI (npm package — Node 20 is already in the base image,
+# with NPM_CONFIG_PREFIX=/usr/local/share/npm-global owned by the agent user)
+RUN npm install -g @openai/codex
+
 # Install uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
     sh /tmp/uv-install.sh && rm /tmp/uv-install.sh
@@ -27,7 +31,8 @@ RUN git config --global user.name "ola" && \
 # gets its key from the agent .env via ola.
 RUN echo 'export SANDBOX=1' >> ~/.bashrc && \
     echo 'unset ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY XAI_API_KEY MISTRAL_API_KEY NEBIUS_API_KEY' >> ~/.bashrc && \
-    echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc
+    echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc && \
+    echo "alias cx='codex exec --json --ephemeral'" >> ~/.bashrc
 
 # OpenHands: on login, install config from workspace and register alias
 RUN mkdir -p ~/.openhands && \
@@ -39,5 +44,6 @@ RUN set -e && \
     uv --version && \
     claude --version && \
     openhands --version && \
+    codex --version && \
     docker --version && \
     git config --global user.name | grep -q ola
