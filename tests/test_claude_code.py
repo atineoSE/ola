@@ -2,7 +2,7 @@
 
 import json
 import logging
-from io import StringIO
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,11 +14,12 @@ from ola.agents.claude_code import AuthenticationError, ClaudeCodeAgent
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_proc(lines: list[str], returncode: int = 0) -> MagicMock:
     """Return a mock Popen whose stdout yields *lines* as NDJSON."""
     proc = MagicMock()
     proc.stdin = MagicMock()
-    proc.stdout = iter(l + "\n" for l in lines)
+    proc.stdout = iter(line + "\n" for line in lines)
     proc.stderr = MagicMock()
     proc.stderr.read.return_value = ""
     proc.returncode = returncode
@@ -37,17 +38,19 @@ def _message_start(
     cache_creation: int = 0,
     cache_read: int = 0,
 ) -> str:
-    return _stream_event({
-        "type": "message_start",
-        "message": {
-            "model": model,
-            "usage": {
-                "input_tokens": input_tokens,
-                "cache_creation_input_tokens": cache_creation,
-                "cache_read_input_tokens": cache_read,
+    return _stream_event(
+        {
+            "type": "message_start",
+            "message": {
+                "model": model,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "cache_creation_input_tokens": cache_creation,
+                    "cache_read_input_tokens": cache_read,
+                },
             },
-        },
-    })
+        }
+    )
 
 
 def _content_block_start() -> str:
@@ -123,6 +126,7 @@ def _run_stream(lines: list[str], returncode: int = 0) -> MagicMock:
 # Existing tests
 # ---------------------------------------------------------------------------
 
+
 class TestClaudeCodeAgent:
     def test_auth_error_returns_credential_refresh_message(self):
         """AuthenticationError produces an error message referencing credential refresh."""
@@ -145,6 +149,7 @@ class TestClaudeCodeAgent:
 # ---------------------------------------------------------------------------
 # Stream parser tests
 # ---------------------------------------------------------------------------
+
 
 class TestStreamParser:
     def test_single_turn_extracts_all_fields(self):
@@ -207,7 +212,10 @@ class TestStreamParser:
             _result(num_turns=3),
         ]
         resp = _run_stream(lines)
-        assert resp.stats.models == ["claude-opus-4-20250514", "claude-sonnet-4-20250514"]
+        assert resp.stats.models == [
+            "claude-opus-4-20250514",
+            "claude-sonnet-4-20250514",
+        ]
 
     def test_ttft_per_turn_summed(self):
         """Multi-turn: ttft_ms is sum of per-turn TTFTs (all >= 0)."""
@@ -237,10 +245,12 @@ class TestStreamParser:
         """Stream with only assistant + result (no stream_event) falls back."""
         lines = [
             json.dumps({"type": "system"}),
-            json.dumps({
-                "type": "assistant",
-                "message": {"content": [{"type": "text", "text": "Hello"}]},
-            }),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "Hello"}]},
+                }
+            ),
             _result(input_tokens=100, output_tokens=50),
         ]
         resp = _run_stream(lines)
@@ -271,10 +281,12 @@ class TestStreamParser:
     def test_authentication_error_raised(self):
         """error: authentication_failed event raises AuthenticationError."""
         lines = [
-            json.dumps({
-                "error": "authentication_failed",
-                "message": {"content": [{"text": "Invalid API key"}]},
-            }),
+            json.dumps(
+                {
+                    "error": "authentication_failed",
+                    "message": {"content": [{"text": "Invalid API key"}]},
+                }
+            ),
         ]
         proc = _make_proc(lines)
         agent = ClaudeCodeAgent()
@@ -303,6 +315,7 @@ class TestStreamParser:
         # To get non-zero llm_ms, we need real time to pass between events.
         # Instead, we'll patch time.monotonic to control timing.
         call_count = 0
+
         def fake_monotonic():
             nonlocal call_count
             call_count += 1
@@ -336,6 +349,7 @@ class TestStreamParser:
 # Rate-limit event tests
 # ---------------------------------------------------------------------------
 
+
 def _rate_limit_event(
     status: str = "rejected",
     resets_at: int | None = None,
@@ -351,12 +365,14 @@ def _rate_limit_event(
     }
     if resets_at is not None:
         info["resetsAt"] = resets_at
-    return json.dumps({
-        "type": "rate_limit_event",
-        "rate_limit_info": info,
-        "uuid": "test-uuid",
-        "session_id": "test-session",
-    })
+    return json.dumps(
+        {
+            "type": "rate_limit_event",
+            "rate_limit_info": info,
+            "uuid": "test-uuid",
+            "session_id": "test-session",
+        }
+    )
 
 
 class TestRateLimitEvents:
@@ -385,7 +401,9 @@ class TestRateLimitEvents:
             _message_start(),
             _content_block_start(),
             _rate_limit_event(
-                status="rejected", resets_at=1700000000, fallback=True,
+                status="rejected",
+                resets_at=1700000000,
+                fallback=True,
             ),
             _message_delta(),
             _result(),
@@ -403,13 +421,17 @@ class TestRateLimitEvents:
             _message_start(),
             _content_block_start(),
             _rate_limit_event(
-                status="allowed_warning", utilization=0.85,
-                rate_limit_type="five_hour", resets_at=1700000000,
+                status="allowed_warning",
+                utilization=0.85,
+                rate_limit_type="five_hour",
+                resets_at=1700000000,
             ),
             # Second warning event — should NOT produce another log
             _rate_limit_event(
-                status="allowed_warning", utilization=0.90,
-                rate_limit_type="five_hour", resets_at=1700000000,
+                status="allowed_warning",
+                utilization=0.90,
+                rate_limit_type="five_hour",
+                resets_at=1700000000,
             ),
             _message_delta(),
             _result(),
@@ -444,8 +466,10 @@ class TestRateLimitEvents:
         lines = [
             json.dumps({"type": "system"}),
             _rate_limit_event(
-                status="rejected", resets_at=1700000000,
-                rate_limit_type="seven_day_opus", fallback=False,
+                status="rejected",
+                resets_at=1700000000,
+                rate_limit_type="seven_day_opus",
+                fallback=False,
             ),
         ]
         resp = _run_stream(lines)
@@ -457,6 +481,7 @@ class TestRateLimitEvents:
 # ---------------------------------------------------------------------------
 # Error result subtype tests
 # ---------------------------------------------------------------------------
+
 
 class TestErrorResultSubtype:
     def test_error_result_subtype_captured(self):
@@ -538,20 +563,29 @@ class TestErrorResultSubtype:
 # Anthropic API error detection tests
 # ---------------------------------------------------------------------------
 
-def _api_error_event(error_type: str = "api_error", message: str = "Server error") -> str:
+
+def _api_error_event(
+    error_type: str = "api_error", message: str = "Server error"
+) -> str:
     """Top-level {"type": "error"} event."""
-    return json.dumps({
-        "type": "error",
-        "error": {"type": error_type, "message": message},
-    })
+    return json.dumps(
+        {
+            "type": "error",
+            "error": {"type": error_type, "message": message},
+        }
+    )
 
 
-def _stream_event_error(error_type: str = "api_error", message: str = "Server error") -> str:
+def _stream_event_error(
+    error_type: str = "api_error", message: str = "Server error"
+) -> str:
     """stream_event wrapper with an inner error."""
-    return _stream_event({
-        "type": "error",
-        "error": {"type": error_type, "message": message},
-    })
+    return _stream_event(
+        {
+            "type": "error",
+            "error": {"type": error_type, "message": message},
+        }
+    )
 
 
 class TestApiErrorDetection:
@@ -644,10 +678,12 @@ class TestApiErrorDetection:
         """stream_event inner dict has 'error' field (not type=error) → detected."""
         lines = [
             json.dumps({"type": "system"}),
-            _stream_event({
-                "type": "message_delta",
-                "error": {"type": "rate_limit_error", "message": "429 hit"},
-            }),
+            _stream_event(
+                {
+                    "type": "message_delta",
+                    "error": {"type": "rate_limit_error", "message": "429 hit"},
+                }
+            ),
         ]
         resp = _run_stream(lines)
         assert not resp.success
@@ -695,8 +731,12 @@ class TestApiErrorDetection:
         """API error after message_start preserves models and max_input_tokens."""
         lines = [
             json.dumps({"type": "system"}),
-            _message_start(model="claude-sonnet-4-20250514", input_tokens=100,
-                           cache_creation=200, cache_read=300),
+            _message_start(
+                model="claude-sonnet-4-20250514",
+                input_tokens=100,
+                cache_creation=200,
+                cache_read=300,
+            ),
             _content_block_start(),
             _api_error_event("overloaded_error", "Busy"),
         ]
@@ -709,6 +749,7 @@ class TestApiErrorDetection:
 # ---------------------------------------------------------------------------
 # Crashed iteration (no result event) tests
 # ---------------------------------------------------------------------------
+
 
 class TestNoResultEvent:
     def test_no_result_event_preserves_partial_stats(self):
@@ -765,3 +806,193 @@ class TestNoResultEvent:
         assert resp.stats.error_type == "no_result_event"
         assert resp.stats.models == []
         assert resp.stats.max_input_tokens == 0
+
+
+# ---------------------------------------------------------------------------
+# Self-hosted endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestSelfHostedEndpoint:
+    """LLM_BASE_URL switches cc to a self-hosted Anthropic-compatible endpoint."""
+
+    _SELF_HOSTED_ENV = {
+        "LLM_BASE_URL": "https://my-host.example.com",
+        "LLM_API_KEY": "sk-test-1234",
+        "LLM_MODEL": "Qwen/Qwen3.5-35B-A3B",
+    }
+
+    def _popen_kwargs(
+        self, monkeypatch, tmp_path, agent_model=None, extra_env=None
+    ) -> dict:
+        """Run _run_once with mocked Popen and return the env passed in."""
+        env_vars = dict(self._SELF_HOSTED_ENV)
+        if extra_env:
+            env_vars.update(extra_env)
+        for k, v in env_vars.items():
+            monkeypatch.setenv(k, v)
+
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            captured["cwd"] = kwargs.get("cwd")
+            # Return a minimal proc that yields a success result
+            return _make_proc([_result()])
+
+        monkeypatch.setattr("ola.agents.claude_code.subprocess.Popen", fake_popen)
+        agent = ClaudeCodeAgent(model=agent_model)
+        agent._run_once("hi", str(tmp_path), state_dir=str(tmp_path))
+        return captured
+
+    def test_env_overlay_maps_llm_vars_to_anthropic(self, monkeypatch, tmp_path):
+        """LLM_* env vars are translated to ANTHROPIC_* in the subprocess env."""
+        captured = self._popen_kwargs(monkeypatch, tmp_path)
+        env = captured["env"]
+        assert env["ANTHROPIC_BASE_URL"] == "https://my-host.example.com"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-test-1234"
+        assert env["ANTHROPIC_MODEL"] == "Qwen/Qwen3.5-35B-A3B"
+
+    def test_small_fast_model_mirrors_main_model(self, monkeypatch, tmp_path):
+        """ANTHROPIC_SMALL_FAST_MODEL always equals ANTHROPIC_MODEL when self-hosted."""
+        captured = self._popen_kwargs(monkeypatch, tmp_path)
+        env = captured["env"]
+        assert env["ANTHROPIC_SMALL_FAST_MODEL"] == env["ANTHROPIC_MODEL"]
+
+    def test_agent_model_flag_overrides_env_model(self, monkeypatch, tmp_path):
+        """-m flag takes precedence over LLM_MODEL."""
+        captured = self._popen_kwargs(
+            monkeypatch, tmp_path, agent_model="override-model"
+        )
+        env = captured["env"]
+        assert env["ANTHROPIC_MODEL"] == "override-model"
+        assert env["ANTHROPIC_SMALL_FAST_MODEL"] == "override-model"
+
+    def test_skip_tls_verify_opt_in(self, monkeypatch, tmp_path):
+        """LLM_SKIP_TLS_VERIFY=true sets NODE_TLS_REJECT_UNAUTHORIZED=0."""
+        captured = self._popen_kwargs(
+            monkeypatch,
+            tmp_path,
+            extra_env={"LLM_SKIP_TLS_VERIFY": "true"},
+        )
+        assert captured["env"]["NODE_TLS_REJECT_UNAUTHORIZED"] == "0"
+
+    def test_skip_tls_verify_off_by_default(self, monkeypatch, tmp_path):
+        """Without LLM_SKIP_TLS_VERIFY, NODE_TLS_REJECT_UNAUTHORIZED is unset."""
+        captured = self._popen_kwargs(monkeypatch, tmp_path)
+        assert "NODE_TLS_REJECT_UNAUTHORIZED" not in captured["env"]
+
+    def test_self_hosted_skips_credential_copy(self, monkeypatch, tmp_path):
+        """Self-hosted path must NOT copy ~/.claude/.credentials.json."""
+        # Set up a fake home with a credentials file
+        fake_home = tmp_path / "fake_home"
+        fake_claude = fake_home / ".claude"
+        fake_claude.mkdir(parents=True)
+        (fake_claude / ".credentials.json").write_text('{"token": "x"}')
+        (fake_claude / ".claude.json").write_text("{}")
+        (fake_claude / "settings.json").write_text("{}")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        self._popen_kwargs(monkeypatch, state_dir)
+
+        # None of the bootstrap files should have been copied
+        assert not (state_dir / ".credentials.json").exists()
+        assert not (state_dir / ".claude.json").exists()
+        assert not (state_dir / "settings.json").exists()
+
+    def test_no_llm_base_url_keeps_oauth_behavior(self, monkeypatch, tmp_path):
+        """Without LLM_BASE_URL, env has no ANTHROPIC_* overlay and creds are copied."""
+        # Clear LLM_* vars
+        for k in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_SKIP_TLS_VERIFY"):
+            monkeypatch.delenv(k, raising=False)
+
+        # Set up a fake home with credentials
+        fake_home = tmp_path / "fake_home"
+        fake_claude = fake_home / ".claude"
+        fake_claude.mkdir(parents=True)
+        (fake_claude / ".credentials.json").write_text('{"token": "x"}')
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return _make_proc([_result()])
+
+        monkeypatch.setattr("ola.agents.claude_code.subprocess.Popen", fake_popen)
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        ClaudeCodeAgent()._run_once("hi", str(tmp_path), state_dir=str(state_dir))
+
+        env = captured["env"]
+        assert env is not None
+        assert "ANTHROPIC_BASE_URL" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+        # Credentials were copied (OAuth path)
+        assert (state_dir / ".credentials.json").exists()
+
+    def test_auth_error_does_not_raise_when_self_hosted(self, monkeypatch):
+        """Self-hosted auth errors are reported via stats, not raised."""
+        for k, v in self._SELF_HOSTED_ENV.items():
+            monkeypatch.setenv(k, v)
+
+        lines = [
+            json.dumps(
+                {
+                    "error": "authentication_failed",
+                    "message": {"content": [{"text": "Bad token for self-hosted"}]},
+                }
+            ),
+        ]
+        proc = _make_proc(lines)
+        agent = ClaudeCodeAgent()
+        # Must NOT raise
+        resp = agent._stream(proc, "test prompt", self_hosted=True)
+        assert not resp.success
+        assert resp.stats.error_type == "authentication_error"
+        assert "Bad token" in (resp.stats.error_message or "")
+
+    def test_stream_event_auth_error_does_not_raise_when_self_hosted(self):
+        """Wrapped auth errors in stream_event also become plain api errors."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _stream_event_error("authentication_error", "Self-hosted 401"),
+        ]
+        proc = _make_proc(lines)
+        agent = ClaudeCodeAgent()
+        resp = agent._stream(proc, "test prompt", self_hosted=True)
+        assert not resp.success
+        assert resp.stats.error_type == "authentication_error"
+        assert resp.stats.error_message == "Self-hosted 401"
+
+    def test_top_level_auth_error_does_not_raise_when_self_hosted(self):
+        """Top-level error of type authentication_error is non-fatal when self-hosted."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _api_error_event("authentication_error", "401 from self-hosted"),
+        ]
+        proc = _make_proc(lines)
+        agent = ClaudeCodeAgent()
+        resp = agent._stream(proc, "test prompt", self_hosted=True)
+        assert not resp.success
+        assert resp.stats.error_type == "authentication_error"
+
+    def test_localhost_base_url_rewritten_in_sandbox(self, monkeypatch, tmp_path):
+        """A localhost LLM_BASE_URL is rewritten to host.docker.internal in sandbox."""
+        monkeypatch.setenv("SANDBOX", "1")
+        monkeypatch.setenv("LLM_BASE_URL", "http://localhost:8080")
+        monkeypatch.setenv("LLM_API_KEY", "k")
+        monkeypatch.setenv("LLM_MODEL", "m")
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return _make_proc([_result()])
+
+        monkeypatch.setattr("ola.agents.claude_code.subprocess.Popen", fake_popen)
+        ClaudeCodeAgent()._run_once("hi", str(tmp_path), state_dir=str(tmp_path))
+        assert "host.docker.internal" in captured["env"]["ANTHROPIC_BASE_URL"]

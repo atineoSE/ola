@@ -67,6 +67,31 @@ class AuthenticationError(Exception):
     """Raised when Claude Code reports an authentication failure."""
 
 
+def _is_self_hosted() -> bool:
+    """True when LLM_BASE_URL is set — route cc to a self-hosted endpoint."""
+    return bool(os.getenv("LLM_BASE_URL"))
+
+
+def _self_hosted_env_overlay(model: str | None) -> dict[str, str]:
+    """Build the ANTHROPIC_* env overlay for a self-hosted endpoint.
+
+    Caller must verify LLM_BASE_URL is set before invoking.
+    """
+    from ola.agents.openhands import _resolve_localhost
+
+    base_url = _resolve_localhost(os.environ["LLM_BASE_URL"])
+    effective_model = model or os.getenv("LLM_MODEL", "")
+    overlay = {
+        "ANTHROPIC_BASE_URL": base_url,
+        "ANTHROPIC_AUTH_TOKEN": os.getenv("LLM_API_KEY", ""),
+        "ANTHROPIC_MODEL": effective_model,
+        "ANTHROPIC_SMALL_FAST_MODEL": effective_model,
+    }
+    if os.getenv("LLM_SKIP_TLS_VERIFY", "").lower() == "true":
+        overlay["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+    return overlay
+
+
 class ClaudeCodeAgent(Agent):
     """Agent that delegates to the Claude Code CLI."""
 
@@ -115,18 +140,30 @@ class ClaudeCodeAgent(Agent):
 
         logger.debug("Running: %s", " ".join(cmd[:3]) + " ...")
 
-        env = None
+        self_hosted = _is_self_hosted()
+
+        env: dict[str, str] | None = None
         if state_dir:
             sd = Path(state_dir)
-            home_claude = Path.home() / ".claude"
-            for fname in _BOOTSTRAP_FILES:
-                src = home_claude / fname
-                dst = sd / fname
-                if src.exists() and (fname in _ALWAYS_REFRESH or not dst.exists()):
-                    shutil.copy2(src, dst)
-                    logger.debug("Copied %s -> %s", src, dst)
+            if not self_hosted:
+                home_claude = Path.home() / ".claude"
+                for fname in _BOOTSTRAP_FILES:
+                    src = home_claude / fname
+                    dst = sd / fname
+                    if src.exists() and (fname in _ALWAYS_REFRESH or not dst.exists()):
+                        shutil.copy2(src, dst)
+                        logger.debug("Copied %s -> %s", src, dst)
             env = {**os.environ, "CLAUDE_CONFIG_DIR": str(sd)}
             logger.debug("CLAUDE_CONFIG_DIR=%s", sd)
+
+        if self_hosted:
+            if env is None:
+                env = {**os.environ}
+            env.update(_self_hosted_env_overlay(self.model))
+            logger.debug(
+                "Self-hosted endpoint: ANTHROPIC_BASE_URL=%s",
+                env["ANTHROPIC_BASE_URL"],
+            )
 
         try:
             proc = subprocess.Popen(
@@ -138,7 +175,7 @@ class ClaudeCodeAgent(Agent):
                 cwd=workdir,
                 env=env,
             )
-            return self._stream(proc, prompt)
+            return self._stream(proc, prompt, self_hosted=self_hosted)
         except FileNotFoundError:
             logger.error("'claude' CLI not found")
             return AgentResponse(
@@ -146,7 +183,12 @@ class ClaudeCodeAgent(Agent):
                 success=False,
             )
 
-    def _stream(self, proc: subprocess.Popen, prompt: str) -> AgentResponse:
+    def _stream(
+        self,
+        proc: subprocess.Popen,
+        prompt: str,
+        self_hosted: bool = False,
+    ) -> AgentResponse:
         """Read NDJSON stream, show rolling status, return final result.
 
         The CC CLI emits granular Anthropic API events wrapped inside
@@ -194,12 +236,18 @@ class ClaudeCodeAgent(Agent):
             msg_type = event.get("type", "")
 
             if event.get("error") == "authentication_failed":
+                err_msg = (
+                    event.get("message", {}).get("content", [{}])[0].get("text", "")
+                )
+                if self_hosted:
+                    api_error_type = "authentication_error"
+                    api_error_message = err_msg[:500] if err_msg else None
+                    logger.error("Self-hosted authentication error: %s", err_msg[:200])
+                    continue
                 status.clear()
                 proc.kill()
                 proc.wait()
-                raise AuthenticationError(
-                    event.get("message", {}).get("content", [{}])[0].get("text", "")
-                )
+                raise AuthenticationError(err_msg)
 
             # --- Unwrap stream_event envelope and dispatch ---
 
@@ -214,7 +262,7 @@ class ClaudeCodeAgent(Agent):
                     err = inner.get("error", inner)
                     err_code = err.get("type", "api_error")
                     err_msg = err.get("message", "")
-                    if err_code == "authentication_error":
+                    if err_code == "authentication_error" and not self_hosted:
                         status.clear()
                         proc.kill()
                         proc.wait()
@@ -252,9 +300,7 @@ class ClaudeCodeAgent(Agent):
                 elif inner_type == "message_delta":
                     # Turn complete — accumulate decode time
                     if token_start is not None:
-                        total_decode_ms += int(
-                            (time.monotonic() - token_start) * 1000
-                        )
+                        total_decode_ms += int((time.monotonic() - token_start) * 1000)
                     turn_start = None
                     token_start = None
 
@@ -281,8 +327,9 @@ class ClaudeCodeAgent(Agent):
                 if rl_status == "allowed_warning" and not rate_limit_warned:
                     rate_limit_warned = True
                     resets_str = (
-                        datetime.fromtimestamp(resets_at, tz=timezone.utc)
-                        .isoformat(timespec="seconds")
+                        datetime.fromtimestamp(resets_at, tz=timezone.utc).isoformat(
+                            timespec="seconds"
+                        )
                         if resets_at
                         else "unknown"
                     )
@@ -313,16 +360,14 @@ class ClaudeCodeAgent(Agent):
                 err = event.get("error", event)
                 err_code = err.get("type", "api_error")
                 err_msg = err.get("message", "")
-                if err_code == "authentication_error":
+                if err_code == "authentication_error" and not self_hosted:
                     status.clear()
                     proc.kill()
                     proc.wait()
                     raise AuthenticationError(err_msg)
                 api_error_type = err_code
                 api_error_message = err_msg[:500] if err_msg else None
-                logger.error(
-                    "Anthropic API error: %s — %s", err_code, err_msg[:200]
-                )
+                logger.error("Anthropic API error: %s — %s", err_code, err_msg[:200])
 
             elif msg_type == "result":
                 result_data = event
@@ -337,8 +382,9 @@ class ClaudeCodeAgent(Agent):
             resets_at = rate_limit_hit.get("resetsAt")
             rl_type = rate_limit_hit.get("rateLimitType", "unknown")
             resets_iso = (
-                datetime.fromtimestamp(resets_at, tz=timezone.utc)
-                .isoformat(timespec="seconds")
+                datetime.fromtimestamp(resets_at, tz=timezone.utc).isoformat(
+                    timespec="seconds"
+                )
                 if resets_at
                 else "unknown"
             )
@@ -403,7 +449,10 @@ class ClaudeCodeAgent(Agent):
                 logger.warning(
                     "CC llm_ms divergence: measured=%dms, result.duration_api_ms=%dms "
                     "(delta=%dms, %.0f%%) — possible CLI format change",
-                    llm_ms, api_ms_reported, delta, rel * 100,
+                    llm_ms,
+                    api_ms_reported,
+                    delta,
+                    rel * 100,
                 )
 
         return self._parse_result(
