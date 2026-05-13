@@ -89,6 +89,16 @@ def test_agent_display_no_version():
     assert it.agent_display == "OpenHands"
 
 
+def test_agent_display_codex():
+    it = IterationStatus(phase="seed", agent="cx", agent_version="0.1.0")
+    assert it.agent_display == "Codex 0.1.0"
+
+
+def test_agent_display_codex_no_version():
+    it = IterationStatus(phase="seed", agent="cx")
+    assert it.agent_display == "Codex"
+
+
 def test_agent_display_empty():
     it = IterationStatus(phase="seed")
     assert it.agent_display == ""

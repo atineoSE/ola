@@ -14,6 +14,7 @@ from ola.stats import cache_hit_rate as _cache_hit_rate
 _AGENT_FULL_NAMES: dict[str, str] = {
     "cc": "Claude Code",
     "oh": "OpenHands",
+    "cx": "Codex",
 }
 
 
