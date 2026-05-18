@@ -292,15 +292,11 @@ class OpenHandsAgent(Agent):
                     if turn_input > max_input_tokens:
                         max_input_tokens = turn_input
 
-            # Collect model names from usage keys; fall back to configured model.
-            # The OpenHands SDK uses "default" as the key when only one LLM is
-            # configured — replace it with the actual model name so ola-top
-            # displays something meaningful.
-            models = list(usage_to_metrics.keys()) if usage_to_metrics else []
-            if model:
-                models = [model if m == "default" else m for m in models]
-                if not models:
-                    models = [model]
+            # ola configures a single LLM, so the usage key is just a label
+            # (the SDK default "default", or whatever LLM_USAGE_ID is set to)
+            # and never the model name. Report the configured model; only
+            # empty if the model could not be resolved at all.
+            models = [model] if model else []
 
             # Derive tool time: wall_ms is not known here yet (computed by
             # the outer loop), so we store the LLM time and let the caller
