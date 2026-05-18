@@ -56,6 +56,78 @@ _ola_port_from_url() {
   esac
 }
 
+# Expand ${VAR} / $VAR references in a string using the *host* environment.
+# Mirrors python-dotenv interpolation (variable refs only — no command
+# substitution). Unset references expand to empty, like python-dotenv.
+# Usage: _ola_expand_env_value "https://${SUBSTRATE_INSTANCE_IP}"
+_ola_expand_env_value() {
+  local s="$1"
+  local refs
+  refs="$(printf '%s\n' "$s" \
+          | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | sort -u)"
+  local ref name val
+  while IFS= read -r ref; do
+    [ -z "$ref" ] && continue
+    name="${ref#\$}"; name="${name#\{}"; name="${name%\}}"
+    val="$(printenv "$name" 2>/dev/null)"
+    s="${s//\$\{$name\}/$val}"
+    s="${s//\$$name/$val}"
+  done <<EOF
+$refs
+EOF
+  printf '%s' "$s"
+}
+
+# Resolve ${VAR} / $VAR references in an .env that come from the host
+# environment (not defined within the .env itself) and print them as
+# `export NAME=value` lines, so they can be made available inside the sandbox
+# for python-dotenv to interpolate. Only exported host vars are picked up.
+_ola_resolve_env_refs() {
+  local env_file="$1"
+  [ -f "$env_file" ] || return 0
+
+  # Names assigned within the .env itself resolve from the file — skip them.
+  local self_defined
+  self_defined="$(grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$env_file" \
+                  | tr -d ' \t=' | sort -u)"
+
+  # Referenced vars on RHS values: ${VAR} or $VAR
+  local refs
+  refs="$(grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' "$env_file" \
+          | tr -d '${}' | sort -u)"
+
+  local var val
+  while IFS= read -r var; do
+    [ -z "$var" ] && continue
+    printf '%s\n' "$self_defined" | grep -qx "$var" && continue
+    val="$(printenv "$var" 2>/dev/null)" || continue
+    [ -z "$val" ] && continue
+    printf 'export %s=%q\n' "$var" "$val"
+  done <<EOF
+$refs
+EOF
+}
+
+# Inject host-resolved env-var references into a running sandbox so that
+# python-dotenv can interpolate them when ola loads the agent .env inside.
+# Written to ~/.ola_env (overwritten each call) and sourced from ~/.bashrc.
+_ola_inject_env_refs() {
+  local name="$1" env_file="$2"
+  local exports
+  exports="$(_ola_resolve_env_refs "$env_file")"
+  [ -z "$exports" ] && return 0
+
+  local data
+  data="$(printf '%s\n' "$exports" | base64)"
+  sbx exec "$name" bash -c "echo '$data' | base64 -d > \$HOME/.ola_env" 2>/dev/null
+  sbx exec "$name" bash -c \
+    'grep -q "source ~/.ola_env" ~/.bashrc 2>/dev/null || echo "[ -f ~/.ola_env ] && source ~/.ola_env" >> ~/.bashrc' 2>/dev/null
+
+  local n
+  n="$(printf '%s\n' "$exports" | grep -c .)"
+  echo "Injected $n host env var(s) into sandbox (~/.ola_env)."
+}
+
 # Sync project-specific domains from allowlist.txt and .env into sbx network policy.
 # Reads ../agent/allowlist.txt and .env (in code dir) for URL-valued variables.
 # Adds each domain (plus wildcard subdomain) to the sbx balanced policy allowlist.
@@ -85,6 +157,7 @@ ola-policy-sync() {
   if [ -f "$env_file" ]; then
     local _llm_base
     _llm_base="$(grep -E '^LLM_BASE_URL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
+    _llm_base="$(_ola_expand_env_value "$_llm_base")"
     if [ -n "$_llm_base" ]; then
       local _llm_host _llm_port
       _llm_host="$(_ola_host_from_url "$_llm_base")"
@@ -103,6 +176,7 @@ ola-policy-sync() {
     # 3. LMNR_BASE_URL / LMNR_HTTP_PORT: allow Laminar endpoint (no action if missing)
     local _lmnr_base
     _lmnr_base="$(grep -E '^LMNR_BASE_URL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
+    _lmnr_base="$(_ola_expand_env_value "$_lmnr_base")"
     if [ -n "$_lmnr_base" ]; then
       local _lmnr_host
       _lmnr_host="$(_ola_host_from_url "$_lmnr_base")"
@@ -247,8 +321,9 @@ ola-sandbox() {
 
   # Reconnect if sandbox already exists
   if sbx ls 2>&1 | grep -q "$name"; then
-    # Refresh credentials on reconnect
+    # Refresh credentials and host-resolved env refs on reconnect
     _ola_inject_credentials "$name"
+    _ola_inject_env_refs "$name" "$agent_dir/.env"
     sbx run "$name"
     return
   fi
@@ -269,6 +344,7 @@ ola-sandbox() {
   }
 
   _ola_inject_credentials "$name"
+  _ola_inject_env_refs "$name" "$agent_dir/.env"
 
   # Set login shell to land in the src dir
   sbx exec "$name" bash -c \

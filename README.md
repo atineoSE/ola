@@ -77,6 +77,8 @@ Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside
 For OpenHands:
 * Set your environment vars at the `.env` in the agent folder, including base URL, API key, model name and optional parameters. See example at `.env.example`.
 
+> **`${VAR}` references:** values may reference host environment variables, e.g. `LLM_BASE_URL="https://${SUBSTRATE_INSTANCE_IP}"`. A Docker sandbox is an isolated microVM and does **not** inherit your host environment, so `ola-sandbox` resolves any such references against the host shell at create/reconnect time and injects them into the sandbox (`~/.ola_env`, sourced from `~/.bashrc`); `ola-policy-sync` likewise expands them before allowlisting the LLM endpoint. Only **exported** host vars are picked up, and refs defined within the `.env` itself are left for python-dotenv to interpolate. If you run `ola` non-interactively inside the sandbox, `source ~/.ola_env` first.
+
 For Claude Code:
 * If using an Anthropic subscription, install Claude Code and login. This will store credentials in your keychain.
 * If using an API key, define it in your `.env` in the agent folder.

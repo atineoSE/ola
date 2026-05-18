@@ -92,7 +92,69 @@ setup() {
   [ "$(_ola_port_from_url "http://localhost:11434/v1")" = "11434" ]
 }
 
+# ===== _ola_expand_env_value =====
+
+@test "expand_env_value: expands \${VAR} from host env" {
+  export TEST_LLM_IP="203.0.113.7"
+  [ "$(_ola_expand_env_value 'https://${TEST_LLM_IP}')" = "https://203.0.113.7" ]
+}
+
+@test "expand_env_value: expands \$VAR (braceless) from host env" {
+  export TEST_LLM_IP="203.0.113.7"
+  [ "$(_ola_expand_env_value 'https://$TEST_LLM_IP/v1')" = "https://203.0.113.7/v1" ]
+}
+
+@test "expand_env_value: unset ref expands to empty (python-dotenv parity)" {
+  unset TEST_MISSING_VAR
+  [ "$(_ola_expand_env_value 'https://${TEST_MISSING_VAR}')" = "https://" ]
+}
+
+@test "expand_env_value: no refs returned unchanged" {
+  [ "$(_ola_expand_env_value 'https://api.example.com/v1')" = "https://api.example.com/v1" ]
+}
+
+# ===== _ola_resolve_env_refs =====
+
+@test "resolve_env_refs: emits export for host-set ref" {
+  export TEST_LLM_IP="203.0.113.7"
+  cat > "$TMPDIR_TEST/refs.env" <<'EOF'
+LLM_BASE_URL="https://${TEST_LLM_IP}"
+EOF
+  run _ola_resolve_env_refs "$TMPDIR_TEST/refs.env"
+  [ "$output" = "export TEST_LLM_IP=203.0.113.7" ]
+}
+
+@test "resolve_env_refs: skips ref defined within the .env itself" {
+  cat > "$TMPDIR_TEST/selfdef.env" <<'EOF'
+HOSTPART="example.com"
+LLM_BASE_URL="https://${HOSTPART}"
+EOF
+  run _ola_resolve_env_refs "$TMPDIR_TEST/selfdef.env"
+  [ "$output" = "" ]
+}
+
+@test "resolve_env_refs: skips ref unset on host" {
+  unset TEST_MISSING_VAR
+  cat > "$TMPDIR_TEST/unset.env" <<'EOF'
+LLM_BASE_URL="https://${TEST_MISSING_VAR}"
+EOF
+  run _ola_resolve_env_refs "$TMPDIR_TEST/unset.env"
+  [ "$output" = "" ]
+}
+
 # ===== ola-policy-sync =====
+
+@test "policy-sync: expands \${VAR} in LLM_BASE_URL before allowlisting" {
+  export TEST_LLM_IP="203.0.113.7"
+  cat > "$TMPDIR_TEST/expand_llm.env" <<'EOF'
+LLM_BASE_URL="https://${TEST_LLM_IP}"
+EOF
+  mkdir -p "$TMPDIR_TEST/empty_agent"
+  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/expand_llm.env"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network 203.0.113.7,*.203.0.113.7" ]
+}
 
 @test "policy-sync: allowlist + remote LLM_BASE_URL syncs 3 domains" {
   run ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
