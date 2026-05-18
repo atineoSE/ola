@@ -166,6 +166,17 @@ class OpenHandsAgent(Agent):
         if base_url:
             base_url = _resolve_localhost(base_url)
 
+        # litellm's get_ssl_verify() reads $SSL_VERIFY before its own
+        # default, so translating LLM_SKIP_TLS_VERIFY here disables cert
+        # checks for self-hosted endpoints with self-signed certs —
+        # symmetric with the cc path's NODE_TLS_REJECT_UNAUTHORIZED.
+        if os.getenv("LLM_SKIP_TLS_VERIFY", "").lower() == "true":
+            os.environ["SSL_VERIFY"] = "False"
+            import litellm
+
+            litellm.ssl_verify = False
+            logger.debug("LLM_SKIP_TLS_VERIFY=true → SSL_VERIFY=False")
+
         logger.debug("OpenHands agent using model=%s", model_name)
 
         # Build LLM kwargs from .env settings, ignoring unset values so
