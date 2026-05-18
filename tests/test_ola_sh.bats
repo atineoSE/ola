@@ -41,6 +41,11 @@ setup() {
   # Isolate HOME so real host config doesn't leak into tests
   export HOME="$TMPDIR_TEST/fake_home"
 
+  # ola.sh is meant to be sourced into the user's interactive shell, so the
+  # dev's ambient OLA_SBX_IMAGE would otherwise leak in and mask the default
+  # image-resolution path. Tests that need it set it explicitly.
+  unset OLA_SBX_IMAGE
+
   # Re-source ola.sh (functions don't survive subshells in bats)
   local ola_sh="$(cd "$BATS_TEST_DIRNAME/.." && pwd)/ola.sh"
   eval "$(grep -v '%x' "$ola_sh")"
@@ -420,4 +425,34 @@ _mock_sbx_new_sandbox() {
 
   grep -q '\--template myregistry.io/custom:v2' "$SBX_LOG"
   grep -q 'sbx create shell' "$SBX_LOG"
+}
+
+@test "sandbox: prefers local ola:dev image when present in template store" {
+  mkdir -p "$TMPDIR_TEST/sbx_local/agent" "$TMPDIR_TEST/sbx_local/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_local/agent/allowlist.txt"
+
+  # Mock security (macOS Keychain) for cc-credentials
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+
+  # 'sbx ls' marks the sandbox as new; 'sbx template ls' reports a loaded
+  # local ola:dev image so the presence check succeeds.
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    if [ "$1" = "ls" ]; then
+      echo 'other-sandbox  running  1h'
+      return 0
+    fi
+    if [ "$1" = "template" ] && [ "$2" = "ls" ]; then
+      echo 'ola                    dev      4715041c5671   shell-docker   About an hour ago'
+      return 0
+    fi
+  }
+  export -f sbx
+
+  cd "$TMPDIR_TEST/sbx_local/code"
+  ola-sandbox local-sandbox
+
+  grep -q '\--template ola:dev' "$SBX_LOG"
+  ! grep -q 'ghcr.io' "$SBX_LOG"
 }

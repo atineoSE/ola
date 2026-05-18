@@ -15,6 +15,20 @@ _sbx_exec() {
   sbx exec "$SBX_NAME" "$@"
 }
 
+# Poll 'sbx ls' until $SBX_NAME reaches $1 status (e.g. "stopped"), or fail
+# after $TIMEOUT seconds. Replaces fixed sleeps so a slow/wedged transition
+# fails the test with a diagnostic instead of stalling indefinitely.
+_wait_for_status() {
+  local want="$1" deadline=$((SECONDS + TIMEOUT)) line
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    line="$(sbx ls 2>/dev/null | grep -E "(^|[[:space:]])$SBX_NAME([[:space:]]|$)" || true)"
+    [[ "$line" == *"$want"* ]] && return 0
+    sleep 1
+  done
+  echo "Timed out after ${TIMEOUT}s waiting for '$SBX_NAME' to be '$want' (last: ${line:-<absent>})" >&2
+  return 1
+}
+
 # --- Lifecycle ---
 
 setup_file() {
@@ -57,8 +71,11 @@ EOF
 
 teardown_file() {
   if command -v sbx &>/dev/null; then
-    sbx stop "$SBX_NAME" 2>/dev/null || true
-    sbx rm "$SBX_NAME" 2>/dev/null || true
+    timeout "$TIMEOUT" sbx stop "$SBX_NAME" 2>/dev/null || true
+    # --force: bats runs without a TTY, so 'sbx rm' would otherwise prompt
+    # for confirmation, fail, and leak the sandbox into the next run
+    # (causing 'already exists' in setup_file).
+    timeout "$TIMEOUT" sbx rm --force "$SBX_NAME" 2>/dev/null || true
   fi
   rm -rf "$TMPDIR_TEST"
 }
@@ -182,14 +199,18 @@ setup() {
 # ===== 7.6 Persistence across stop/restart =====
 
 @test "7.6a: file persists across stop/restart" {
-  # Create a file
-  _sbx_exec bash -c 'echo persistence-test > /tmp/persist-check.txt'
+  # Write a file before stopping.
+  timeout "$TIMEOUT" sbx exec "$SBX_NAME" \
+    bash -c 'echo persistence-test > /tmp/persist-check.txt'
 
-  # Stop
-  sbx stop "$SBX_NAME" 2>/dev/null
-  sleep 2
+  # Stop, then wait for the sandbox to actually reach 'stopped' rather than
+  # a fixed sleep — restarting a still-stopping container otherwise races
+  # and blocks 'sbx exec' indefinitely.
+  timeout "$TIMEOUT" sbx stop "$SBX_NAME" 2>/dev/null
+  _wait_for_status stopped
 
-  # sbx exec auto-starts a stopped sandbox
-  result="$(_sbx_exec cat /tmp/persist-check.txt)"
+  # 'sbx exec' auto-starts a stopped sandbox. Bound it so a wedged
+  # docker-in-docker boot fails the test with output instead of hanging.
+  result="$(timeout "$TIMEOUT" sbx exec "$SBX_NAME" cat /tmp/persist-check.txt)"
   [[ "$result" == *"persistence-test"* ]]
 }

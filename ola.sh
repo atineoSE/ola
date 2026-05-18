@@ -3,9 +3,6 @@
 #   ln -sf /path/to/ola/ola.sh ~/.ola.sh
 #   [ -f ~/.ola.sh ] && source ~/.ola.sh
 
-# Prefer local image
-export OLA_SBX_IMAGE=ola:dev
-
 # Resolve the real directory of this script (follows symlinks)
 _OLA_DIR="${${(%):-%x}:A:h}"
 
@@ -329,10 +326,17 @@ ola-sandbox() {
   fi
 
   # Create sandbox non-interactively, then attach.
-  # Default image is pulled from the registry. For local dev builds, run
-  # 'make sandbox-dev' first to load ola:dev into sbx's image store, then
-  # set OLA_SBX_IMAGE=ola:dev.
-  local image="${OLA_SBX_IMAGE:-ghcr.io/$(whoami)/ola:latest}"
+  # Image precedence: explicit OLA_SBX_IMAGE override, else the local dev
+  # image (ola:dev) if 'make sandbox-dev' loaded it into sbx's template
+  # store, else the registry image pulled on demand.
+  local image="$OLA_SBX_IMAGE"
+  if [ -z "$image" ]; then
+    if sbx template ls 2>/dev/null | grep -qE '^ola[[:space:]]+dev[[:space:]]'; then
+      image="ola:dev"
+    else
+      image="ghcr.io/$(whoami)/ola:latest"
+    fi
+  fi
 
   sbx create shell \
     --name "$name" \
