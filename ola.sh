@@ -3,6 +3,9 @@
 #   ln -sf /path/to/ola/ola.sh ~/.ola.sh
 #   [ -f ~/.ola.sh ] && source ~/.ola.sh
 
+# Prefer local image
+export OLA_SBX_IMAGE=ola:dev
+
 # Resolve the real directory of this script (follows symlinks)
 _OLA_DIR="${${(%):-%x}:A:h}"
 
