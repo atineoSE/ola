@@ -15,7 +15,10 @@ test-integration: ## Run sbx integration tests (requires sbx)
 	bats tests/test_sbx_integration.bats
 
 sandbox-dev: ## Build local dev image and load into sbx (use with: OLA_SBX_IMAGE=ola:dev ola-sandbox <name>)
-	docker build --no-cache -f docker/Dockerfile -t ola:dev .
+	@old=$$(docker image inspect -f '{{.Id}}' ola:dev 2>/dev/null || true); \
+	docker build --no-cache -f docker/Dockerfile -t ola:dev . && \
+	new=$$(docker image inspect -f '{{.Id}}' ola:dev) && \
+	{ [ -z "$$old" ] || [ "$$old" = "$$new" ] || docker image rm "$$old" 2>/dev/null || true; }
 	docker save ola:dev -o /tmp/ola-dev.tar
 	sbx template rm ola:dev 2>/dev/null || true
 	sbx template load /tmp/ola-dev.tar
