@@ -53,94 +53,39 @@ _ola_port_from_url() {
   esac
 }
 
-# Expand ${VAR} / $VAR references in a string using the *host* environment.
-# Mirrors python-dotenv interpolation (variable refs only — no command
-# substitution). Unset references expand to empty, like python-dotenv.
-# Usage: _ola_expand_env_value "https://${SUBSTRATE_INSTANCE_IP}"
-_ola_expand_env_value() {
-  local s="$1"
-  local refs
-  refs="$(printf '%s\n' "$s" \
-          | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | sort -u)"
-  local ref name val
-  while IFS= read -r ref; do
-    [ -z "$ref" ] && continue
-    name="${ref#\$}"; name="${name#\{}"; name="${name%\}}"
-    val="$(printenv "$name" 2>/dev/null)"
-    s="${s//\$\{$name\}/$val}"
-    s="${s//\$$name/$val}"
-  done <<EOF
-$refs
-EOF
-  printf '%s' "$s"
-}
-
-# Resolve ${VAR} / $VAR references in an .env that come from the host
-# environment (not defined within the .env itself) and print them as
-# `export NAME=value` lines, so they can be made available inside the sandbox
-# for python-dotenv to interpolate. Only exported host vars are picked up.
-_ola_resolve_env_refs() {
-  local env_file="$1"
-  [ -f "$env_file" ] || return 0
-
-  # Names assigned within the .env itself resolve from the file — skip them.
-  local self_defined
-  self_defined="$(grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$env_file" \
-                  | tr -d ' \t=' | sort -u)"
-
-  # Referenced vars on RHS values: ${VAR} or $VAR
-  local refs
-  refs="$(grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' "$env_file" \
-          | tr -d '${}' | sort -u)"
-
-  local var val
-  while IFS= read -r var; do
-    [ -z "$var" ] && continue
-    printf '%s\n' "$self_defined" | grep -qx "$var" && continue
-    val="$(printenv "$var" 2>/dev/null)" || continue
-    [ -z "$val" ] && continue
-    printf 'export %s=%q\n' "$var" "$val"
-  done <<EOF
-$refs
-EOF
-}
-
-# Inject host-resolved env-var references into a running sandbox so that
-# python-dotenv can interpolate them when ola loads the agent .env inside.
-# Written to ~/.ola_env (overwritten each call) and sourced from ~/.bashrc.
-_ola_inject_env_refs() {
-  local name="$1" env_file="$2"
-  local exports
-  exports="$(_ola_resolve_env_refs "$env_file")"
-  [ -z "$exports" ] && return 0
-
-  local data
-  data="$(printf '%s\n' "$exports" | base64)"
-  sbx exec "$name" bash -c "echo '$data' | base64 -d > \$HOME/.ola_env" 2>/dev/null
-  sbx exec "$name" bash -c \
-    'grep -q "source ~/.ola_env" ~/.bashrc 2>/dev/null || echo "[ -f ~/.ola_env ] && source ~/.ola_env" >> ~/.bashrc' 2>/dev/null
-
-  local n
-  n="$(printf '%s\n' "$exports" | grep -c .)"
-  echo "Injected $n host env var(s) into sandbox (~/.ola_env)."
-}
-
-# Sync project-specific domains from allowlist.txt and .env into sbx network policy.
-# Reads ../agent/allowlist.txt and .env (in code dir) for URL-valued variables.
-# Adds each domain (plus wildcard subdomain) to the sbx balanced policy allowlist.
-# Safe to run multiple times — sbx policy allow is idempotent.
-ola-policy-sync() {
-  local agent_dir="${1:-$(cd ../agent 2>/dev/null && pwd)}"
-  local env_file="${2:-.env}"
-
-  if [ -z "$agent_dir" ]; then
-    echo "Error: agent directory not found. Pass path or run from project dir." >&2
-    return 1
+# Allow a resolved endpoint host in the sbx network policy. A bare IPv4
+# literal must NOT get a `*.<ip>` wildcard appended — that is not a valid
+# host pattern and sbx can reject the whole rule, which is exactly what
+# silently blocked the LLM endpoint before.
+_ola_allow_host() {
+  local h="$1"
+  [ -z "$h" ] && return 0
+  if printf '%s' "$h" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+    sbx policy allow network "$h" 2>/dev/null
+  else
+    sbx policy allow network "$h,*.$h" 2>/dev/null
   fi
+}
 
-  local count=0
+# Extract a resolved value from an `ola env` blob (KEY="VALUE" lines).
+# Reverses the double-quote/backslash escaping from
+# envresolve.format_sidecar. Endpoint values (URLs, ports) are simple.
+_ola_blob_val() {
+  local blob="$1" key="$2" line
+  line="$(printf '%s\n' "$blob" | grep -E "^${key}=" | head -1)"
+  [ -z "$line" ] && return 0
+  line="${line#${key}=\"}"
+  line="${line%\"}"
+  line="${line//\\\"/\"}"
+  line="${line//\\\\/\\}"
+  printf '%s' "$line"
+}
 
-  # 1. Sync domains from allowlist.txt
+# Apply the sbx network policy from allowlist.txt plus the LLM/LMNR
+# endpoints in a resolved `ola env` blob. Idempotent (sbx policy allow is).
+_ola_apply_policy() {
+  local agent_dir="$1" blob="$2" count=0
+
   local allowlist="$agent_dir/allowlist.txt"
   if [ -f "$allowlist" ]; then
     while IFS= read -r host || [ -n "$host" ]; do
@@ -150,48 +95,71 @@ ola-policy-sync() {
     done < "$allowlist"
   fi
 
-  # 2. LLM_BASE_URL: allow the LLM endpoint (no action if missing)
-  if [ -f "$env_file" ]; then
-    local _llm_base
-    _llm_base="$(grep -E '^LLM_BASE_URL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
-    _llm_base="$(_ola_expand_env_value "$_llm_base")"
-    if [ -n "$_llm_base" ]; then
-      local _llm_host _llm_port
-      _llm_host="$(_ola_host_from_url "$_llm_base")"
-      _llm_port="$(_ola_port_from_url "$_llm_base")"
-      if [ "$_llm_host" = "localhost" ] || [[ "$_llm_host" == 127.* ]]; then
-        if [ -n "$_llm_port" ]; then
-          sbx policy allow network "localhost:$_llm_port" 2>/dev/null
-          count=$((count + 1))
-        fi
-      elif [ -n "$_llm_host" ]; then
-        sbx policy allow network "$_llm_host,*.$_llm_host" 2>/dev/null
+  local _llm_base _llm_host _llm_port
+  _llm_base="$(_ola_blob_val "$blob" LLM_BASE_URL)"
+  if [ -n "$_llm_base" ]; then
+    _llm_host="$(_ola_host_from_url "$_llm_base")"
+    _llm_port="$(_ola_port_from_url "$_llm_base")"
+    if [ "$_llm_host" = "localhost" ] || [[ "$_llm_host" == 127.* ]]; then
+      if [ -n "$_llm_port" ]; then
+        sbx policy allow network "localhost:$_llm_port" 2>/dev/null
         count=$((count + 1))
       fi
+    elif [ -n "$_llm_host" ]; then
+      _ola_allow_host "$_llm_host"
+      count=$((count + 1))
     fi
+  fi
 
-    # 3. LMNR_BASE_URL / LMNR_HTTP_PORT: allow Laminar endpoint (no action if missing)
-    local _lmnr_base
-    _lmnr_base="$(grep -E '^LMNR_BASE_URL=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
-    _lmnr_base="$(_ola_expand_env_value "$_lmnr_base")"
-    if [ -n "$_lmnr_base" ]; then
-      local _lmnr_host
-      _lmnr_host="$(_ola_host_from_url "$_lmnr_base")"
-      if [ "$_lmnr_host" = "localhost" ] || [[ "$_lmnr_host" == 127.* ]]; then
-        local _lmnr_port
-        _lmnr_port="$(grep -E '^LMNR_HTTP_PORT=' "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'")"
-        if [ -n "$_lmnr_port" ]; then
-          sbx policy allow network "localhost:$_lmnr_port" 2>/dev/null
-          count=$((count + 1))
-        fi
-      else
-        sbx policy allow network "$_lmnr_host,*.$_lmnr_host" 2>/dev/null
+  local _lmnr_base _lmnr_host _lmnr_port
+  _lmnr_base="$(_ola_blob_val "$blob" LMNR_BASE_URL)"
+  if [ -n "$_lmnr_base" ]; then
+    _lmnr_host="$(_ola_host_from_url "$_lmnr_base")"
+    if [ "$_lmnr_host" = "localhost" ] || [[ "$_lmnr_host" == 127.* ]]; then
+      _lmnr_port="$(_ola_blob_val "$blob" LMNR_HTTP_PORT)"
+      if [ -n "$_lmnr_port" ]; then
+        sbx policy allow network "localhost:$_lmnr_port" 2>/dev/null
         count=$((count + 1))
       fi
+    else
+      _ola_allow_host "$_lmnr_host"
+      count=$((count + 1))
     fi
   fi
 
   echo "Synced $count domain(s) to sbx policy."
+}
+
+# Write the host-resolved env snapshot into the sandbox so the in-sandbox
+# `ola` loads concrete values (no ${VAR} interpolation needed there).
+# Path mirrors python: ola.sandbox.SIDECAR_ENV = ~/.ola/agent.env
+_ola_inject_sidecar() {
+  local name="$1" blob="$2"
+  [ -z "$blob" ] && return 0
+  local data
+  data="$(printf '%s\n' "$blob" | base64)"
+  sbx exec "$name" bash -c 'mkdir -p "$HOME/.ola"' 2>/dev/null
+  sbx exec "$name" bash -c "echo '$data' | base64 -d > \$HOME/.ola/agent.env" 2>/dev/null
+}
+
+# Sync the sbx network policy from the two project config files:
+#   - agent/allowlist.txt : static domains
+#   - agent/.env          : LLM + Laminar endpoints (resolved by `ola env`,
+#                           which fails fast if a mandatory host var is unset)
+# Safe to run multiple times — sbx policy allow is idempotent.
+ola-policy-sync() {
+  local agent_dir="${1:-$(cd ../agent 2>/dev/null && pwd)}"
+
+  if [ -z "$agent_dir" ]; then
+    echo "Error: agent directory not found. Pass path or run from project dir." >&2
+    return 1
+  fi
+
+  # `ola env` validates host-sourced ${VAR} refs and prints the resolved
+  # snapshot; a non-zero exit means the host environment is not sound.
+  local blob
+  blob="$(ola env -f "$agent_dir")" || return 1
+  _ola_apply_policy "$agent_dir" "$blob"
 }
 
 # Review sbx network policy against project allowlist.
@@ -311,16 +279,26 @@ ola-sandbox() {
   # Extract fresh credentials from Keychain
   cc-credentials || true
 
-  # Apply project-specific network allowlist (additive to default policy).
-  # This applies immediately to all local sandboxes
-  # If policy was already added, it has no effect
-  ola-policy-sync "$agent_dir" "$agent_dir/.env"
+  # Resolve & validate the agent .env on the host BEFORE touching sbx.
+  # Fail-fast: the host environment must be sound (every mandatory ${VAR}
+  # set) before we create or reconnect a sandbox. `ola env` prints the
+  # reason on stderr; we just abort. Re-evaluated on every create AND
+  # reconnect, symmetric with allowlist.txt.
+  local _env_blob
+  _env_blob="$(ola env -f "$agent_dir")" || {
+    echo "Error: agent .env validation failed; not creating/reconnecting '$name'." >&2
+    return 1
+  }
+
+  # Apply project-specific network policy (allowlist.txt + resolved
+  # endpoints). Additive + idempotent across all local sandboxes.
+  _ola_apply_policy "$agent_dir" "$_env_blob"
 
   # Reconnect if sandbox already exists
   if sbx ls 2>&1 | grep -q "$name"; then
-    # Refresh credentials and host-resolved env refs on reconnect
+    # Refresh credentials and the resolved env snapshot on reconnect
     _ola_inject_credentials "$name"
-    _ola_inject_env_refs "$name" "$agent_dir/.env"
+    _ola_inject_sidecar "$name" "$_env_blob"
     sbx run "$name"
     return
   fi
@@ -348,7 +326,7 @@ ola-sandbox() {
   }
 
   _ola_inject_credentials "$name"
-  _ola_inject_env_refs "$name" "$agent_dir/.env"
+  _ola_inject_sidecar "$name" "$_env_blob"
 
   # Set login shell to land in the src dir
   sbx exec "$name" bash -c \

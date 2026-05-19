@@ -13,7 +13,45 @@ from ola.sandbox import is_sandbox
 logger = logging.getLogger(__name__)
 
 
+def _env_command(argv: list[str]) -> int:
+    """`ola env` — host-side: validate the agent .env's host-sourced
+    ${VAR} refs (fail-fast) and print the fully-resolved KEY="VALUE"
+    snapshot to stdout. Consumed by `ola-sandbox` to set the network
+    policy and to inject a resolved sidecar into the sandbox."""
+    parser = argparse.ArgumentParser(
+        prog="ola env",
+        description="Validate & resolve the agent .env (host-side).",
+    )
+    parser.add_argument(
+        "-f",
+        "--agent-folder",
+        type=str,
+        default="../agent",
+        help="Path to the agent folder (default: ../agent)",
+    )
+    args = parser.parse_args(argv)
+
+    from ola.envresolve import MissingHostVars, format_sidecar, resolved_values
+
+    env_file = Path(args.agent_folder).resolve() / ".env"
+    if not env_file.is_file():
+        # No .env: agents fall back to the ambient environment. Nothing to
+        # resolve and nothing to fail on.
+        return 0
+    try:
+        resolved = resolved_values(env_file)
+    except MissingHostVars as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    for line in format_sidecar(resolved):
+        print(line)
+    return 0
+
+
 def main() -> None:
+    if sys.argv[1:2] == ["env"]:
+        sys.exit(_env_command(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(
         prog="ola",
         description="Outer Loop of Agents",

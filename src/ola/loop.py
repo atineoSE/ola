@@ -158,19 +158,46 @@ def _append_stats(
         f.write(json.dumps(record) + "\n")
 
 
+def _load_agent_env(plan_path: Path) -> None:
+    """Load the agent .env before running agents.
+
+    In a sandbox, prefer the host-resolved snapshot written by `ola-sandbox`
+    (concrete values, no ${VAR} left). On the host, validate that every
+    mandatory host-sourced ref is present before letting python-dotenv
+    interpolate — the host environment must be sound before proceeding.
+    """
+    from dotenv import load_dotenv
+
+    from ola.envresolve import MissingHostVars, validate
+    from ola.sandbox import SIDECAR_ENV, is_sandbox
+
+    env_file = plan_path / ".env"
+    if is_sandbox() and SIDECAR_ENV.is_file():
+        load_dotenv(SIDECAR_ENV, override=True)
+        logger.info("Loaded resolved environment from %s", SIDECAR_ENV)
+    elif env_file.is_file():
+        try:
+            validate(env_file)
+        except MissingHostVars as exc:
+            logger.error("%s", exc)
+            if is_sandbox():
+                logger.error(
+                    "Inside a sandbox the resolved env is supplied by "
+                    "`ola-sandbox`; reconnect via `ola-sandbox <name>` on "
+                    "the host after fixing the host environment."
+                )
+            raise SystemExit(1) from exc
+        load_dotenv(env_file, override=True)
+        logger.info("Loaded environment from %s", env_file)
+
+
 def run_outer_loop(
     agent: Agent,
     plan_path: Path,
     limit: int | None = None,
 ) -> None:
     """Run the outer loop over plan subfolders."""
-    # Load agent-folder .env (LLM_API_KEY, LMNR_*, etc.) before running agents
-    env_file = plan_path / ".env"
-    if env_file.is_file():
-        from dotenv import load_dotenv
-
-        load_dotenv(env_file, override=True)
-        logger.info("Loaded environment from %s", env_file)
+    _load_agent_env(plan_path)
 
     _ensure_git(plan_path)
 

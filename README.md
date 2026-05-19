@@ -77,7 +77,29 @@ Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside
 For OpenHands:
 * Set your environment vars at the `.env` in the agent folder, including base URL, API key, model name and optional parameters. See example at `.env.example`.
 
-> **`${VAR}` references:** values may reference host environment variables, e.g. `LLM_BASE_URL="https://${SUBSTRATE_INSTANCE_IP}"`. A Docker sandbox is an isolated microVM and does **not** inherit your host environment, so `ola-sandbox` resolves any such references against the host shell at create/reconnect time and injects them into the sandbox (`~/.ola_env`, sourced from `~/.bashrc`); `ola-policy-sync` likewise expands them before allowlisting the LLM endpoint. Only **exported** host vars are picked up, and refs defined within the `.env` itself are left for python-dotenv to interpolate. If you run `ola` non-interactively inside the sandbox, `source ~/.ola_env` first.
+> **`${VAR}` references:** `.env` values may reference **host** environment
+> variables, e.g. `LLM_BASE_URL="https://${SUBSTRATE_INSTANCE_IP}/v1"` — handy
+> when an endpoint (e.g. a daily GPU instance) changes without editing `.env`.
+> python-dotenv is the single interpolation engine; the host is the single
+> source of truth for these values.
+>
+> - A plain `${NAME}` whose name is **not** assigned within the `.env` itself
+>   is **mandatory**: if it is unset or empty in the host environment, `ola`
+>   **fails fast** with a clear message rather than silently using an empty
+>   value — the host environment must be sound before proceeding.
+> - `${NAME:-default}` is **optional** (the default is used if unset).
+> - A bare `$NAME` (no braces) is left literal — python-dotenv does not
+>   interpolate it — so it is not treated as a reference.
+>
+> A Docker sandbox is an isolated microVM that does **not** inherit your host
+> environment. `ola-sandbox` resolves the `.env` on the **host** (failing
+> fast there if a mandatory var is missing) and writes the fully-resolved
+> snapshot into the sandbox at `~/.ola/agent.env`; the in-sandbox `ola` loads
+> that snapshot (no `${VAR}` left to interpolate). The same resolved values
+> drive the network allowlist. This is re-evaluated on every `ola-sandbox`
+> create **and** reconnect — exactly like `allowlist.txt` — so closing and
+> reconnecting picks up a changed host value. (`ola env` performs the
+> validate-and-resolve step; run it directly on the host to check your `.env`.)
 
 For Claude Code:
 * If using an Anthropic subscription, install Claude Code and login. This will store credentials in your keychain.
@@ -142,11 +164,12 @@ ola-sandbox my-sandbox
 
 This will:
 1. Extract Claude OAuth credentials from macOS Keychain (`cc-credentials`)
-2. Apply project-specific network allowlist from `agent/allowlist.txt` (additive to default policy)
-3. Create a sandbox with the project directory (parent of `src/`) as workspace — both `src/` and `agent/` are writable
-4. Copy credentials into the sandbox and set the shell to land in `src/`
+2. Resolve & validate `agent/.env` on the host (`ola env`) — **fails fast** if a mandatory `${VAR}` is unset
+3. Apply the network policy from `agent/allowlist.txt` **and** the resolved `.env` endpoints (additive to default policy)
+4. Create a sandbox with the project directory (parent of `src/`) as workspace — both `src/` and `agent/` are writable
+5. Copy credentials into the sandbox, write the resolved env snapshot to `~/.ola/agent.env`, and set the shell to land in `src/`
 
-Running `ola-sandbox my-sandbox` again will reconnect to the existing sandbox.
+Running `ola-sandbox my-sandbox` again reconnects to the existing sandbox and re-runs steps 2–3 and the snapshot refresh (picking up changed host values).
 
 Inside the sandbox:
 

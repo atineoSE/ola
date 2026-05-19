@@ -1,7 +1,9 @@
 #!/usr/bin/env bats
-# Tests for ola.sh shell functions (_ola_host_from_url, ola-policy-sync, ola-sandbox).
-# Run: bats tests/test_ola_sh.bats
-# Requires: bats-core (brew install bats-core)
+# Tests for ola.sh shell helpers.
+# Env expansion is owned by python-dotenv (see tests/test_envresolve.py);
+# ola.sh only consumes `ola env` output, applies the sbx network policy, and
+# injects the resolved snapshot. `ola` and `sbx` are mocked here.
+# Run: bats tests/test_ola_sh.bats   (requires bats-core)
 
 setup_file() {
   export TMPDIR_TEST="$(mktemp -d)"
@@ -11,7 +13,6 @@ setup_file() {
   mkdir -p "$TMPDIR_TEST/fake_home/.claude"
   echo '{"oauth_token":"fake"}' > "$TMPDIR_TEST/fake_home/.claude/.credentials.json"
 
-  # Shared fixtures
   export AGENT_DIR="$TMPDIR_TEST/agent"
   mkdir -p "$AGENT_DIR"
   cat > "$AGENT_DIR/allowlist.txt" <<'EOF'
@@ -20,17 +21,6 @@ docs.docker.com
 docker.io
 
 EOF
-
-  export ENV_FILE="$TMPDIR_TEST/.env"
-  cat > "$ENV_FILE" <<'EOF'
-# Openhands provider
-LLM_MODEL="litellm_proxy/minimax-m2.5"
-LLM_API_KEY="sk-test123"
-LLM_BASE_URL="https://llm-proxy.app.all-hands.dev"
-
-# Non-URL variables should be ignored
-LLM_TIMEOUT="300"
-EOF
 }
 
 teardown_file() {
@@ -38,21 +28,29 @@ teardown_file() {
 }
 
 setup() {
-  # Isolate HOME so real host config doesn't leak into tests
   export HOME="$TMPDIR_TEST/fake_home"
-
-  # ola.sh is meant to be sourced into the user's interactive shell, so the
-  # dev's ambient OLA_SBX_IMAGE would otherwise leak in and mask the default
-  # image-resolution path. Tests that need it set it explicitly.
   unset OLA_SBX_IMAGE
 
   # Re-source ola.sh (functions don't survive subshells in bats)
   local ola_sh="$(cd "$BATS_TEST_DIRNAME/.." && pwd)/ola.sh"
   eval "$(grep -v '%x' "$ola_sh")"
 
-  # Default sbx mock
+  # Default sbx mock — logs every call.
   sbx() { echo "sbx $*" >> "$SBX_LOG"; }
   export -f sbx
+
+  # Default `ola` mock. `ola env` emits $OLA_ENV_BLOB (if set) and exits
+  # $OLA_ENV_RC (default 0), standing in for the python resolver, which is
+  # unit-tested separately. Any other ola call is logged.
+  ola() {
+    if [ "$1" = "env" ]; then
+      [ -n "${OLA_ENV_BLOB:-}" ] && printf '%s\n' "$OLA_ENV_BLOB"
+      return "${OLA_ENV_RC:-0}"
+    fi
+    echo "ola $*" >> "$SBX_LOG"
+  }
+  export -f ola
+  unset OLA_ENV_BLOB OLA_ENV_RC
 
   > "$SBX_LOG"
 }
@@ -97,175 +95,146 @@ setup() {
   [ "$(_ola_port_from_url "http://localhost:11434/v1")" = "11434" ]
 }
 
-# ===== _ola_expand_env_value =====
+# ===== _ola_allow_host (IP literal must NOT get a *.<ip> wildcard) =====
 
-@test "expand_env_value: expands \${VAR} from host env" {
-  export TEST_LLM_IP="203.0.113.7"
-  [ "$(_ola_expand_env_value 'https://${TEST_LLM_IP}')" = "https://203.0.113.7" ]
+@test "allow_host: domain gets wildcard subdomain" {
+  _ola_allow_host "llm.example.com"
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network llm.example.com,*.llm.example.com" ]
 }
 
-@test "expand_env_value: expands \$VAR (braceless) from host env" {
-  export TEST_LLM_IP="203.0.113.7"
-  [ "$(_ola_expand_env_value 'https://$TEST_LLM_IP/v1')" = "https://203.0.113.7/v1" ]
+@test "allow_host: IPv4 literal allowed bare (no *.ip)" {
+  _ola_allow_host "216.243.220.30"
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
-@test "expand_env_value: unset ref expands to empty (python-dotenv parity)" {
-  unset TEST_MISSING_VAR
-  [ "$(_ola_expand_env_value 'https://${TEST_MISSING_VAR}')" = "https://" ]
+@test "allow_host: empty host is a no-op" {
+  _ola_allow_host ""
+  [ ! -s "$SBX_LOG" ]
 }
 
-@test "expand_env_value: no refs returned unchanged" {
-  [ "$(_ola_expand_env_value 'https://api.example.com/v1')" = "https://api.example.com/v1" ]
+# ===== _ola_blob_val =====
+
+@test "blob_val: extracts a quoted value" {
+  local blob='LLM_MODEL="openai/qwen3.5"
+LLM_BASE_URL="https://10.0.0.5/v1"'
+  [ "$(_ola_blob_val "$blob" LLM_BASE_URL)" = "https://10.0.0.5/v1" ]
 }
 
-# ===== _ola_resolve_env_refs =====
-
-@test "resolve_env_refs: emits export for host-set ref" {
-  export TEST_LLM_IP="203.0.113.7"
-  cat > "$TMPDIR_TEST/refs.env" <<'EOF'
-LLM_BASE_URL="https://${TEST_LLM_IP}"
-EOF
-  run _ola_resolve_env_refs "$TMPDIR_TEST/refs.env"
-  [ "$output" = "export TEST_LLM_IP=203.0.113.7" ]
+@test "blob_val: missing key yields empty" {
+  [ "$(_ola_blob_val 'A="1"' NOPE)" = "" ]
 }
 
-@test "resolve_env_refs: skips ref defined within the .env itself" {
-  cat > "$TMPDIR_TEST/selfdef.env" <<'EOF'
-HOSTPART="example.com"
-LLM_BASE_URL="https://${HOSTPART}"
-EOF
-  run _ola_resolve_env_refs "$TMPDIR_TEST/selfdef.env"
-  [ "$output" = "" ]
+@test "blob_val: reverses escaped quote/backslash" {
+  local blob='K="a\"b\\c"'
+  [ "$(_ola_blob_val "$blob" K)" = 'a"b\c' ]
 }
 
-@test "resolve_env_refs: skips ref unset on host" {
-  unset TEST_MISSING_VAR
-  cat > "$TMPDIR_TEST/unset.env" <<'EOF'
-LLM_BASE_URL="https://${TEST_MISSING_VAR}"
-EOF
-  run _ola_resolve_env_refs "$TMPDIR_TEST/unset.env"
-  [ "$output" = "" ]
-}
+# ===== _ola_apply_policy =====
 
-# ===== ola-policy-sync =====
-
-@test "policy-sync: expands \${VAR} in LLM_BASE_URL before allowlisting" {
-  export TEST_LLM_IP="203.0.113.7"
-  cat > "$TMPDIR_TEST/expand_llm.env" <<'EOF'
-LLM_BASE_URL="https://${TEST_LLM_IP}"
-EOF
-  mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/expand_llm.env"
+@test "apply_policy: resolved IP LLM endpoint allowed bare (regression)" {
+  local blob='LLM_BASE_URL="https://216.243.220.30/v1"'
+  mkdir -p "$TMPDIR_TEST/ap_ip"
+  run _ola_apply_policy "$TMPDIR_TEST/ap_ip" "$blob"
   [ "$status" -eq 0 ]
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network 203.0.113.7,*.203.0.113.7" ]
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
-@test "policy-sync: allowlist + remote LLM_BASE_URL syncs 3 domains" {
-  run ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
-  [ "$status" -eq 0 ]
+@test "apply_policy: resolved domain LLM endpoint gets wildcard" {
+  local blob='LLM_BASE_URL="https://llm-proxy.app.all-hands.dev"'
+  mkdir -p "$TMPDIR_TEST/ap_dom"
+  run _ola_apply_policy "$TMPDIR_TEST/ap_dom" "$blob"
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network llm-proxy.app.all-hands.dev,*.llm-proxy.app.all-hands.dev" ]
+}
+
+@test "apply_policy: allowlist.txt + LLM endpoint counted together" {
+  local blob='LLM_BASE_URL="https://216.243.220.30/v1"'
+  run _ola_apply_policy "$AGENT_DIR" "$blob"
   [ "$output" = "Synced 3 domain(s) to sbx policy." ]
-}
-
-@test "policy-sync: allowlist domain 1" {
-  ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network docs.docker.com,*.docs.docker.com" ]
-}
-
-@test "policy-sync: allowlist domain 2" {
-  ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network docker.io,*.docker.io" ]
+  [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
-@test "policy-sync: remote LLM_BASE_URL" {
-  ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
-  [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network llm-proxy.app.all-hands.dev,*.llm-proxy.app.all-hands.dev" ]
-}
-
-@test "policy-sync: exactly 3 sbx calls" {
-  ola-policy-sync "$AGENT_DIR" "$ENV_FILE"
-  [ "$(wc -l < "$SBX_LOG" | tr -d ' ')" = "3" ]
-}
-
-@test "policy-sync: LLM_BASE_URL localhost allows with port" {
-  cat > "$TMPDIR_TEST/local_llm.env" <<'EOF'
-LLM_BASE_URL=http://localhost:11434/v1
-EOF
-  mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/local_llm.env"
-  [ "$status" -eq 0 ]
+@test "apply_policy: LLM localhost allows with port" {
+  local blob='LLM_BASE_URL="http://localhost:11434/v1"'
+  mkdir -p "$TMPDIR_TEST/ap_local"
+  run _ola_apply_policy "$TMPDIR_TEST/ap_local" "$blob"
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:11434" ]
 }
 
-@test "policy-sync: LLM_BASE_URL 127.0.0.1 allows with port" {
-  cat > "$TMPDIR_TEST/loopback_llm.env" <<'EOF'
-LLM_BASE_URL=http://127.0.0.1:8080/v1
-EOF
-  mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/loopback_llm.env"
-  [ "$status" -eq 0 ]
-  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:8080" ]
-}
-
-@test "policy-sync: LMNR_BASE_URL localhost with LMNR_HTTP_PORT" {
-  cat > "$TMPDIR_TEST/lmnr_local.env" <<'EOF'
-LMNR_BASE_URL=http://localhost:8000
-LMNR_HTTP_PORT=8000
-EOF
-  mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/lmnr_local.env"
-  [ "$status" -eq 0 ]
+@test "apply_policy: LMNR localhost with port" {
+  local blob='LMNR_BASE_URL="http://localhost:8000"
+LMNR_HTTP_PORT="8000"'
+  mkdir -p "$TMPDIR_TEST/ap_lmnr"
+  run _ola_apply_policy "$TMPDIR_TEST/ap_lmnr" "$blob"
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:8000" ]
 }
 
-@test "policy-sync: LMNR_BASE_URL localhost without LMNR_HTTP_PORT skips" {
-  cat > "$TMPDIR_TEST/lmnr_noport.env" <<'EOF'
-LMNR_BASE_URL=http://localhost:8000
-EOF
-  mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/lmnr_noport.env"
-  [ "$status" -eq 0 ]
-  [ "$output" = "Synced 0 domain(s) to sbx policy." ]
-}
-
-@test "policy-sync: LMNR_BASE_URL remote" {
-  cat > "$TMPDIR_TEST/lmnr_remote.env" <<'EOF'
-LMNR_BASE_URL=https://api.lmnr.ai
-EOF
-  mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/lmnr_remote.env"
-  [ "$status" -eq 0 ]
+@test "apply_policy: LMNR remote domain" {
+  local blob='LMNR_BASE_URL="https://api.lmnr.ai"'
+  mkdir -p "$TMPDIR_TEST/ap_lmnr2"
+  run _ola_apply_policy "$TMPDIR_TEST/ap_lmnr2" "$blob"
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network api.lmnr.ai,*.api.lmnr.ai" ]
 }
 
-@test "policy-sync: env-only (no allowlist)" {
-  mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$ENV_FILE"
-  [ "$status" -eq 0 ]
-  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-}
-
-@test "policy-sync: allowlist-only (no env)" {
-  run ola-policy-sync "$AGENT_DIR" "$TMPDIR_TEST/nonexistent.env"
-  [ "$status" -eq 0 ]
+@test "apply_policy: empty blob → allowlist only" {
+  run _ola_apply_policy "$AGENT_DIR" ""
   [ "$output" = "Synced 2 domain(s) to sbx policy." ]
 }
 
-@test "policy-sync: missing vars does nothing" {
-  cat > "$TMPDIR_TEST/empty.env" <<'EOF'
-LLM_TIMEOUT=300
-EOF
-  mkdir -p "$TMPDIR_TEST/empty_agent"
-  run ola-policy-sync "$TMPDIR_TEST/empty_agent" "$TMPDIR_TEST/empty.env"
-  [ "$status" -eq 0 ]
+@test "apply_policy: no allowlist, empty blob → 0" {
+  mkdir -p "$TMPDIR_TEST/ap_none"
+  run _ola_apply_policy "$TMPDIR_TEST/ap_none" ""
   [ "$output" = "Synced 0 domain(s) to sbx policy." ]
 }
 
-# ===== ola-policy-review =====
+# ===== ola-policy-sync (delegates to `ola env`) =====
+
+@test "policy-sync: uses resolved blob from ola env" {
+  mkdir -p "$TMPDIR_TEST/ps_ok"
+  export OLA_ENV_BLOB='LLM_BASE_URL="https://216.243.220.30/v1"'
+  run ola-policy-sync "$TMPDIR_TEST/ps_ok"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
+}
+
+@test "policy-sync: fail-fast when ola env exits non-zero" {
+  mkdir -p "$TMPDIR_TEST/ps_fail"
+  export OLA_ENV_RC=1
+  run ola-policy-sync "$TMPDIR_TEST/ps_fail"
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"Synced"* ]]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "policy-sync: missing agent dir errors" {
+  mkdir -p "$TMPDIR_TEST/ps_noagent/deep"
+  cd "$TMPDIR_TEST/ps_noagent/deep"
+  run ola-policy-sync
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"agent directory not found"* ]]
+}
+
+# ===== _ola_inject_sidecar =====
+
+@test "inject_sidecar: writes resolved snapshot to ~/.ola/agent.env" {
+  _ola_inject_sidecar box 'LLM_API_KEY="tok"'
+  grep -q 'sbx exec box bash -c mkdir -p "$HOME/.ola"' "$SBX_LOG"
+  grep -q '\.ola/agent.env' "$SBX_LOG"
+}
+
+@test "inject_sidecar: empty blob is a no-op" {
+  _ola_inject_sidecar box ""
+  [ ! -s "$SBX_LOG" ]
+}
+
+# ===== ola-policy-review (unchanged behaviour) =====
 
 _mock_sbx_policy_ls() {
   sbx() {
@@ -350,46 +319,54 @@ EOF
   [[ "$output" == *"agent directory not found"* ]]
 }
 
-@test "sandbox: reconnect to existing sandbox" {
+@test "sandbox: aborts when ola env fails (host env unsound)" {
+  mkdir -p "$TMPDIR_TEST/sbx_envfail/agent" "$TMPDIR_TEST/sbx_envfail/code"
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    [ "$1" = "ls" ] && { echo "other  running  1h"; return 0; }
+  }
+  export -f sbx
+  export OLA_ENV_RC=1
+
+  cd "$TMPDIR_TEST/sbx_envfail/code"
+  run ola-sandbox envfail-sbx
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"validation failed"* ]]
+  ! grep -q 'sbx create' "$SBX_LOG"
+  ! grep -q 'sbx run' "$SBX_LOG"
+}
+
+@test "sandbox: reconnect injects credentials + sidecar" {
   mkdir -p "$TMPDIR_TEST/sbx_reconnect/agent" "$TMPDIR_TEST/sbx_reconnect/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_reconnect/agent/allowlist.txt"
 
-  # Mock security (macOS Keychain) for cc-credentials
   security() { echo '{"oauth_token":"fake"}'; }
   export -f security
-
   sbx() {
     echo "sbx $*" >> "$SBX_LOG"
-    if [ "$1" = "ls" ]; then
-      echo "my-sandbox  running  2h"
-      return 0
-    fi
+    if [ "$1" = "ls" ]; then echo "my-sandbox  running  2h"; return 0; fi
   }
   export -f sbx
+  export OLA_ENV_BLOB='LLM_API_KEY="tok"'
 
   cd "$TMPDIR_TEST/sbx_reconnect/code"
   ola-sandbox my-sandbox
 
   grep -q 'sbx ls' "$SBX_LOG"
-  # Credentials injected via sbx exec
   grep -q 'sbx exec my-sandbox bash' "$SBX_LOG"
+  grep -q '\.ola/agent.env' "$SBX_LOG"
   [[ "$(tail -1 "$SBX_LOG")" == *"sbx run my-sandbox"* ]]
 }
 
 _mock_sbx_new_sandbox() {
-  local sandbox_name="$1"
-
-  # Mock security (macOS Keychain) for cc-credentials
   security() { echo '{"oauth_token":"fake"}'; }
   export -f security
-
   eval "
   sbx() {
     echo \"sbx \$*\" >> \"$SBX_LOG\"
-    if [ \"\$1\" = \"ls\" ]; then
-      echo 'other-sandbox  running  1h'
-      return 0
-    fi
+    if [ \"\$1\" = \"ls\" ]; then echo 'other-sandbox  running  1h'; return 0; fi
   }
   export -f sbx
   "
@@ -399,7 +376,7 @@ _mock_sbx_new_sandbox() {
   mkdir -p "$TMPDIR_TEST/sbx_new/agent" "$TMPDIR_TEST/sbx_new/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_new/agent/allowlist.txt"
 
-  _mock_sbx_new_sandbox "new-sandbox"
+  _mock_sbx_new_sandbox
 
   cd "$TMPDIR_TEST/sbx_new/code"
   ola-sandbox new-sandbox
@@ -407,7 +384,6 @@ _mock_sbx_new_sandbox() {
   grep -q 'sbx ls' "$SBX_LOG"
   grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
   grep -q "sbx create shell --name new-sandbox --template ghcr.io/$(whoami)/ola:latest -q" "$SBX_LOG"
-  # Project dir (parent of code/) is the single workspace — no :ro
   grep -q "sbx_new$" "$SBX_LOG"
   ! grep -q 'agent:ro' "$SBX_LOG"
   grep -q "sbx exec new-sandbox bash" "$SBX_LOG"
@@ -418,7 +394,7 @@ _mock_sbx_new_sandbox() {
   mkdir -p "$TMPDIR_TEST/sbx_custom/agent" "$TMPDIR_TEST/sbx_custom/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_custom/agent/allowlist.txt"
 
-  _mock_sbx_new_sandbox "custom-sandbox"
+  _mock_sbx_new_sandbox
 
   cd "$TMPDIR_TEST/sbx_custom/code"
   OLA_SBX_IMAGE="myregistry.io/custom:v2" ola-sandbox custom-sandbox
@@ -431,18 +407,11 @@ _mock_sbx_new_sandbox() {
   mkdir -p "$TMPDIR_TEST/sbx_local/agent" "$TMPDIR_TEST/sbx_local/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_local/agent/allowlist.txt"
 
-  # Mock security (macOS Keychain) for cc-credentials
   security() { echo '{"oauth_token":"fake"}'; }
   export -f security
-
-  # 'sbx ls' marks the sandbox as new; 'sbx template ls' reports a loaded
-  # local ola:dev image so the presence check succeeds.
   sbx() {
     echo "sbx $*" >> "$SBX_LOG"
-    if [ "$1" = "ls" ]; then
-      echo 'other-sandbox  running  1h'
-      return 0
-    fi
+    if [ "$1" = "ls" ]; then echo 'other-sandbox  running  1h'; return 0; fi
     if [ "$1" = "template" ] && [ "$2" = "ls" ]; then
       echo 'ola                    dev      4715041c5671   shell-docker   About an hour ago'
       return 0
