@@ -96,10 +96,16 @@ For OpenHands:
 > fast there if a mandatory var is missing) and writes the fully-resolved
 > snapshot into the sandbox at `~/.ola/agent.env`; the in-sandbox `ola` loads
 > that snapshot (no `${VAR}` left to interpolate). The same resolved values
-> drive the network allowlist. This is re-evaluated on every `ola-sandbox`
-> create **and** reconnect — exactly like `allowlist.txt` — so closing and
-> reconnecting picks up a changed host value. (`ola env` performs the
-> validate-and-resolve step; run it directly on the host to check your `.env`.)
+> drive the network allowlist. They are also exported into the sandbox login
+> shell (so the standalone `openhands` CLI, `codex`, and manual `litellm`/
+> `curl` probes see the same `LLM_*` as ola's SDK path — including the
+> `LLM_SKIP_TLS_VERIFY` → `SSL_VERIFY` translation), and the OpenHands CLI's
+> `~/.openhands/agent_settings.json` is re-patched with the resolved
+> model/key/base_url (its host copy carries a stale, possibly-rotated
+> endpoint). This is re-evaluated on every `ola-sandbox` create **and**
+> reconnect — exactly like `allowlist.txt` — so closing and reconnecting
+> picks up a changed host value. (`ola env` performs the validate-and-resolve
+> step; run it directly on the host to check your `.env`.)
 
 For Claude Code:
 * If using an Anthropic subscription, install Claude Code and login. This will store credentials in your keychain.

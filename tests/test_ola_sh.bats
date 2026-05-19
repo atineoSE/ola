@@ -250,6 +250,81 @@ LMNR_HTTP_PORT="8000"'
   [ ! -s "$SBX_LOG" ]
 }
 
+# ===== _ola_inject_oh_settings / _ola_setup_shell_rc =====
+
+# Minimal but schema-faithful agent_settings.json (llm + nested
+# condenser.llm + preserved tools/kind/usage_id).
+_oh_template() {
+  cat <<'JSON'
+{
+  "llm": {"model":"old/m","api_key":"OLD","base_url":"https://1.2.3.4/v1","usage_id":"agent","timeout":300},
+  "tools": [{"name":"terminal","params":{}}],
+  "condenser": {"llm":{"model":"old/m","api_key":"OLD","base_url":"https://1.2.3.4/v1","usage_id":"condenser"},"kind":"LLMSummarizingCondenser"},
+  "kind": "Agent"
+}
+JSON
+}
+
+# Decode the base64 payload written to <dest> from the sbx call log.
+_decode_written() {
+  local dest="$1" line b64
+  line="$(grep "$dest" "$SBX_LOG" | grep 'base64 -d' | tail -1)"
+  b64="$(printf '%s' "$line" | sed -E "s/.*echo '([A-Za-z0-9+/=]+)'.*/\1/")"
+  printf '%s' "$b64" | base64 -d
+}
+
+@test "inject_oh_settings: patches llm + condenser.llm, preserves the rest" {
+  export HOME="$TMPDIR_TEST/oh_patch_home"
+  mkdir -p "$HOME/.openhands"
+  _oh_template > "$HOME/.openhands/agent_settings.json"
+  local blob='LLM_MODEL="openai/qwen3.5"
+LLM_API_KEY="RESKEY"
+LLM_BASE_URL="https://10.0.0.9/v1"'
+  _ola_inject_oh_settings box "$blob"
+  local out
+  out="$(_decode_written agent_settings.json)"
+  [ "$(echo "$out" | jq -r '.llm.model')" = "openai/qwen3.5" ]
+  [ "$(echo "$out" | jq -r '.llm.api_key')" = "RESKEY" ]
+  [ "$(echo "$out" | jq -r '.llm.base_url')" = "https://10.0.0.9/v1" ]
+  [ "$(echo "$out" | jq -r '.condenser.llm.base_url')" = "https://10.0.0.9/v1" ]
+  # untouched fields survive the patch
+  [ "$(echo "$out" | jq -r '.llm.usage_id')" = "agent" ]
+  [ "$(echo "$out" | jq -r '.condenser.llm.usage_id')" = "condenser" ]
+  [ "$(echo "$out" | jq -r '.llm.timeout')" = "300" ]
+  [ "$(echo "$out" | jq -r '.kind')" = "Agent" ]
+}
+
+@test "inject_oh_settings: no host template is a no-op" {
+  export HOME="$TMPDIR_TEST/oh_none_home"
+  mkdir -p "$HOME"
+  _ola_inject_oh_settings box 'LLM_MODEL="m"
+LLM_API_KEY="k"
+LLM_BASE_URL="u"'
+  ! grep -q 'agent_settings.json' "$SBX_LOG"
+}
+
+@test "inject_oh_settings: missing resolved value is a no-op" {
+  export HOME="$TMPDIR_TEST/oh_partial_home"
+  mkdir -p "$HOME/.openhands"
+  _oh_template > "$HOME/.openhands/agent_settings.json"
+  _ola_inject_oh_settings box 'LLM_MODEL="m"
+LLM_API_KEY="k"'
+  ! grep -q 'agent_settings.json' "$SBX_LOG"
+}
+
+@test "setup_shell_rc: exports sidecar, mirrors TLS skip, then cd" {
+  _ola_setup_shell_rc box /work/petclinic
+  local out
+  out="$(_decode_written .bashrc)"
+  echo "$out" | grep -qF 'set -a'
+  echo "$out" | grep -qF '. "$HOME/.ola/agent.env"'
+  echo "$out" | grep -qF 'export SSL_VERIFY=False'
+  [ "$(echo "$out" | tail -1)" = "cd /work/petclinic" ]
+  # $HOME / ${LLM_SKIP_TLS_VERIFY} must stay literal (expand in-sandbox)
+  echo "$out" | grep -qF '$HOME/.ola/agent.env'
+  echo "$out" | grep -qF '${LLM_SKIP_TLS_VERIFY:-}'
+}
+
 # ===== ola-policy-review (unchanged behaviour) =====
 
 _mock_sbx_policy_ls() {
@@ -394,6 +469,35 @@ EOF
   grep -q 'sbx exec my-sandbox bash' "$SBX_LOG"
   grep -q '\.ola/agent.env' "$SBX_LOG"
   [[ "$(tail -1 "$SBX_LOG")" == *"sbx run my-sandbox"* ]]
+}
+
+@test "sandbox: reconnect re-patches agent_settings.json from resolved blob" {
+  export HOME="$TMPDIR_TEST/rc_oh_home"
+  mkdir -p "$HOME/.claude" "$HOME/.openhands"
+  echo '{"oauth_token":"fake"}' > "$HOME/.claude/.credentials.json"
+  _oh_template > "$HOME/.openhands/agent_settings.json"
+  mkdir -p "$TMPDIR_TEST/rc_oh/agent" "$TMPDIR_TEST/rc_oh/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/rc_oh/agent/allowlist.txt"
+
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    if [ "$1" = "ls" ]; then echo "rc-oh  running  1h"; return 0; fi
+  }
+  export -f sbx
+  export OLA_ENV_BLOB='LLM_MODEL="openai/qwen3.5"
+LLM_API_KEY="RKEY"
+LLM_BASE_URL="https://10.9.8.7/v1"'
+
+  cd "$TMPDIR_TEST/rc_oh/code"
+  ola-sandbox rc-oh
+
+  grep -q 'agent_settings.json' "$SBX_LOG"
+  local out
+  out="$(_decode_written agent_settings.json)"
+  [ "$(echo "$out" | jq -r '.llm.base_url')" = "https://10.9.8.7/v1" ]
+  [ "$(echo "$out" | jq -r '.condenser.llm.api_key')" = "RKEY" ]
 }
 
 _mock_sbx_new_sandbox() {

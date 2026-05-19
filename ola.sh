@@ -288,10 +288,80 @@ _ola_inject_credentials() {
   _ola_inject_file "$name" "$cc_dir/.claude.json" "\$HOME/.claude/.claude.json" || true
   _ola_inject_file "$name" "$cc_dir/settings.json" "\$HOME/.claude/settings.json" || true
 
-  # OpenHands: agent settings and CLI config
+  # OpenHands: agent settings and CLI config. agent_settings.json is the
+  # baseline copy; _ola_inject_oh_settings overwrites it with the resolved
+  # endpoint (the host copy carries a stale, possibly-rotated base_url).
   local oh_dir="$HOME/.openhands"
   _ola_inject_file "$name" "$oh_dir/agent_settings.json" "\$HOME/.openhands/agent_settings.json" || true
   _ola_inject_file "$name" "$oh_dir/cli_config.json" "\$HOME/.openhands/cli_config.json" || true
+}
+
+# Patch the host OpenHands CLI settings with the resolved LLM endpoint and
+# inject them into the sandbox. ola's OpenHands *SDK* path reads LLM_* from
+# the environment (it ignores agent_settings.json by design), but the
+# standalone `openhands` CLI inside the sandbox reads agent_settings.json —
+# whose host copy carries a stale base_url/key (the substrate IP rotates).
+# Only the rotating identity fields are patched; the user's tools/condenser/
+# prompt config in the template is preserved verbatim. Non-fatal: on any
+# gap (no jq, no template, missing values) the verbatim host copy from
+# _ola_inject_credentials plus the exported shell env remain as fallback.
+_ola_inject_oh_settings() {
+  local name="$1" blob="$2"
+  local tmpl="$HOME/.openhands/agent_settings.json"
+  [ -f "$tmpl" ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "Warning: jq not found; sandbox openhands CLI keeps the stale host agent_settings.json." >&2
+    return 0
+  fi
+
+  local _m _k _u
+  _m="$(_ola_blob_val "$blob" LLM_MODEL)"
+  _k="$(_ola_blob_val "$blob" LLM_API_KEY)"
+  _u="$(_ola_blob_val "$blob" LLM_BASE_URL)"
+  if [ -z "$_m" ] || [ -z "$_k" ] || [ -z "$_u" ]; then
+    return 0
+  fi
+
+  local patched
+  patched="$(jq --arg m "$_m" --arg k "$_k" --arg u "$_u" '
+    .llm.model = $m | .llm.api_key = $k | .llm.base_url = $u
+    | if (.condenser.llm? // null) != null then
+        .condenser.llm.model = $m
+        | .condenser.llm.api_key = $k
+        | .condenser.llm.base_url = $u
+      else . end
+  ' "$tmpl" 2>/dev/null)" || {
+    echo "Warning: failed to patch agent_settings.json; sandbox openhands CLI keeps the stale host copy." >&2
+    return 0
+  }
+
+  local data
+  data="$(printf '%s' "$patched" | base64)"
+  sbx exec "$name" bash -c 'mkdir -p "$HOME/.openhands"' 2>/dev/null
+  sbx exec "$name" bash -c \
+    "echo '$data' | base64 -d > \$HOME/.openhands/agent_settings.json" 2>/dev/null
+}
+
+# Set up the sandbox login shell: export the resolved env snapshot so every
+# tool in the sandbox (the openhands CLI, manual litellm/curl probes, codex)
+# sees the same LLM_* values ola's SDK loads — they otherwise live only in
+# ~/.ola/agent.env, which only ola's Python reads. Mirrors the SDK's
+# LLM_SKIP_TLS_VERIFY → SSL_VERIFY translation (see agents/openhands.py) so
+# self-signed substrate certs work for env-driven tools too. Sourced by path
+# so a reconnect that refreshes the sidecar is picked up with no rc rewrite.
+_ola_setup_shell_rc() {
+  local name="$1" code_dir="$2" rc data
+  rc="$(cat <<EOF
+set -a
+[ -f "\$HOME/.ola/agent.env" ] && . "\$HOME/.ola/agent.env"
+set +a
+[ "\${LLM_SKIP_TLS_VERIFY:-}" = "true" ] && export SSL_VERIFY=False
+cd $code_dir
+EOF
+)"
+  data="$(printf '%s\n' "$rc" | base64)"
+  sbx exec "$name" bash -c \
+    "echo '$data' | base64 -d >> \$HOME/.bashrc" 2>/dev/null
 }
 
 ola-sandbox() {
@@ -342,9 +412,14 @@ ola-sandbox() {
 
   # Reconnect if sandbox already exists
   if sbx ls 2>&1 | grep -q "$name"; then
-    # Refresh credentials and the resolved env snapshot on reconnect
+    # Refresh credentials and the resolved env snapshot on reconnect.
+    # agent_settings.json is re-patched too: the substrate endpoint may
+    # have rotated since the sandbox was created, symmetric with the
+    # sidecar. The shell rc persists in container state, so it is not
+    # rewritten here (it sources the refreshed sidecar by path).
     _ola_inject_credentials "$name"
     _ola_inject_sidecar "$name" "$_env_blob"
+    _ola_inject_oh_settings "$name" "$_env_blob"
     sbx run "$name"
     return
   fi
@@ -373,10 +448,10 @@ ola-sandbox() {
 
   _ola_inject_credentials "$name"
   _ola_inject_sidecar "$name" "$_env_blob"
+  _ola_inject_oh_settings "$name" "$_env_blob"
 
-  # Set login shell to land in the src dir
-  sbx exec "$name" bash -c \
-    "echo 'cd $code_dir' >> ~/.bashrc" 2>/dev/null
+  # Export the resolved env into the login shell and land in the src dir.
+  _ola_setup_shell_rc "$name" "$code_dir"
 
   # Attach to the sandbox (foreground, interactive)
   sbx run "$name"
