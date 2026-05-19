@@ -53,6 +53,22 @@ _ola_port_from_url() {
   esac
 }
 
+# Add a global sbx network allow rule. As of sbx v0.29.0 the command
+# requires a scope (`-g/--global` or a SANDBOX) before RESOURCES; the
+# bare `sbx policy allow network RESOURCES` form now exits non-zero.
+# Failures are surfaced rather than swallowed: a discarded error here
+# once let that breaking CLI change disable policy sync for every run
+# with no signal (sync still printed "Synced N" while adding nothing).
+# Idempotent: re-adding a covered rule is a no-op and exits 0.
+_ola_policy_allow() {
+  local resources="$1" out
+  if ! out="$(sbx policy allow network -g "$resources" 2>&1)"; then
+    echo "Error: 'sbx policy allow network -g $resources' failed: $out" >&2
+    return 1
+  fi
+  return 0
+}
+
 # Allow a resolved endpoint host in the sbx network policy. A bare IPv4
 # literal must NOT get a `*.<ip>` wildcard appended — that is not a valid
 # host pattern and sbx can reject the whole rule, which is exactly what
@@ -61,9 +77,9 @@ _ola_allow_host() {
   local h="$1"
   [ -z "$h" ] && return 0
   if printf '%s' "$h" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
-    sbx policy allow network "$h" 2>/dev/null
+    _ola_policy_allow "$h"
   else
-    sbx policy allow network "$h,*.$h" 2>/dev/null
+    _ola_policy_allow "$h,*.$h"
   fi
 }
 
@@ -82,16 +98,23 @@ _ola_blob_val() {
 }
 
 # Apply the sbx network policy from allowlist.txt plus the LLM/LMNR
-# endpoints in a resolved `ola env` blob. Idempotent (sbx policy allow is).
+# endpoints in a resolved `ola env` blob. Idempotent (re-adding a covered
+# rule is a no-op, exit 0). Returns non-zero if ANY rule failed to apply,
+# so the caller can abort: a sandbox whose network policy is missing the
+# LLM endpoint will run, then hard-fail the instant the agent calls the
+# (blocked) model — which is strictly worse than refusing to start.
 _ola_apply_policy() {
-  local agent_dir="$1" blob="$2" count=0
+  local agent_dir="$1" blob="$2" count=0 failed=0
 
   local allowlist="$agent_dir/allowlist.txt"
   if [ -f "$allowlist" ]; then
     while IFS= read -r host || [ -n "$host" ]; do
       [[ -z "$host" || "$host" == \#* ]] && continue
-      sbx policy allow network "$host,*.$host" 2>/dev/null
-      count=$((count + 1))
+      if _ola_policy_allow "$host,*.$host"; then
+        count=$((count + 1))
+      else
+        failed=$((failed + 1))
+      fi
     done < "$allowlist"
   fi
 
@@ -102,12 +125,18 @@ _ola_apply_policy() {
     _llm_port="$(_ola_port_from_url "$_llm_base")"
     if [ "$_llm_host" = "localhost" ] || [[ "$_llm_host" == 127.* ]]; then
       if [ -n "$_llm_port" ]; then
-        sbx policy allow network "localhost:$_llm_port" 2>/dev/null
-        count=$((count + 1))
+        if _ola_policy_allow "localhost:$_llm_port"; then
+          count=$((count + 1))
+        else
+          failed=$((failed + 1))
+        fi
       fi
     elif [ -n "$_llm_host" ]; then
-      _ola_allow_host "$_llm_host"
-      count=$((count + 1))
+      if _ola_allow_host "$_llm_host"; then
+        count=$((count + 1))
+      else
+        failed=$((failed + 1))
+      fi
     fi
   fi
 
@@ -118,16 +147,27 @@ _ola_apply_policy() {
     if [ "$_lmnr_host" = "localhost" ] || [[ "$_lmnr_host" == 127.* ]]; then
       _lmnr_port="$(_ola_blob_val "$blob" LMNR_HTTP_PORT)"
       if [ -n "$_lmnr_port" ]; then
-        sbx policy allow network "localhost:$_lmnr_port" 2>/dev/null
-        count=$((count + 1))
+        if _ola_policy_allow "localhost:$_lmnr_port"; then
+          count=$((count + 1))
+        else
+          failed=$((failed + 1))
+        fi
       fi
     else
-      _ola_allow_host "$_lmnr_host"
-      count=$((count + 1))
+      if _ola_allow_host "$_lmnr_host"; then
+        count=$((count + 1))
+      else
+        failed=$((failed + 1))
+      fi
     fi
   fi
 
+  if [ "$failed" -gt 0 ]; then
+    echo "Error: $failed sbx policy rule(s) failed to apply ($count succeeded)." >&2
+    return 1
+  fi
   echo "Synced $count domain(s) to sbx policy."
+  return 0
 }
 
 # Write the host-resolved env snapshot into the sandbox so the in-sandbox
@@ -159,7 +199,7 @@ ola-policy-sync() {
   # snapshot; a non-zero exit means the host environment is not sound.
   local blob
   blob="$(ola env -f "$agent_dir")" || return 1
-  _ola_apply_policy "$agent_dir" "$blob"
+  _ola_apply_policy "$agent_dir" "$blob" || return 1
 }
 
 # Review sbx network policy against project allowlist.
@@ -211,7 +251,7 @@ ola-policy-review() {
       echo "  [covered] $host"
       covered=$((covered + 1))
     else
-      echo "  [MISSING] $host — run: sbx policy allow network \"$host,*.$host\""
+      echo "  [MISSING] $host — run: sbx policy allow network -g \"$host,*.$host\""
       missing=$((missing + 1))
     fi
   done < "$allowlist"
@@ -291,8 +331,14 @@ ola-sandbox() {
   }
 
   # Apply project-specific network policy (allowlist.txt + resolved
-  # endpoints). Additive + idempotent across all local sandboxes.
-  _ola_apply_policy "$agent_dir" "$_env_blob"
+  # endpoints). Additive + idempotent across all local sandboxes. Abort
+  # on failure: starting a sandbox whose policy is missing the LLM
+  # endpoint only defers the failure to the first model call, with a
+  # confusing "blocked by network policy" deep in the agent logs.
+  _ola_apply_policy "$agent_dir" "$_env_blob" || {
+    echo "Error: sbx network policy sync failed; not creating/reconnecting '$name'." >&2
+    return 1
+  }
 
   # Reconnect if sandbox already exists
   if sbx ls 2>&1 | grep -q "$name"; then
