@@ -9,6 +9,19 @@ the folder's PLAN.md, so concurrent ticks don't conflict on shared lines).
 merge_back leaves the cherry-picked changes staged but uncommitted so the
 scheduler can fold additional edits (e.g. ``set_task_checked``) into the
 same final commit.
+
+Sandbox notes
+-------------
+The secondary worktree's ``.git`` is a *file* containing
+``gitdir: <main-repo>/.git/worktrees/<name>``, not a directory. Anything
+that hard-codes ``test -d .git`` (or a similar assumption) will fail
+inside a worktree — use ``git rev-parse --git-dir`` instead. This also
+means the worktree dir is only self-contained as long as the referenced
+``.git/worktrees/<name>`` path is reachable through the same filesystem
+view; inside ``ola-sandbox`` both live under the bind-mounted project
+tree so the reference resolves. ``tests/test_sandbox_worktree.bats`` is
+a one-shot smoke test that exercises the full create → commit →
+cherry-pick → remove cycle inside the sandbox to guard against this.
 """
 
 from __future__ import annotations
