@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -114,6 +115,7 @@ class ClaudeCodeAgent(Agent):
         workdir: str,
         state_dir: str | None = None,
         labels: dict[str, str] | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> AgentResponse:
         try:
             return self._run_once(prompt, workdir, state_dir)

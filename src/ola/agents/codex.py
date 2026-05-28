@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
@@ -93,6 +94,7 @@ class CodexAgent(Agent):
         workdir: str,
         state_dir: str | None = None,
         labels: dict[str, str] | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> AgentResponse:
         api_key = os.getenv("LLM_API_KEY")
         if not api_key:

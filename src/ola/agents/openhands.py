@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
@@ -118,6 +119,7 @@ class OpenHandsAgent(Agent):
         workdir: str,
         state_dir: str | None = None,
         labels: dict[str, str] | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> AgentResponse:
         # Initialize Laminar BEFORE importing OpenHands SDK. The SDK
         # auto-instruments via lmnr at import time — if it sees

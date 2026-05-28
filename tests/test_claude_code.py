@@ -145,6 +145,20 @@ class TestClaudeCodeAgent:
         assert "cc-credentials" not in resp.output
         assert "sbx secret" not in resp.output
 
+    def test_run_accepts_on_progress_none(self):
+        """run() works when on_progress is omitted or None."""
+        agent = ClaudeCodeAgent()
+        with patch.object(agent, "_run_once", return_value=None) as m:
+            agent.run(prompt="hi", workdir="/tmp", on_progress=None)
+        m.assert_called_once()
+
+    def test_run_accepts_on_progress_callable(self):
+        """run() accepts a callable for on_progress without erroring."""
+        agent = ClaudeCodeAgent()
+        with patch.object(agent, "_run_once", return_value=None) as m:
+            agent.run(prompt="hi", workdir="/tmp", on_progress=lambda msg: None)
+        m.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Stream parser tests

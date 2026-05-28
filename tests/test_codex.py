@@ -246,6 +246,32 @@ class TestRunErrorPaths:
         assert resp.success is False
         assert "state_dir" in resp.output
 
+    def test_run_accepts_on_progress_none(self, tmp_path):
+        """run() accepts on_progress=None without changing behaviour."""
+        agent = CodexAgent()
+        with patch.dict(os.environ, {}, clear=True):
+            resp = agent.run(
+                prompt="hello",
+                workdir=str(tmp_path),
+                state_dir=str(tmp_path / ".codex"),
+                on_progress=None,
+            )
+        assert resp.success is False
+        assert "LLM_API_KEY" in resp.output
+
+    def test_run_accepts_on_progress_callable(self, tmp_path):
+        """run() accepts a callable for on_progress without erroring."""
+        agent = CodexAgent()
+        with patch.dict(os.environ, {}, clear=True):
+            resp = agent.run(
+                prompt="hello",
+                workdir=str(tmp_path),
+                state_dir=str(tmp_path / ".codex"),
+                on_progress=lambda msg: None,
+            )
+        assert resp.success is False
+        assert "LLM_API_KEY" in resp.output
+
     def test_codex_binary_missing(self, tmp_path):
         agent = CodexAgent()
         env = {"LLM_API_KEY": "secret", "LLM_MODEL": "gpt-4.1"}

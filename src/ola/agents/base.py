@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ola.stats import IterationStats
@@ -30,6 +31,7 @@ class Agent(ABC):
         workdir: str,
         state_dir: str | None = None,
         labels: dict[str, str] | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> AgentResponse:
         """Send a prompt to the agent and return its response.
 
@@ -37,6 +39,10 @@ class Agent(ABC):
             labels: Optional context passed from the outer loop, e.g.
                     ``{"folder": "01-solve", "phase": "loop-1"}``.
                     Agents may use this for trace metadata.
+            on_progress: Optional coarse-grained progress callback. If
+                    provided, agents may invoke it with a short status
+                    string (e.g. tool name or message snippet) at natural
+                    boundaries. Implementations may treat it as a no-op.
         """
         ...
 

@@ -1,5 +1,6 @@
 """Tests for openhands agent helpers and sandbox utilities."""
 
+import inspect
 import os
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,6 +10,28 @@ import pytest
 from ola.agents.openhands import OpenHandsAgent, _TTFTTracker
 from ola.sandbox import is_sandbox
 from ola.stats import IterationStats
+
+
+class TestRunSignature:
+    """Verify run() accepts the on_progress callback parameter."""
+
+    def test_run_has_on_progress_parameter(self):
+        sig = inspect.signature(OpenHandsAgent.run)
+        assert "on_progress" in sig.parameters
+        assert sig.parameters["on_progress"].default is None
+
+    def test_run_missing_api_key_with_on_progress(self, tmp_path):
+        """run() accepts on_progress at the early LLM_API_KEY error path."""
+        agent = OpenHandsAgent()
+        with patch.dict(os.environ, {}, clear=True):
+            resp = agent.run(
+                prompt="hi",
+                workdir=str(tmp_path),
+                state_dir=str(tmp_path / ".openhands"),
+                on_progress=lambda msg: None,
+            )
+        assert resp.success is False
+        assert "LLM_API_KEY" in resp.output
 
 
 class TestIsSandbox:
