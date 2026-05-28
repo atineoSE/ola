@@ -85,6 +85,12 @@ def main() -> None:
         help="Max iterations per plan subfolder (default: no limit)",
     )
     parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=0,
+        help="Retry a failed task up to K times (default: 0 = no retries)",
+    )
+    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -123,7 +129,7 @@ def main() -> None:
         sys.exit(1)
 
     agent = create_agent(args.agent, model=args.model)
-    run_outer_loop(agent, plan_path, limit=args.limit)
+    run_outer_loop(agent, plan_path, limit=args.limit, max_attempts=args.max_attempts)
 
 
 if __name__ == "__main__":

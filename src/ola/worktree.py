@@ -67,11 +67,22 @@ def create(folder: Path, task_id: str) -> Path:
 
     The worktree lives at ``<folder>/.ola/worktrees/<task_id>`` and tracks
     a fresh branch ``ola/<folder.name>/<task_id>``. Returns the worktree path.
+
+    Idempotent: any stale worktree or branch left over from a prior attempt
+    (e.g. a failed task being retried under ``--max-attempts``) is cleared
+    first so the fresh ``worktree add`` always succeeds. On a first creation
+    there is nothing to clear and the teardown commands are harmless no-ops.
     """
     folder = Path(folder)
     worktree_path = folder / ".ola" / "worktrees" / task_id
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
     branch = f"ola/{folder.name}/{task_id}"
+    # Clear leftovers from a prior attempt before recreating.
+    _git(folder, "worktree", "remove", "--force", str(worktree_path), check=False)
+    _git(folder, "worktree", "prune", check=False)
+    if worktree_path.exists():
+        shutil.rmtree(worktree_path, ignore_errors=True)
+    _git(folder, "branch", "-D", branch, check=False)
     _git(folder, "worktree", "add", "-b", branch, str(worktree_path), "HEAD")
     return worktree_path
 

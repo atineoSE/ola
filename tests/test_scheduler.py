@@ -115,6 +115,29 @@ class _StagnantAgent(Agent):
         return "0.0.0"
 
 
+class _FailThenTickAgent(_TickingAgent):
+    """Fails the first ``fail_times`` calls per task, then succeeds and ticks."""
+
+    def __init__(self, fail_times: int) -> None:
+        super().__init__()
+        self._fail_times = fail_times
+        self._calls: dict[str, int] = {}
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        task_id = labels["task_id"]
+        with self._lock:
+            n = self._calls.get(task_id, 0) + 1
+            self._calls[task_id] = n
+        if n <= self._fail_times:
+            return AgentResponse(output="boom", success=False, stats=IterationStats())
+        return super().run(
+            prompt, workdir, state_dir=state_dir, labels=labels, on_progress=on_progress
+        )
+
+    def version(self):
+        return "0.0.0"
+
+
 class _RateLimitedThenTicksAgent(_TickingAgent):
     """Returns rate_limited on the first call, then succeeds and ticks."""
 
@@ -300,6 +323,72 @@ def test_run_folder_stagnant_agent_marks_failed(tmp_path):
     # No propagation commit landed.
     log = _log_oneline(repo, "main")
     assert len(log) == 2
+
+
+# --- max_attempts retries ---
+
+
+def test_run_folder_retries_failed_task_then_succeeds(tmp_path):
+    """With max_attempts, a task that fails once is requeued and then completes."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Flaky task\n")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _FailThenTickAgent(fail_times=1)
+    run_folder(agent, folder, repo, initial_cap=1, max_attempts=2)
+
+    # The retry succeeded: ticked on main, artefact landed, worktree gone.
+    assert task_is_checked(folder, task.task_id) is True
+    assert (repo / f"file_{task.task_id}.txt").read_text() == task.task_id
+    assert not (folder / ".ola" / "worktrees" / task.task_id).exists()
+
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "complete"
+    assert entry.attempts == 2  # one failed attempt + one successful retry
+    assert entry.last_error is None
+
+
+def test_run_folder_exhausts_max_attempts_then_fails(tmp_path):
+    """A task that always fails is retried up to max_attempts, then stays failed."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Always fails\n")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _FailingAgent()
+    run_folder(agent, folder, repo, initial_cap=1, max_attempts=2)
+
+    # Tried twice total (initial attempt + one retry), never ticked.
+    assert task_is_checked(folder, task.task_id) is False
+
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "failed"
+    assert entry.attempts == 2
+    assert "boom" in entry.last_error
+
+    # Final failed worktree retained for post-mortem; PLAN.md unchanged.
+    assert (folder / ".ola" / "worktrees" / task.task_id).exists()
+    log = _log_oneline(repo, "main")
+    assert len(log) == 2  # initial + folder-add, no propagation
+
+
+def test_run_folder_default_no_retries(tmp_path):
+    """Default max_attempts=0 → a failing task is tried exactly once."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Always fails\n")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _FailThenTickAgent(fail_times=1)
+    run_folder(agent, folder, repo, initial_cap=1)
+
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "failed"
+    assert entry.attempts == 1
 
 
 # --- STATS.jsonl phase shape ---

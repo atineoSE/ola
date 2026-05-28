@@ -111,6 +111,35 @@ def _truncate(s: str, n: int = 500) -> str:
     return s if len(s) <= n else s[:n] + "..."
 
 
+def _fail_or_requeue(
+    state: TaskState,
+    state_lock: threading.Lock,
+    task_id: str,
+    attempt: int,
+    max_attempts: int,
+    last_error: str | None,
+) -> None:
+    """Record a failed attempt: requeue it for retry, or fail it terminally.
+
+    When this attempt is below the ``max_attempts`` ceiling the task is set
+    back to ``pending`` so the main loop re-dispatches the same ``task_id``
+    with ``attempt += 1``. Otherwise the task stays ``failed`` and PLAN.md is
+    left unchanged for that line. A requeued task's stale worktree is cleared
+    by :func:`worktree.create` on the next dispatch.
+    """
+    requeue = attempt < max_attempts
+    with state_lock:
+        state.mark(task_id, "pending" if requeue else "failed", last_error=last_error)
+        state.save()
+    if requeue:
+        logger.info(
+            "task %s failed on attempt %d; requeuing (max_attempts=%d).",
+            task_id,
+            attempt,
+            max_attempts,
+        )
+
+
 def _run_with_rate_limit_resume(
     agent: Agent,
     prompt: str,
@@ -161,6 +190,7 @@ def _run_one_task(
     task_id: str,
     task_text: str,
     attempt: int,
+    max_attempts: int,
     template: str,
     plan_lock: threading.Lock,
     state: TaskState,
@@ -224,9 +254,14 @@ def _run_one_task(
             )
 
         if not response.success:
-            with state_lock:
-                state.mark(task_id, "failed", last_error=_truncate(response.output))
-                state.save()
+            _fail_or_requeue(
+                state,
+                state_lock,
+                task_id,
+                attempt,
+                max_attempts,
+                _truncate(response.output),
+            )
             return
 
         try:
@@ -269,12 +304,16 @@ def run_folder(
     agent_root: Path,
     initial_cap: int,
     emitter: Any | None = None,
+    max_attempts: int = 0,
 ) -> None:
     """Process every pending task in *folder*/PLAN.md in parallel.
 
     *initial_cap* bounds the number of in-flight workers. Phase 5 will swap
     the static cap for a live re-read of ``<folder>/.ola/concurrency``.
     *emitter* defaults to ``None`` (no events); Phase 6 will populate it.
+    *max_attempts* is the retry ceiling: a worker that fails is requeued (same
+    ``task_id``, ``attempt += 1``) while its attempt count is below this value;
+    the default ``0`` means no retries.
     """
     folder = Path(folder)
     agent_root = Path(agent_root)
@@ -310,6 +349,7 @@ def run_folder(
                     task_id,
                     task_text,
                     new_attempt,
+                    max_attempts,
                     template,
                     plan_lock,
                     state,

@@ -195,6 +195,7 @@ def run_outer_loop(
     agent: Agent,
     plan_path: Path,
     limit: int | None = None,
+    max_attempts: int = 0,
 ) -> None:
     """Run the outer loop over plan subfolders."""
     _load_agent_env(plan_path)
@@ -211,12 +212,16 @@ def run_outer_loop(
             break
         for folder in remaining:
             logger.info("Processing: %s", folder.name)
-            _process_folder(agent, folder, limit, plan_path)
+            _process_folder(agent, folder, limit, plan_path, max_attempts)
             processed.add(folder)
 
 
 def _process_folder(
-    agent: Agent, folder: Path, limit: int | None, agent_root: Path
+    agent: Agent,
+    folder: Path,
+    limit: int | None,
+    agent_root: Path,
+    max_attempts: int = 0,
 ) -> None:
     """Process a single plan folder.
 
@@ -286,7 +291,7 @@ def _process_folder(
 
     cap = _initial_concurrency(folder)
     logger.info("Dispatching tasks in %s (concurrency cap %d).", folder.name, cap)
-    run_folder(agent, folder, agent_root, cap)
+    run_folder(agent, folder, agent_root, cap, max_attempts=max_attempts)
 
 
 def _log_response(label: str, response: AgentResponse) -> None:
