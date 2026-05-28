@@ -119,3 +119,14 @@ class TaskState:
     def all(self) -> list[TaskEntry]:
         """Return all entries in insertion order (matches PLAN.md order after sync)."""
         return list(self._entries.values())
+
+    def next_pending(self) -> TaskEntry | None:
+        """Return the first entry whose status is ``"pending"``, or ``None``.
+
+        Used by the scheduler to pick the next task to dispatch. Iteration
+        order follows PLAN.md (insertion order after ``sync_from_plan``).
+        """
+        for entry in self._entries.values():
+            if entry.status == "pending":
+                return entry
+        return None

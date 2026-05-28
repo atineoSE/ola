@@ -194,6 +194,29 @@ class TestSave:
         assert not (tmp_path / ".ola" / "tasks.json.tmp").exists()
 
 
+class TestNextPending:
+    def test_returns_first_pending(self, tmp_path):
+        _write_plan(tmp_path, "- [ ] Alpha\n- [ ] Beta\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        nxt = state.next_pending()
+        assert nxt is not None
+        assert nxt.text == "Alpha"
+
+    def test_skips_non_pending_entries(self, tmp_path):
+        _write_plan(tmp_path, "- [ ] Alpha\n- [ ] Beta\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "running")
+        nxt = state.next_pending()
+        assert nxt is not None
+        assert nxt.text == "Beta"
+
+    def test_returns_none_when_no_pending(self, tmp_path):
+        _write_plan(tmp_path, "- [x] Done\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        assert state.next_pending() is None
+
+
 class TestTaskEntry:
     def test_defaults(self):
         e = TaskEntry(task_id="t-1", text="x", line_no=3)
