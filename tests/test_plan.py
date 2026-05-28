@@ -12,6 +12,7 @@ from ola.plan import (
     has_outstanding_tasks,
     parse_task_counts,
     set_task_checked,
+    task_is_checked,
 )
 
 
@@ -346,3 +347,61 @@ class TestSetTaskChecked:
         set_task_checked(tmp_path, self._id(tmp_path, "First task"), True)
         leftovers = [p.name for p in tmp_path.iterdir() if p.name != "PLAN.md"]
         assert leftovers == []
+
+
+class TestTaskIsChecked:
+    def _id(self, folder: Path, text: str) -> str:
+        for t in enumerate_tasks(folder):
+            if t.text == text:
+                return t.task_id
+        raise AssertionError(f"task with text {text!r} not present")
+
+    def test_unchecked_returns_false(self, tmp_path):
+        (tmp_path / "PLAN.md").write_text("- [ ] Pending task\n")
+        assert task_is_checked(tmp_path, self._id(tmp_path, "Pending task")) is False
+
+    def test_checked_returns_true(self, tmp_path):
+        (tmp_path / "PLAN.md").write_text("- [x] Finished task\n")
+        assert task_is_checked(tmp_path, self._id(tmp_path, "Finished task")) is True
+
+    def test_uppercase_x_returns_true(self, tmp_path):
+        (tmp_path / "PLAN.md").write_text("- [X] Big X done\n")
+        assert task_is_checked(tmp_path, self._id(tmp_path, "Big X done")) is True
+
+    def test_reflects_set_task_checked_round_trip(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        first = self._id(tmp_path, "First task")
+        assert task_is_checked(tmp_path, first) is False
+        set_task_checked(tmp_path, first, True)
+        assert task_is_checked(tmp_path, first) is True
+        set_task_checked(tmp_path, first, False)
+        assert task_is_checked(tmp_path, first) is False
+
+    def test_collision_suffix_resolved_independently(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        tasks = enumerate_tasks(tmp_path)
+        dup_ids = [t.task_id for t in tasks if t.text == "Dup text"]
+        assert len(dup_ids) == 2
+        assert task_is_checked(tmp_path, dup_ids[0]) is False
+        assert task_is_checked(tmp_path, dup_ids[1]) is False
+        set_task_checked(tmp_path, dup_ids[1], True)
+        assert task_is_checked(tmp_path, dup_ids[0]) is False
+        assert task_is_checked(tmp_path, dup_ids[1]) is True
+
+    def test_unknown_task_id_raises_key_error(self, tmp_path):
+        (tmp_path / "PLAN.md").write_text("- [ ] Real task\n")
+        with pytest.raises(KeyError):
+            task_is_checked(tmp_path, "t-deadbeef")
+
+    def test_missing_plan_raises_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            task_is_checked(tmp_path, "t-deadbeef")
+
+    def test_fenced_checkbox_not_targetable(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        fake = "t-" + hashlib.sha1(b"Not a real task").hexdigest()[:8]
+        with pytest.raises(KeyError):
+            task_is_checked(tmp_path, fake)

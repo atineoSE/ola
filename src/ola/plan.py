@@ -174,3 +174,18 @@ def set_task_checked(folder: Path, task_id: str, checked: bool) -> None:
     tmp = plan_file.with_name(plan_file.name + ".tmp")
     tmp.write_text(new_text)
     tmp.replace(plan_file)
+
+
+def task_is_checked(folder: Path, task_id: str) -> bool:
+    """Return whether the checkbox for *task_id* in *folder*'s PLAN.md is ticked.
+
+    Raises FileNotFoundError if PLAN.md is missing and KeyError if *task_id*
+    is not present in PLAN.md.
+    """
+    plan_file = folder / "PLAN.md"
+    if not plan_file.exists():
+        raise FileNotFoundError(f"PLAN.md not found in folder: {folder}")
+    for task in _enumerate_tasks_from_text(plan_file.read_text()):
+        if task.task_id == task_id:
+            return task.checked
+    raise KeyError(f"task_id not found in PLAN.md: {task_id}")
