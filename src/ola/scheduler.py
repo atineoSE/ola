@@ -12,9 +12,12 @@ For each unchecked task in ``<folder>/PLAN.md`` the scheduler:
    On success, propagates the worktree commit and the PLAN.md tick onto
    the agent-folder branch under a shared lock.
 
-Concurrency is capped at ``initial_cap``. Live re-reading of
-``<folder>/.ola/concurrency`` is Phase 5 work. The ``emitter`` slot is a
-Phase 6 hookup point; today the scheduler simply ignores ``None``.
+Concurrency is bounded by a live cap re-read from
+``<folder>/.ola/concurrency`` on every scheduler tick: raising the file's
+value spawns new workers up to the new cap on the next tick, lowering it
+(including to ``0`` to pause) leaves running workers untouched and only
+gates new starts. The ``emitter`` slot is a Phase 6 hookup point; today the
+scheduler simply ignores ``None``.
 """
 
 from __future__ import annotations
@@ -368,8 +371,12 @@ def run_folder(
 ) -> None:
     """Process every pending task in *folder*/PLAN.md in parallel.
 
-    *initial_cap* bounds the number of in-flight workers. Phase 5 will swap
-    the static cap for a live re-read of ``<folder>/.ola/concurrency``.
+    *initial_cap* seeds the in-flight worker bound, but the live cap is
+    re-read from ``<folder>/.ola/concurrency`` on every tick: an increase
+    spawns new workers up to the new cap on the next tick, a decrease does
+    not preempt running workers, and a cap of ``0`` pauses new starts while
+    letting in-flight workers finish. *initial_cap* also supplies the default
+    when the concurrency file is missing or malformed.
     *emitter* defaults to ``None`` (no events); Phase 6 will populate it.
     *max_attempts* is the retry ceiling: a worker that fails is requeued (same
     ``task_id``, ``attempt += 1``) while its attempt count is below this value;
@@ -386,8 +393,20 @@ def run_folder(
     stats_lock = threading.Lock()
     template = _load_task_prompt(folder)
 
-    cap = max(initial_cap, 1)
+    # Default cap when the concurrency file is missing/malformed. The live
+    # value (including 0 to pause) is re-read on every tick below.
+    live_default = max(initial_cap, 1)
     in_flight: dict[Future, _Job] = {}
+
+    # The pool's max_workers can't shrink, so we size it to the largest cap
+    # observed so far and grow it by spawning a fresh, larger executor when a
+    # live increase exceeds the current ceiling. Workers already in flight on a
+    # retired executor keep running until they finish; the retired executors are
+    # drained in the ``finally`` block. Decreases never touch the pool — they
+    # only gate new starts via the ``len(in_flight) < cap`` check.
+    executor_cap = live_default
+    executor = ThreadPoolExecutor(max_workers=executor_cap)
+    retired_executors: list[ThreadPoolExecutor] = []
 
     # Folder-wide circuit breaker: count consecutive stagnant attempts across
     # any tasks; reset on any non-stagnant outcome (real success or a
@@ -396,8 +415,16 @@ def run_folder(
     consecutive_stagnant = 0
     halted = False
 
-    with ThreadPoolExecutor(max_workers=cap) as executor:
+    try:
         while True:
+            cap = read_concurrency(folder, default=live_default)
+            if cap > executor_cap:
+                # Live increase past the current ceiling: retire the old pool
+                # (its in-flight workers finish on it) and grow.
+                retired_executors.append(executor)
+                executor_cap = cap
+                executor = ThreadPoolExecutor(max_workers=executor_cap)
+
             while not halted and len(in_flight) < cap:
                 with state_lock:
                     next_task = state.next_pending()
@@ -431,7 +458,17 @@ def run_folder(
                 )
 
             if not in_flight:
-                break
+                if halted:
+                    break
+                with state_lock:
+                    pending_remains = state.next_pending() is not None
+                if not pending_remains:
+                    break
+                # Nothing running but tasks remain pending: the cap is 0
+                # (paused). Wait a tick and re-read the cap rather than exit —
+                # raising the cap later resumes dispatch.
+                time.sleep(1.0)
+                continue
 
             done, _ = wait(
                 list(in_flight.keys()),
@@ -467,3 +504,7 @@ def run_folder(
                 )
                 halted = True
                 break
+    finally:
+        executor.shutdown(wait=True)
+        for retired in retired_executors:
+            retired.shutdown(wait=True)

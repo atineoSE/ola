@@ -747,6 +747,85 @@ def test_run_folder_respects_initial_cap(tmp_path):
     assert overlap2["max"] >= 2
 
 
+def _wait_until(predicate, timeout=5.0, interval=0.02):
+    """Poll *predicate* until true or *timeout* elapses; return its final value."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+def test_run_folder_honours_live_cap_increase(tmp_path):
+    """Raising .ola/concurrency mid-run spawns more workers within a tick.
+
+    Starts at cap 1 with workers that block until released, asserts exactly one
+    runs, bumps the file to 3, and asserts the running count climbs to 3 (which
+    requires the pool to grow past its initial max_workers=1). Then releases the
+    workers and confirms the folder completes.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(
+        repo, "agent-folder", "".join(f"- [ ] T{i}\n" for i in range(6))
+    )
+    cap_file = folder / ".ola" / "concurrency"
+    cap_file.parent.mkdir(parents=True, exist_ok=True)
+    cap_file.write_text("1")
+
+    release = threading.Event()
+    counters = {"running": 0, "max": 0}
+    lock = threading.Lock()
+
+    class _BlockingAgent(_TickingAgent):
+        def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+            with lock:
+                counters["running"] += 1
+                counters["max"] = max(counters["max"], counters["running"])
+            try:
+                release.wait(timeout=30)
+                return super().run(
+                    prompt,
+                    workdir,
+                    state_dir=state_dir,
+                    labels=labels,
+                    on_progress=on_progress,
+                )
+            finally:
+                with lock:
+                    counters["running"] -= 1
+
+    agent = _BlockingAgent()
+    worker = threading.Thread(
+        target=run_folder, args=(agent, folder, repo), kwargs={"initial_cap": 1}
+    )
+    worker.start()
+    try:
+        # Exactly one worker starts under cap 1, and it stays at one.
+        assert _wait_until(lambda: counters["running"] == 1)
+        time.sleep(0.3)
+        with lock:
+            assert counters["max"] == 1
+
+        # Bump the live cap; within a tick the running count tracks it to 3.
+        cap_file.write_text("3")
+        assert _wait_until(lambda: counters["running"] == 3, timeout=5.0)
+
+        # Release the blocked workers; the folder drains to completion.
+        release.set()
+        worker.join(timeout=30)
+        assert not worker.is_alive()
+    finally:
+        release.set()
+        worker.join(timeout=30)
+
+    tstate = TaskState.load(folder)
+    assert all(
+        tstate.get(t.task_id).status == "complete" for t in enumerate_tasks(folder)
+    )
+
+
 def test_run_folder_empty_plan_is_noop(tmp_path):
     """A folder with no pending tasks doesn't spawn any workers and doesn't commit."""
     repo = tmp_path / "repo"
