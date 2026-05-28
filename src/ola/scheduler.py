@@ -29,8 +29,8 @@ from pathlib import Path
 from typing import Any
 
 from ola.agents.base import Agent
-from ola.loop import per_task_state_dir
-from ola.plan import set_task_checked, task_is_checked
+from ola.loop import _append_stats, per_task_state_dir
+from ola.plan import count_tasks, set_task_checked, task_is_checked
 from ola.taskstate import TaskState
 from ola.worktree import cleanup, commit, create, merge_back
 
@@ -165,6 +165,7 @@ def _run_one_task(
     plan_lock: threading.Lock,
     state: TaskState,
     state_lock: threading.Lock,
+    stats_lock: threading.Lock,
     emitter: Any | None,
 ) -> None:
     """Run a single task end-to-end in its own worktree.
@@ -174,9 +175,10 @@ def _run_one_task(
     and retains the worktree for post-mortem.
     """
     worktree_path = create(folder, task_id)
+    worktree_folder = worktree_path / folder.name
     try:
         prompt = _substitute(template, task_text, task_id)
-        plan_in_worktree = worktree_path / folder.name / "PLAN.md"
+        plan_in_worktree = worktree_folder / "PLAN.md"
         prompt += f"\n\nPLAN.md is located at: {plan_in_worktree}"
         workdir = str(worktree_path)
         state_dir = per_task_state_dir(folder, agent, task_id)
@@ -189,9 +191,12 @@ def _run_one_task(
         # Phase 6 will wire emitter → on_progress; today emitter is unused.
         on_progress = None
 
+        tasks_before = count_tasks(worktree_folder)
+        t0 = time.monotonic()
         response = _run_with_rate_limit_resume(
             agent, prompt, workdir, state_dir, labels, on_progress
         )
+        wall_ms = int((time.monotonic() - t0) * 1000)
         if response is None:
             with state_lock:
                 state.mark(
@@ -202,13 +207,28 @@ def _run_one_task(
                 state.save()
             return
 
+        # Record a STATS.jsonl row for this attempt. The phase is the
+        # parallel-mode shape ``task-<task_id>-<attempt>`` (replacing the old
+        # ``loop-N``); the monitor parser treats phase as an opaque string, so
+        # legacy ``seed``/``loop-N`` rows keep parsing alongside these.
+        tasks_after = count_tasks(worktree_folder)
+        with stats_lock:
+            _append_stats(
+                folder,
+                f"task-{task_id}-{attempt}",
+                response.stats,
+                wall_ms,
+                agent,
+                tasks_before,
+                tasks_after,
+            )
+
         if not response.success:
             with state_lock:
                 state.mark(task_id, "failed", last_error=_truncate(response.output))
                 state.save()
             return
 
-        worktree_folder = worktree_path / folder.name
         try:
             ticked = task_is_checked(worktree_folder, task_id)
         except (FileNotFoundError, KeyError):
@@ -264,6 +284,7 @@ def run_folder(
 
     plan_lock = threading.Lock()
     state_lock = threading.Lock()
+    stats_lock = threading.Lock()
     template = _load_task_prompt(folder)
 
     cap = max(initial_cap, 1)
@@ -293,6 +314,7 @@ def run_folder(
                     plan_lock,
                     state,
                     state_lock,
+                    stats_lock,
                     emitter,
                 )
                 in_flight[fut] = _Job(

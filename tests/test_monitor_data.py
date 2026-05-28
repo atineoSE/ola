@@ -72,6 +72,31 @@ def test_parse_stats_jsonl():
     assert iterations[1].num_turns == 5
 
 
+def test_parse_stats_jsonl_mixed_legacy_and_parallel_phases():
+    """A folder with legacy (seed, loop-N) and new (task-<id>-<n>) rows all parse.
+
+    The parser treats ``phase`` as an opaque string, so the parallel-mode shape
+    coexists with the legacy shapes without any parser branching.
+    """
+    mixed = (
+        '{"phase": "seed", "wall_ms": 1000, "input_tokens": 100, "output_tokens": 50}\n'
+        '{"phase": "loop-1", "wall_ms": 2000, "input_tokens": 200, "output_tokens": 99}\n'
+        '{"phase": "task-t-abc1234-1", "wall_ms": 1500, "input_tokens": 300,'
+        ' "output_tokens": 120, "tasks_completed_delta": 1}\n'
+        '{"phase": "task-t-def5678-2", "wall_ms": 1700, "input_tokens": 400,'
+        ' "output_tokens": 130}\n'
+    )
+    iterations = parse_stats_jsonl(mixed)
+    assert [it.phase for it in iterations] == [
+        "seed",
+        "loop-1",
+        "task-t-abc1234-1",
+        "task-t-def5678-2",
+    ]
+    assert iterations[2].tasks_completed_delta == 1
+    assert iterations[3].input_tokens == 400
+
+
 def test_parse_stats_jsonl_with_agent():
     line = (
         '{"phase": "seed", "wall_ms": 500, "input_tokens": 10, "output_tokens": 5,'

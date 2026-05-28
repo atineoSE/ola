@@ -302,6 +302,56 @@ def test_run_folder_stagnant_agent_marks_failed(tmp_path):
     assert len(log) == 2
 
 
+# --- STATS.jsonl phase shape ---
+
+
+def test_run_folder_writes_parallel_phase_stats(tmp_path):
+    """Each attempt appends a STATS.jsonl row with phase ``task-<id>-<attempt>``."""
+    import json
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Task A\n- [ ] Task B\n")
+    tasks = enumerate_tasks(folder)
+
+    agent = _TickingAgent()
+    run_folder(agent, folder, repo, initial_cap=2)
+
+    stats_file = folder / "STATS.jsonl"
+    assert stats_file.exists()
+    records = [
+        json.loads(line) for line in stats_file.read_text().splitlines() if line.strip()
+    ]
+    phases = {r["phase"] for r in records}
+    assert phases == {f"task-{t.task_id}-1" for t in tasks}
+    # The agent mnemonic/version are recorded alongside each row.
+    assert all(r["agent"] == "stub" for r in records)
+    # A successful tick registers a +1 completion delta for the worktree's plan.
+    assert all(r["tasks_completed_delta"] == 1 for r in records)
+
+
+def test_run_folder_failure_still_writes_stats(tmp_path):
+    """A failed attempt still appends a stats row (delta 0, agent recorded)."""
+    import json
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Will fail\n")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _FailingAgent()
+    run_folder(agent, folder, repo, initial_cap=1)
+
+    records = [
+        json.loads(line)
+        for line in (folder / "STATS.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert len(records) == 1
+    assert records[0]["phase"] == f"task-{task.task_id}-1"
+    assert records[0]["tasks_completed_delta"] == 0
+
+
 # --- Rate-limit sleep-and-resume (moved from the old inner loop) ---
 
 
