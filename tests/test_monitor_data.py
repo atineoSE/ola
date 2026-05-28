@@ -1,14 +1,17 @@
 """Tests for the ola-top monitor data layer."""
 
+import json
 from pathlib import Path
 
 from ola.monitor.data import (
     FolderStatus,
     IterationStatus,
+    TaskRow,
     parse_stats_jsonl,
     parse_task_counts,
     read_agent_folder,
     read_folder_status,
+    read_task_rows,
 )
 
 SAMPLE_PLAN = """\
@@ -653,3 +656,163 @@ def test_iteration_stats_error_fields_default_none():
     assert stats.error_type is None
     assert stats.error_message is None
     assert stats.rate_limit_resets_at is None
+
+
+# --- TaskRow / read_task_rows tests ---
+
+
+def _write_tasks_json(folder: Path, tasks: list[dict]) -> None:
+    ola_dir = folder / ".ola"
+    ola_dir.mkdir(parents=True, exist_ok=True)
+    (ola_dir / "tasks.json").write_text(json.dumps({"tasks": tasks}))
+
+
+def _write_events_jsonl(folder: Path, events: list[dict]) -> None:
+    ola_dir = folder / ".ola"
+    ola_dir.mkdir(parents=True, exist_ok=True)
+    (ola_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+
+
+def test_read_task_rows_no_ola_returns_empty(tmp_path: Path):
+    """A folder without .ola/tasks.json is not in parallel mode → no rows."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [ ] A\n")
+    assert read_task_rows(folder) == []
+
+
+def test_read_task_rows_spine_from_tasks_json(tmp_path: Path):
+    """Rows follow tasks.json order, carrying status and attempt count."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [
+            {
+                "task_id": "t-aaa",
+                "text": "First task",
+                "line_no": 1,
+                "status": "complete",
+                "attempts": 1,
+                "last_error": None,
+            },
+            {
+                "task_id": "t-bbb",
+                "text": "Second task",
+                "line_no": 2,
+                "status": "running",
+                "attempts": 0,
+                "last_error": None,
+            },
+        ],
+    )
+    rows = read_task_rows(folder)
+    assert [r.task_id for r in rows] == ["t-aaa", "t-bbb"]
+    assert rows[0].status == "complete"
+    assert rows[0].attempt == 1
+    assert rows[1].status == "running"
+    # No events → no progress, zero elapsed.
+    assert rows[1].elapsed_s == 0.0
+    assert rows[1].last_progress_message == ""
+
+
+def test_read_task_rows_truncates_text(tmp_path: Path):
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    long_text = "x" * 200
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-aaa", "text": long_text, "line_no": 1, "status": "pending"}],
+    )
+    row = read_task_rows(folder)[0]
+    assert len(row.text) == 60
+    assert row.text.endswith("…")
+
+
+def test_read_task_rows_folds_in_events(tmp_path: Path):
+    """elapsed_s spans first→last event ts; last message is the most recent one."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-aaa", "text": "Task", "line_no": 1, "status": "complete"}],
+    )
+    _write_events_jsonl(
+        folder,
+        [
+            {
+                "task_id": "t-aaa",
+                "status": "started",
+                "ts": "2026-05-27T14:00:00.000Z",
+                "data": {},
+            },
+            {
+                "task_id": "t-aaa",
+                "status": "working",
+                "ts": "2026-05-27T14:00:05.000Z",
+                "data": {"message": "running tests"},
+            },
+            {
+                "task_id": "t-aaa",
+                "status": "complete",
+                "ts": "2026-05-27T14:00:12.000Z",
+                "data": {},
+            },
+        ],
+    )
+    row = read_task_rows(folder)[0]
+    assert row.elapsed_s == 12.0
+    assert row.last_progress_message == "running tests"
+
+
+def test_read_task_rows_skips_malformed_event_lines(tmp_path: Path):
+    """A half-written events.jsonl line must not break the monitor."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-aaa", "text": "Task", "line_no": 1, "status": "running"}],
+    )
+    ola_dir = folder / ".ola"
+    (ola_dir / "events.jsonl").write_text(
+        json.dumps(
+            {"task_id": "t-aaa", "status": "started", "ts": "2026-05-27T14:00:00.000Z"}
+        )
+        + "\n"
+        + "{not valid json\n"
+        + json.dumps(
+            {
+                "task_id": "t-aaa",
+                "status": "working",
+                "ts": "2026-05-27T14:00:03.000Z",
+                "data": {"message": "still going"},
+            }
+        )
+        + "\n"
+    )
+    row = read_task_rows(folder)[0]
+    assert row.elapsed_s == 3.0
+    assert row.last_progress_message == "still going"
+
+
+def test_read_task_rows_single_event_zero_elapsed(tmp_path: Path):
+    """A task with only a started event has no measurable elapsed span yet."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-aaa", "text": "Task", "line_no": 1, "status": "running"}],
+    )
+    _write_events_jsonl(
+        folder,
+        [{"task_id": "t-aaa", "status": "started", "ts": "2026-05-27T14:00:00.000Z"}],
+    )
+    row = read_task_rows(folder)[0]
+    assert row.elapsed_s == 0.0
+
+
+def test_task_row_defaults():
+    row = TaskRow(task_id="t-aaa", text="Task", status="pending")
+    assert row.attempt == 0
+    assert row.elapsed_s == 0.0
+    assert row.last_progress_message == ""

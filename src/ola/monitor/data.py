@@ -5,10 +5,15 @@ from __future__ import annotations
 import json
 import statistics
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from ola.plan import parse_task_counts
 from ola.stats import cache_hit_rate as _cache_hit_rate
+from ola.taskstate import TaskState
+
+# Max characters of task text retained in a TaskRow before truncating with "…".
+_TASK_TEXT_MAX = 60
 
 
 _AGENT_FULL_NAMES: dict[str, str] = {
@@ -252,6 +257,107 @@ def read_folder_status(folder: Path) -> FolderStatus:
         status.iterations = parse_stats_jsonl(stats_file.read_text())
 
     return status
+
+
+@dataclass
+class TaskRow:
+    """Per-task status for the ola-top parallel view.
+
+    Sourced from ``<folder>/.ola/tasks.json`` (the spine: one row per tracked
+    task) with the latest event per task folded in from
+    ``<folder>/.ola/events.jsonl`` (``elapsed_s`` and ``last_progress_message``).
+    Additive to :class:`FolderStatus` — only used when ``.ola/`` is present.
+    """
+
+    task_id: str
+    text: str
+    status: str
+    attempt: int = 0
+    elapsed_s: float = 0.0
+    last_progress_message: str = ""
+
+
+def _truncate(text: str, limit: int = _TASK_TEXT_MAX) -> str:
+    """Truncate ``text`` to ``limit`` characters, appending '…' if cut."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _parse_ts(ts: str) -> datetime | None:
+    """Parse a v2 event ISO-8601 timestamp (trailing 'Z'), or None if malformed."""
+    try:
+        return datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+
+
+def _read_events_by_task(folder: Path) -> dict[str, list[dict]]:
+    """Group events.jsonl records by ``task_id`` in file (emission) order.
+
+    Malformed lines are skipped so a partially-written events.jsonl never
+    breaks the monitor.
+    """
+    events_file = folder / ".ola" / "events.jsonl"
+    by_task: dict[str, list[dict]] = {}
+    if not events_file.exists():
+        return by_task
+    for line in events_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        task_id = record.get("task_id")
+        if not task_id:
+            continue
+        by_task.setdefault(task_id, []).append(record)
+    return by_task
+
+
+def read_task_rows(folder: Path) -> list[TaskRow]:
+    """Read per-task rows for a folder running in parallel mode.
+
+    Returns one :class:`TaskRow` per task in ``<folder>/.ola/tasks.json``
+    (PLAN.md order), folding in the latest event per task from
+    ``<folder>/.ola/events.jsonl``. Returns an empty list when the folder has
+    no ``.ola/tasks.json`` (i.e. it is not running in parallel mode).
+    """
+    if not (folder / ".ola" / "tasks.json").exists():
+        return []
+
+    events_by_task = _read_events_by_task(folder)
+
+    rows: list[TaskRow] = []
+    for entry in TaskState.load(folder).all():
+        events = events_by_task.get(entry.task_id, [])
+
+        elapsed_s = 0.0
+        timestamps = [t for t in (_parse_ts(e.get("ts", "")) for e in events) if t]
+        if len(timestamps) >= 2:
+            elapsed_s = (max(timestamps) - min(timestamps)).total_seconds()
+
+        # Latest event carrying a progress message (working/complete/failed may
+        # all attach one under data.message).
+        last_message = ""
+        for e in events:
+            msg = e.get("data", {}).get("message")
+            if msg:
+                last_message = msg
+
+        rows.append(
+            TaskRow(
+                task_id=entry.task_id,
+                text=_truncate(entry.text),
+                status=entry.status,
+                attempt=entry.attempts,
+                elapsed_s=elapsed_s,
+                last_progress_message=last_message,
+            )
+        )
+    return rows
 
 
 def read_agent_folder(agent_path: Path) -> list[FolderStatus]:
