@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 import time
@@ -268,6 +269,100 @@ def test_run_folder_skips_already_complete_tasks(tmp_path):
 
     assert len(agent.invocations) == 1
     assert agent.invocations[0]["labels"]["task_id"] == pending.task_id
+
+
+class _CommittingAgent(Agent):
+    """Faithful stub: creates the named file, ticks its checkbox, and commits.
+
+    Unlike :class:`_TickingAgent`, this agent makes its *own* commit in the
+    worktree with a distinctive message (``feat: <task_text>``). That lets the
+    integration test assert the agent's original commit message survives the
+    propagation onto the agent-folder branch (``git commit -C <sha>``), rather
+    than the synthetic message the scheduler falls back to when the worktree
+    has uncommitted changes.
+    """
+
+    mnemonic = "stub"
+    state_dir_name = ""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.invocations: list[dict] = []
+        self._lock = threading.Lock()
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        with self._lock:
+            self.invocations.append({"labels": dict(labels or {})})
+        task_id = labels["task_id"]
+        folder_name = labels["folder"]
+        workdir = Path(workdir)
+        worktree_folder = workdir / folder_name
+        # Parse the human task text out of the substituted prompt.
+        match = re.search(r"The task is: (.*?) \(task id", prompt)
+        task_text = match.group(1)
+        # The task text is "Create file A" → drop "A.txt" in the folder.
+        letter = task_text.rsplit(" ", 1)[-1]
+        (worktree_folder / f"{letter}.txt").write_text(task_text)
+        set_task_checked(worktree_folder, task_id, True)
+        # Commit in the worktree with the agent's own message.
+        subprocess.run(
+            ["git", "add", "-A"], cwd=str(workdir), capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", f"feat: {task_text}"],
+            cwd=str(workdir),
+            capture_output=True,
+            check=True,
+        )
+        return AgentResponse(output="ok", success=True, stats=IterationStats())
+
+    def version(self):
+        return "0.0.0"
+
+
+def test_run_folder_three_independent_tasks_integration(tmp_path):
+    """End-to-end: three independent tasks at concurrency=3 all land on main.
+
+    A stub agent creates file A/B/C, ticks its own checkbox, and commits with
+    its own message. Asserts: all three complete, PLAN.md fully ticked on the
+    agent-folder branch, three commits carry the agents' *original* messages,
+    and all three worktrees are cleaned up. (``emitter=None``; event-emission
+    assertions are deferred to Phase 6.)
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(
+        repo,
+        "agent-folder",
+        "- [ ] Create file A\n- [ ] Create file B\n- [ ] Create file C\n",
+    )
+    tasks = enumerate_tasks(folder)
+
+    agent = _CommittingAgent()
+    run_folder(agent, folder, repo, initial_cap=3)
+
+    # Each task completed in tasks.json.
+    state = TaskState.load(folder)
+    assert all(state.get(t.task_id).status == "complete" for t in tasks)
+
+    # PLAN.md on the agent-folder branch is fully ticked.
+    assert all(task_is_checked(folder, t.task_id) for t in tasks)
+
+    # Each expected artefact landed on main.
+    for letter in ("A", "B", "C"):
+        assert (folder / f"{letter}.txt").read_text() == f"Create file {letter}"
+
+    # Three commits carrying the agents' original messages landed on main,
+    # on top of (initial + folder-add).
+    log = _log_oneline(repo, "main")
+    messages = {ln.split(" ", 1)[1] for ln in log}
+    for letter in ("A", "B", "C"):
+        assert f"feat: Create file {letter}" in messages
+    assert len(log) == 5  # initial + folder-add + 3 propagated
+
+    # All three worktrees were cleaned up.
+    for t in tasks:
+        assert not (folder / ".ola" / "worktrees" / t.task_id).exists()
 
 
 # --- run_folder failure paths ---
