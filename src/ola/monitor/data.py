@@ -102,6 +102,21 @@ class FolderStatus:
     tasks_completed: int = 0
     tasks_total: int = 0
     iterations: list[IterationStatus] = field(default_factory=list)
+    # Parallel-mode (``.ola/``) extras. ``concurrency_cap`` is ``None`` for
+    # legacy/sequential folders and an int (the live cap) when ``.ola/`` is
+    # present; ``task_rows`` is the per-task spine for the expanded view.
+    concurrency_cap: int | None = None
+    task_rows: list[TaskRow] = field(default_factory=list)
+
+    @property
+    def is_parallel(self) -> bool:
+        """True when this folder runs in parallel mode (``.ola/`` present)."""
+        return self.concurrency_cap is not None
+
+    @property
+    def running_count(self) -> int:
+        """Number of tasks currently in the ``running`` state."""
+        return sum(1 for r in self.task_rows if r.status == "running")
 
     @property
     def total_input_tokens(self) -> int:
@@ -255,6 +270,16 @@ def read_folder_status(folder: Path) -> FolderStatus:
     stats_file = folder / "STATS.jsonl"
     if stats_file.exists():
         status.iterations = parse_stats_jsonl(stats_file.read_text())
+
+    # Parallel-mode folders carry a ``.ola/`` sidecar. When present, fold in the
+    # live concurrency cap and the per-task spine for the expanded view.
+    if (folder / ".ola").is_dir():
+        # Imported lazily so the monitor doesn't pull in the scheduler's agent
+        # and worktree dependencies just to read a single integer.
+        from ola.scheduler import read_concurrency
+
+        status.concurrency_cap = read_concurrency(folder)
+        status.task_rows = read_task_rows(folder)
 
     return status
 

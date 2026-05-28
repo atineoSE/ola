@@ -11,6 +11,7 @@ import time as _time
 import tty
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from rich.live import Live
 from rich.table import Table
@@ -97,27 +98,57 @@ def _cache_style(pct: float) -> str:
     return "red"
 
 
+# Per-task status → row color for the parallel-mode expanded view.
+_TASK_STATUS_STYLES: dict[str, str] = {
+    "complete": "green",
+    "running": "cyan",
+    "failed": "red",
+    "pending": "dim",
+}
+
+# Max characters of a task's last-progress message shown in the expanded view
+# before truncating, so a chatty agent never wraps a sub-row onto a second line.
+_PROGRESS_MSG_MAX = 30
+
+
+def _task_status_style(status: str) -> str:
+    """Return a color style for a per-task row given its status."""
+    return _TASK_STATUS_STYLES.get(status, "")
+
+
+def _truncate_msg(text: str, limit: int = _PROGRESS_MSG_MAX) -> str:
+    """Truncate a progress message to ``limit`` chars, appending '…' if cut."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 def _build_display_rows(
     folders: list[FolderStatus], expanded: set[str]
 ) -> list[tuple[str, int, int]]:
-    """Flatten folders + expanded iterations into a single ordered list.
+    """Flatten folders + expanded sub-rows into a single ordered list.
 
-    Each entry is (kind, folder_idx, iter_idx). For folder rows iter_idx is -1.
-    The order matches the visual order of the rendered table, so a flat index
-    into this list directly addresses one row on screen.
+    Each entry is (kind, folder_idx, sub_idx). For folder rows sub_idx is -1.
+    Expanding a parallel-mode folder (``.ola/`` present) yields ``"task"``
+    sub-rows from its per-task spine; expanding a legacy folder yields ``"iter"``
+    sub-rows from its STATS.jsonl iterations. The order matches the visual order
+    of the rendered table, so a flat index into this list directly addresses one
+    row on screen.
     """
     rows: list[tuple[str, int, int]] = []
     for fi, fs in enumerate(folders):
         rows.append(("folder", fi, -1))
         if fs.name in expanded:
-            for ii in range(len(fs.iterations)):
-                rows.append(("iter", fi, ii))
+            if fs.is_parallel:
+                for ti in range(len(fs.task_rows)):
+                    rows.append(("task", fi, ti))
+            else:
+                for ii in range(len(fs.iterations)):
+                    rows.append(("iter", fi, ii))
     return rows
 
 
-def _folder_row_index(
-    rows: list[tuple[str, int, int]], folder_idx: int
-) -> int:
+def _folder_row_index(rows: list[tuple[str, int, int]], folder_idx: int) -> int:
     """Return the display row index of the given folder, or 0 if not found."""
     for ridx, row in enumerate(rows):
         if row[0] == "folder" and row[1] == folder_idx:
@@ -252,14 +283,22 @@ def build_table(
             if is_cursor:
                 style = f"reverse {style}" if style else "reverse"
 
-            # Show expand indicator when there are iterations
+            # Show expand indicator when there are sub-rows (legacy iterations
+            # or, in parallel mode, per-task rows).
+            sub_rows = fs.task_rows if fs.is_parallel else fs.iterations
             prefix = ""
-            if fs.iterations:
+            if sub_rows:
                 prefix = "\u25bc " if fs.name in expanded else "\u25b6 "
 
             # Active folder gets a marker
             active_marker = "\u25cf " if is_active else ""
             folder_cell = f"{active_marker}{prefix}{fs.name}"
+
+            # Parallel-mode folders get a "running N / cap M" badge.
+            if fs.is_parallel:
+                folder_cell += (
+                    f"  running {fs.running_count} / cap {fs.concurrency_cap}"
+                )
 
             if mode == ViewMode.TASK:
                 # Color tasks per-cell
@@ -303,6 +342,34 @@ def build_table(
                     _fmt_time(fs.total_wall_ms),
                     style=style,
                 )
+        elif kind == "task":  # parallel-mode per-task row
+            tr = fs.task_rows[ii]
+            base_style = _task_status_style(tr.status)
+            row_style = f"reverse {base_style}".strip() if is_cursor else base_style
+            text_cell = Text(f"  └ {tr.text}", style=base_style)
+            status_cell = Text(tr.status, style=base_style)
+            attempt_str = str(tr.attempt) if tr.attempt else ""
+            elapsed_cell = _fmt_time(int(tr.elapsed_s * 1000))
+            msg = _truncate_msg(tr.last_progress_message)
+
+            if mode == ViewMode.TASK:
+                # #, Folder, Agent, Model, Tasks, Turns, Time
+                table.add_row(
+                    "",
+                    text_cell,
+                    status_cell,
+                    msg,
+                    "",
+                    attempt_str,
+                    elapsed_cell,
+                    style=row_style or None,
+                )
+            else:  # METRICS — task rows carry no token metrics
+                cells: list[Any] = ["", text_cell] + [""] * 10
+                cells[2] = status_cell
+                cells[3] = msg
+                cells[-1] = elapsed_cell
+                table.add_row(*cells, style=row_style or None)
         else:  # iter row
             it = fs.iterations[ii]
             iter_style = "reverse dim" if is_cursor else "dim"
@@ -385,9 +452,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
     old_settings = termios.tcgetattr(fd)
 
     def viewport_height() -> int:
-        return max(
-            1, shutil.get_terminal_size((80, 24)).lines - _TABLE_CHROME_ROWS
-        )
+        return max(1, shutil.get_terminal_size((80, 24)).lines - _TABLE_CHROME_ROWS)
 
     def clamp_view() -> None:
         """Keep cursor in bounds and scroll offset so cursor stays visible."""
@@ -433,9 +498,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
                 if key == "q" or key == "\x03":  # q or Ctrl-C
                     break
                 elif key == "m":
-                    mode = (
-                        ViewMode.METRICS if mode == ViewMode.TASK else ViewMode.TASK
-                    )
+                    mode = ViewMode.METRICS if mode == ViewMode.TASK else ViewMode.TASK
                     needs_update = True
                 elif key == "\x1b[A":  # Up arrow
                     if cursor > 0:
@@ -451,9 +514,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
                     needs_update = True
                 elif key == "\x1b[6~":  # PgDn
                     rows = _build_display_rows(folders, expanded)
-                    cursor = min(
-                        max(0, len(rows) - 1), cursor + viewport_height()
-                    )
+                    cursor = min(max(0, len(rows) - 1), cursor + viewport_height())
                     needs_update = True
                 elif key == "g":  # Home
                     cursor = 0

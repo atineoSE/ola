@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 from rich.console import Console
 
-from ola.monitor.data import FolderStatus, IterationStatus
+from ola.monitor.data import FolderStatus, IterationStatus, TaskRow, read_folder_status
 from ola.monitor.ui import (
     ViewMode,
     _build_display_rows,
@@ -22,6 +23,8 @@ from ola.monitor.ui import (
     _fmt_ttft,
     _folder_row_index,
     _read_key,
+    _task_status_style,
+    _truncate_msg,
     build_table,
 )
 
@@ -533,9 +536,7 @@ class TestViewport:
         folders = self._big_folder(20)
         # Cursor at row 15 but window is rows 0..4 — build_table doesn't
         # adjust offset itself, that's run_live's job. Just verify it renders.
-        table = build_table(
-            folders, expanded={"big"}, cursor=15, offset=0, max_rows=5
-        )
+        table = build_table(folders, expanded={"big"}, cursor=15, offset=0, max_rows=5)
         assert table.row_count == 5
 
     def test_indicator_in_title(self):
@@ -654,3 +655,188 @@ class TestMetricsMode:
         table = build_table(folders)
         text = _render_table_text(table)
         assert "mode" in text
+
+
+class TestTaskStatusStyle:
+    def test_known_statuses(self):
+        assert _task_status_style("complete") == "green"
+        assert _task_status_style("running") == "cyan"
+        assert _task_status_style("failed") == "red"
+        assert _task_status_style("pending") == "dim"
+
+    def test_unknown_status(self):
+        assert _task_status_style("weird") == ""
+
+
+class TestTruncateMsg:
+    def test_short_unchanged(self):
+        assert _truncate_msg("hi") == "hi"
+
+    def test_long_truncated(self):
+        out = _truncate_msg("x" * 100)
+        assert len(out) == 30
+        assert out.endswith("…")
+
+
+def _parallel_folder(**overrides) -> FolderStatus:
+    """A parallel-mode FolderStatus with a small per-task spine."""
+    defaults = dict(
+        name="09-parallel",
+        tasks_completed=1,
+        tasks_total=3,
+        concurrency_cap=3,
+        task_rows=[
+            TaskRow(
+                task_id="t-aaa",
+                text="Refactor extractor",
+                status="complete",
+                attempt=1,
+                elapsed_s=42.0,
+                last_progress_message="ticked checkbox",
+            ),
+            TaskRow(
+                task_id="t-bbb",
+                text="Add HTTP client",
+                status="running",
+                attempt=0,
+                elapsed_s=12.0,
+                last_progress_message="running tests",
+            ),
+            TaskRow(
+                task_id="t-ccc",
+                text="Write docs",
+                status="pending",
+                attempt=0,
+            ),
+        ],
+    )
+    defaults.update(overrides)
+    return FolderStatus(**defaults)
+
+
+class TestParallelTaskView:
+    def test_collapsed_shows_arrow_and_badge(self):
+        """A parallel folder shows the expand arrow and a running/cap badge."""
+        folders = [_parallel_folder()]
+        table = build_table(folders, expanded=set())
+        # Folder row only — task rows hidden until expanded.
+        assert table.row_count == 1
+        text = _render_table_text(table)
+        assert "▶" in text
+        # One task running, cap 3.
+        assert "running 1 / cap 3" in text
+
+    def test_expanded_renders_task_rows(self):
+        """Expanding a parallel folder renders one sub-row per task."""
+        folders = [_parallel_folder()]
+        table = build_table(folders, expanded={"09-parallel"})
+        # 1 folder + 3 task rows.
+        assert table.row_count == 4
+        text = _render_table_text(table)
+        assert "▼" in text
+        assert "Refactor extractor" in text
+        assert "Add HTTP client" in text
+        assert "Write docs" in text
+        # Status + progress message + elapsed surface in the sub-rows.
+        assert "complete" in text
+        assert "running tests" in text
+        assert "42s" in text
+
+    def test_build_display_rows_uses_tasks_for_parallel(self):
+        """A parallel folder's expanded sub-rows are 'task', not 'iter'."""
+        folders = [_parallel_folder()]
+        rows = _build_display_rows(folders, {"09-parallel"})
+        assert rows == [
+            ("folder", 0, -1),
+            ("task", 0, 0),
+            ("task", 0, 1),
+            ("task", 0, 2),
+        ]
+
+    def test_task_row_status_colors(self):
+        """Each task sub-row is colored by its status."""
+        folders = [_parallel_folder()]
+        table = build_table(folders, expanded={"09-parallel"})
+        # rows[0] is the folder; 1..3 are tasks in spine order.
+        assert table.rows[1].style == "green"  # complete
+        assert table.rows[2].style == "cyan"  # running
+        assert table.rows[3].style == "dim"  # pending
+
+    def test_cursor_on_task_row(self):
+        """The cursor highlight follows the flat index onto task rows."""
+        folders = [_parallel_folder()]
+        table = build_table(folders, expanded={"09-parallel"}, cursor=2)
+        assert "reverse" in (table.rows[2].style or "")
+        assert "reverse" not in (table.rows[1].style or "")
+
+    def test_badge_with_zero_cap(self):
+        """A paused folder (cap 0) still renders the badge."""
+        folders = [_parallel_folder(concurrency_cap=0)]
+        text = _render_table_text(build_table(folders))
+        assert "running 1 / cap 0" in text
+
+    def test_non_parallel_folder_unchanged(self):
+        """A folder without .ola/ (concurrency_cap None) shows no badge."""
+        folders = [
+            FolderStatus(
+                name="01-legacy",
+                tasks_completed=1,
+                tasks_total=2,
+                iterations=[IterationStatus(phase="seed", wall_ms=1000)],
+            )
+        ]
+        text = _render_table_text(build_table(folders, expanded={"01-legacy"}))
+        assert "cap" not in text
+        # Legacy folders still expand to iteration rows.
+        assert "seed" in text
+
+    def test_metrics_mode_renders_task_rows(self):
+        """Task rows render in METRICS mode too (with empty metric cells)."""
+        folders = [_parallel_folder()]
+        table = build_table(folders, expanded={"09-parallel"}, mode=ViewMode.METRICS)
+        # 1 folder + 3 task rows; metric cells stay empty but rows still render.
+        assert table.row_count == 4
+        assert table.rows[1].style == "green"  # complete task colored by status
+
+
+def test_read_folder_status_populates_parallel_view(tmp_path):
+    """End-to-end: a folder with .ola/ yields a parallel FolderStatus snapshot."""
+    folder = tmp_path / "09-parallel"
+    folder.mkdir()
+    folder.joinpath("PLAN.md").write_text("- [x] One\n- [ ] Two\n")
+    ola = folder / ".ola"
+    ola.mkdir()
+    ola.joinpath("concurrency").write_text("2\n")
+    ola.joinpath("tasks.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_id": "t-aaa",
+                        "text": "One",
+                        "line_no": 1,
+                        "status": "complete",
+                        "attempts": 1,
+                    },
+                    {
+                        "task_id": "t-bbb",
+                        "text": "Two",
+                        "line_no": 2,
+                        "status": "running",
+                        "attempts": 0,
+                    },
+                ]
+            }
+        )
+    )
+
+    status = read_folder_status(folder)
+    assert status.is_parallel
+    assert status.concurrency_cap == 2
+    assert status.running_count == 1
+    assert [r.task_id for r in status.task_rows] == ["t-aaa", "t-bbb"]
+
+    text = _render_table_text(build_table([status], expanded={"09-parallel"}))
+    assert "running 1 / cap 2" in text
+    assert "One" in text
+    assert "Two" in text
