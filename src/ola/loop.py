@@ -112,6 +112,20 @@ def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
     logger.info("[%s] %s", label, " · ".join(parts))
 
 
+def per_task_state_dir(folder: Path, agent: Agent, task_id: str) -> str | None:
+    """Build the per-task agent state directory for parallel mode.
+
+    Returns ``<folder>/<agent.state_dir_name>/<task_id>/`` as a string,
+    creating parent directories as needed. Returns ``None`` for agents
+    whose ``state_dir_name`` is empty (no state directory needed).
+    """
+    if not agent.state_dir_name:
+        return None
+    path = folder / agent.state_dir_name / task_id
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def _last_loop_number(folder: Path) -> int:
     """Return the highest loop-N number from STATS.jsonl, or 0 if none."""
     stats_file = folder / "STATS.jsonl"

@@ -996,3 +996,59 @@ class TestSelfHostedEndpoint:
         monkeypatch.setattr("ola.agents.claude_code.subprocess.Popen", fake_popen)
         ClaudeCodeAgent()._run_once("hi", str(tmp_path), state_dir=str(tmp_path))
         assert "host.docker.internal" in captured["env"]["ANTHROPIC_BASE_URL"]
+
+
+# ---------------------------------------------------------------------------
+# Per-task state dir (parallel mode) bootstrap-copy tests
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_copy_against_per_task_state_dir(monkeypatch, tmp_path):
+    """CC's bootstrap-file copy must work against a per-task state dir.
+
+    Parallel mode passes ``<folder>/.claude/<task_id>/`` (constructed by
+    ``per_task_state_dir``) as ``state_dir``; the OAuth bootstrap copy
+    must populate that nested directory just like the folder-level one.
+    """
+    from ola.agents.base import Agent
+    from ola.loop import per_task_state_dir
+
+    # Clear LLM_* vars to keep CC on the OAuth (non-self-hosted) path
+    for k in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_SKIP_TLS_VERIFY"):
+        monkeypatch.delenv(k, raising=False)
+
+    # Fake home with all three bootstrap files
+    fake_home = tmp_path / "fake_home"
+    fake_claude = fake_home / ".claude"
+    fake_claude.mkdir(parents=True)
+    (fake_claude / ".credentials.json").write_text('{"token": "x"}')
+    (fake_claude / ".claude.json").write_text("{}")
+    (fake_claude / "settings.json").write_text("{}")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    captured: dict = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _make_proc([_result()])
+
+    monkeypatch.setattr("ola.agents.claude_code.subprocess.Popen", fake_popen)
+
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    agent = ClaudeCodeAgent()
+    state_dir = per_task_state_dir(folder, agent, "t-abc1234")
+    assert state_dir is not None
+    assert isinstance(agent, Agent)  # sanity: helper is agent-agnostic via base attr
+
+    agent._run_once("hi", str(tmp_path), state_dir=state_dir)
+
+    sd = Path(state_dir)
+    # Path is the per-task nested location, not the folder-level dir
+    assert sd == folder / ".claude" / "t-abc1234"
+    # All three bootstrap files were copied into the per-task dir
+    assert (sd / ".credentials.json").read_text() == '{"token": "x"}'
+    assert (sd / ".claude.json").exists()
+    assert (sd / "settings.json").exists()
+    # And the subprocess saw CLAUDE_CONFIG_DIR pointing at the per-task dir
+    assert captured["env"]["CLAUDE_CONFIG_DIR"] == str(sd)

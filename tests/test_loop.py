@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from ola.loop import (
     _git_commit,
     _last_loop_number,
     _process_folder,
+    per_task_state_dir,
 )
 from ola.monitor.data import parse_stats_jsonl
 from ola.stats import IterationStats
@@ -729,3 +731,72 @@ def test_git_commit_no_lock_no_warning(tmp_path, caplog):
         _git_commit(tmp_path, "test message")
 
     assert not any("stale" in rec.message.lower() for rec in caplog.records)
+
+
+# --- per_task_state_dir tests ---
+
+
+class _StatelessAgent(Agent):
+    """Agent with no state directory (state_dir_name == '')."""
+
+    mnemonic = "ss"
+    state_dir_name = ""
+
+    def run(self, prompt, workdir, state_dir=None, labels=None):
+        raise NotImplementedError
+
+    def version(self):
+        return ""
+
+
+def test_per_task_state_dir_returns_none_when_no_state_dir(tmp_path):
+    """Agents with state_dir_name == '' get None — no directory is created."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    result = per_task_state_dir(folder, _StatelessAgent(), "t-abc1234")
+    assert result is None
+    # Nothing was created under the folder
+    assert list(folder.iterdir()) == []
+
+
+def test_per_task_state_dir_creates_isolated_dir(tmp_path):
+    """Agents with a state_dir_name get <folder>/<name>/<task_id>/, created on disk."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    agent = ClaudeCodeAgent()  # state_dir_name == ".claude"
+
+    result = per_task_state_dir(folder, agent, "t-abc1234")
+
+    assert result == str(folder / ".claude" / "t-abc1234")
+    assert (folder / ".claude" / "t-abc1234").is_dir()
+
+
+def test_per_task_state_dir_distinct_per_task_id(tmp_path):
+    """Two task ids under the same folder get independent directories."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    agent = ClaudeCodeAgent()
+
+    p1 = per_task_state_dir(folder, agent, "t-aaaa")
+    p2 = per_task_state_dir(folder, agent, "t-bbbb")
+
+    assert p1 != p2
+    assert Path(p1).is_dir()
+    assert Path(p2).is_dir()
+    # Both live under the shared .claude/ directory
+    assert Path(p1).parent == Path(p2).parent == folder / ".claude"
+
+
+def test_per_task_state_dir_idempotent(tmp_path):
+    """Calling twice with the same task_id is safe and returns the same path."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    agent = ClaudeCodeAgent()
+
+    p1 = per_task_state_dir(folder, agent, "t-abc1234")
+    # Write a marker into the dir so we can confirm it isn't wiped on second call
+    (Path(p1) / "marker").write_text("keep")
+    p2 = per_task_state_dir(folder, agent, "t-abc1234")
+
+    assert p1 == p2
+    assert (Path(p1) / "marker").read_text() == "keep"
