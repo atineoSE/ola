@@ -3,12 +3,15 @@
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from ola.plan import (
     Task,
     count_tasks,
     enumerate_tasks,
     has_outstanding_tasks,
     parse_task_counts,
+    set_task_checked,
 )
 
 
@@ -195,7 +198,151 @@ class TestEnumerateTasks:
     def test_tasks_are_frozen(self, tmp_path):
         (tmp_path / "PLAN.md").write_text("- [ ] One\n")
         task = enumerate_tasks(tmp_path)[0]
-        import pytest
 
         with pytest.raises(Exception):
             task.text = "mutated"  # type: ignore[misc]
+
+
+# --- golden fixtures for set_task_checked ----------------------------------
+
+# Mixed plan: bullets, indented child, fenced block, duplicate text, CRLF
+# tolerance, and a final line with no trailing newline.
+_GOLDEN_BEFORE = (
+    "# Plan\n"
+    "\n"
+    "- [ ] First task\n"
+    "- [x] Done already\n"
+    "  - [ ] Indented child\n"
+    "\n"
+    "```bash\n"
+    "- [ ] Not a real task\n"
+    "```\n"
+    "\n"
+    "- [ ] Dup text\n"
+    "- [ ] Dup text\n"
+    "* [ ] Asterisk last"  # intentionally no trailing newline
+)
+
+_GOLDEN_AFTER_TICK_FIRST = (
+    "# Plan\n"
+    "\n"
+    "- [x] First task\n"
+    "- [x] Done already\n"
+    "  - [ ] Indented child\n"
+    "\n"
+    "```bash\n"
+    "- [ ] Not a real task\n"
+    "```\n"
+    "\n"
+    "- [ ] Dup text\n"
+    "- [ ] Dup text\n"
+    "* [ ] Asterisk last"
+)
+
+_GOLDEN_AFTER_UNTICK_SECOND = (
+    "# Plan\n"
+    "\n"
+    "- [ ] First task\n"
+    "- [ ] Done already\n"
+    "  - [ ] Indented child\n"
+    "\n"
+    "```bash\n"
+    "- [ ] Not a real task\n"
+    "```\n"
+    "\n"
+    "- [ ] Dup text\n"
+    "- [ ] Dup text\n"
+    "* [ ] Asterisk last"
+)
+
+_GOLDEN_AFTER_TICK_SECOND_DUP = (
+    "# Plan\n"
+    "\n"
+    "- [ ] First task\n"
+    "- [x] Done already\n"
+    "  - [ ] Indented child\n"
+    "\n"
+    "```bash\n"
+    "- [ ] Not a real task\n"
+    "```\n"
+    "\n"
+    "- [ ] Dup text\n"
+    "- [x] Dup text\n"
+    "* [ ] Asterisk last"
+)
+
+
+class TestSetTaskChecked:
+    def _id(self, folder: Path, text: str) -> str:
+        for t in enumerate_tasks(folder):
+            if t.text == text:
+                return t.task_id
+        raise AssertionError(f"task with text {text!r} not present")
+
+    def test_tick_unchecked_matches_golden(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        set_task_checked(tmp_path, self._id(tmp_path, "First task"), True)
+        assert plan.read_text() == _GOLDEN_AFTER_TICK_FIRST
+
+    def test_untick_checked_matches_golden(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        set_task_checked(tmp_path, self._id(tmp_path, "Done already"), False)
+        assert plan.read_text() == _GOLDEN_AFTER_UNTICK_SECOND
+
+    def test_collision_suffix_targets_second_occurrence(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        tasks = enumerate_tasks(tmp_path)
+        dup_ids = [t.task_id for t in tasks if t.text == "Dup text"]
+        assert len(dup_ids) == 2 and dup_ids[1].endswith("-2")
+        set_task_checked(tmp_path, dup_ids[1], True)
+        assert plan.read_text() == _GOLDEN_AFTER_TICK_SECOND_DUP
+
+    def test_idempotent_setting_to_same_state(self, tmp_path):
+        """Setting an already-checked task to checked is a safe no-op rewrite."""
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        set_task_checked(tmp_path, self._id(tmp_path, "Done already"), True)
+        assert plan.read_text() == _GOLDEN_BEFORE
+
+    def test_unknown_task_id_raises(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        original = plan.read_text()
+        with pytest.raises(KeyError):
+            set_task_checked(tmp_path, "t-deadbeef", True)
+        assert plan.read_text() == original
+
+    def test_fenced_checkbox_not_targetable(self, tmp_path):
+        """A checkbox living inside a code fence is not a Task and has no id."""
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        ids = {t.task_id for t in enumerate_tasks(tmp_path)}
+        fake = "t-" + hashlib.sha1(b"Not a real task").hexdigest()[:8]
+        assert fake not in ids
+        with pytest.raises(KeyError):
+            set_task_checked(tmp_path, fake, True)
+
+    def test_preserves_indented_child_bullet(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        set_task_checked(tmp_path, self._id(tmp_path, "Indented child"), True)
+        out = plan.read_text()
+        assert "  - [x] Indented child\n" in out
+
+    def test_preserves_no_trailing_newline_on_last_line(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        set_task_checked(tmp_path, self._id(tmp_path, "Asterisk last"), True)
+        out = plan.read_text()
+        assert out.endswith("* [x] Asterisk last")
+        assert not out.endswith("\n")
+
+    def test_atomic_write_no_tmp_left_behind(self, tmp_path):
+        plan = tmp_path / "PLAN.md"
+        plan.write_text(_GOLDEN_BEFORE)
+        set_task_checked(tmp_path, self._id(tmp_path, "First task"), True)
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name != "PLAN.md"]
+        assert leftovers == []

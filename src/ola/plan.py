@@ -124,3 +124,53 @@ def enumerate_tasks(folder: Path) -> list[Task]:
     if not plan_file.exists():
         return []
     return _enumerate_tasks_from_text(plan_file.read_text())
+
+
+_CHECKBOX_REWRITE_RE = re.compile(r"^([ \t]*[-*+] )\[( |x|X)\] (.*)$")
+
+
+def _rewrite_checkbox(text: str, task_id: str, checked: bool) -> str:
+    """Return *text* with the checkbox matching *task_id* set to *checked*.
+
+    Raises KeyError if the id isn't found. Preserves indentation, bullet
+    marker, line endings, and the absence of a trailing newline.
+    """
+    new_marker = "x" if checked else " "
+    lines = text.splitlines(keepends=True)
+    seen_ids: dict[str, int] = {}
+    in_fence = False
+    for idx, line in enumerate(lines):
+        stripped = line.rstrip("\n").rstrip("\r")
+        if _FENCE_RE.match(stripped):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _CHECKBOX_REWRITE_RE.match(stripped)
+        if m is None:
+            continue
+        task_text = m.group(3).rstrip()
+        base_id = "t-" + hashlib.sha1(task_text.encode("utf-8")).hexdigest()[:8]
+        count = seen_ids.get(base_id, 0) + 1
+        seen_ids[base_id] = count
+        this_id = base_id if count == 1 else f"{base_id}-{count}"
+        if this_id != task_id:
+            continue
+        rewritten = f"{m.group(1)}[{new_marker}] {m.group(3)}"
+        lines[idx] = rewritten + line[len(stripped) :]
+        return "".join(lines)
+    raise KeyError(f"task_id not found in PLAN.md: {task_id}")
+
+
+def set_task_checked(folder: Path, task_id: str, checked: bool) -> None:
+    """Tick or untick the checkbox for *task_id* in *folder*'s PLAN.md.
+
+    Reads PLAN.md, rewrites the single matching line, and writes back
+    atomically (tmp file + rename). Raises KeyError if the id isn't present.
+    """
+    plan_file = folder / "PLAN.md"
+    text = plan_file.read_text()
+    new_text = _rewrite_checkbox(text, task_id, checked)
+    tmp = plan_file.with_name(plan_file.name + ".tmp")
+    tmp.write_text(new_text)
+    tmp.replace(plan_file)
