@@ -360,6 +360,213 @@ class TestStreamParser:
 
 
 # ---------------------------------------------------------------------------
+# on_progress callback tests
+# ---------------------------------------------------------------------------
+
+
+class TestOnProgress:
+    def test_assistant_text_invokes_on_progress(self):
+        """assistant text blocks invoke on_progress with the text."""
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "Hello world"}]},
+                }
+            ),
+            _result(),
+        ]
+        proc = _make_proc(lines)
+        seen: list[str] = []
+        agent = ClaudeCodeAgent()
+        agent._stream(proc, "test prompt", on_progress=seen.append)
+        assert seen == ["Hello world"]
+
+    def test_tool_use_invokes_on_progress_with_tool_marker(self):
+        """tool_use blocks invoke on_progress with '[tool] <name>'."""
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "Read", "id": "x"}]
+                    },
+                }
+            ),
+            _result(),
+        ]
+        proc = _make_proc(lines)
+        seen: list[str] = []
+        agent = ClaudeCodeAgent()
+        agent._stream(proc, "test prompt", on_progress=seen.append)
+        assert seen == ["[tool] Read"]
+
+    def test_on_progress_rate_limited_to_one_per_second(self):
+        """Multiple updates within 1s collapse to a single on_progress call."""
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "A"}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "B"}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "C"}]},
+                }
+            ),
+            _result(),
+        ]
+
+        # Freeze monotonic so all three events fall in the same 1s window.
+        now = [1000.0]
+
+        def fake_monotonic():
+            return now[0]
+
+        proc = _make_proc(lines)
+        seen: list[str] = []
+        with patch("ola.agents.claude_code.time.monotonic", side_effect=fake_monotonic):
+            agent = ClaudeCodeAgent()
+            agent._stream(proc, "test prompt", on_progress=seen.append)
+        # Only the first text fires; the next two are dropped by the rate limit.
+        assert seen == ["A"]
+
+    def test_on_progress_fires_again_after_one_second(self):
+        """After 1s elapses, on_progress fires again."""
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "first"}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "second"}]},
+                }
+            ),
+            _result(),
+        ]
+
+        # Two events: first at t=1000, second at t=1002 (>1s later).
+        times = iter([1000.0, 1002.0])
+
+        def fake_monotonic():
+            try:
+                return next(times)
+            except StopIteration:
+                return 1002.0
+
+        proc = _make_proc(lines)
+        seen: list[str] = []
+        with patch("ola.agents.claude_code.time.monotonic", side_effect=fake_monotonic):
+            agent = ClaudeCodeAgent()
+            agent._stream(proc, "test prompt", on_progress=seen.append)
+        assert seen == ["first", "second"]
+
+    def test_on_progress_none_is_safe(self):
+        """on_progress=None must not crash _stream."""
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "hi"},
+                            {"type": "tool_use", "name": "Bash"},
+                        ]
+                    },
+                }
+            ),
+            _result(),
+        ]
+        proc = _make_proc(lines)
+        agent = ClaudeCodeAgent()
+        resp = agent._stream(proc, "test prompt", on_progress=None)
+        assert resp.success
+
+    def test_on_progress_callback_exception_is_swallowed(self, caplog):
+        """A raising on_progress callback must not break the stream."""
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "boom"}]},
+                }
+            ),
+            _result(),
+        ]
+
+        def bad_progress(_msg: str) -> None:
+            raise RuntimeError("nope")
+
+        proc = _make_proc(lines)
+        agent = ClaudeCodeAgent()
+        with caplog.at_level(logging.ERROR, logger="ola.agents.claude_code"):
+            resp = agent._stream(proc, "test prompt", on_progress=bad_progress)
+        assert resp.success
+        assert any("on_progress" in r.message for r in caplog.records)
+
+    def test_run_threads_on_progress_through_to_stream(self, monkeypatch, tmp_path):
+        """run() → _run_once → _stream propagates on_progress without losing it."""
+        for k in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
+            monkeypatch.delenv(k, raising=False)
+
+        captured: dict = {}
+
+        def fake_popen(cmd, **kwargs):
+            return _make_proc(
+                [
+                    json.dumps({"type": "system"}),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {
+                                "content": [{"type": "tool_use", "name": "Grep"}]
+                            },
+                        }
+                    ),
+                    _result(),
+                ]
+            )
+
+        monkeypatch.setattr("ola.agents.claude_code.subprocess.Popen", fake_popen)
+
+        # Avoid touching ~/.claude during the bootstrap-copy step
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        seen: list[str] = []
+        agent = ClaudeCodeAgent()
+        resp = agent.run(
+            prompt="hi",
+            workdir=str(tmp_path),
+            state_dir=str(tmp_path / "state"),
+            on_progress=seen.append,
+        )
+        assert resp.success
+        assert seen == ["[tool] Grep"]
+        # Stash for any future assertions; suppresses unused-var lint
+        captured["ok"] = True
+
+
+# ---------------------------------------------------------------------------
 # Rate-limit event tests
 # ---------------------------------------------------------------------------
 

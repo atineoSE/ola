@@ -118,7 +118,7 @@ class ClaudeCodeAgent(Agent):
         on_progress: Callable[[str], None] | None = None,
     ) -> AgentResponse:
         try:
-            return self._run_once(prompt, workdir, state_dir)
+            return self._run_once(prompt, workdir, state_dir, on_progress=on_progress)
         except AuthenticationError:
             return AgentResponse(
                 output="Authentication failed. Run `ola-sandbox <name>` to refresh credentials (copies ~/.claude/.credentials.json into sandbox).",
@@ -126,7 +126,11 @@ class ClaudeCodeAgent(Agent):
             )
 
     def _run_once(
-        self, prompt: str, workdir: str, state_dir: str | None = None
+        self,
+        prompt: str,
+        workdir: str,
+        state_dir: str | None = None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> AgentResponse:
         cmd = [
             "claude",
@@ -177,7 +181,9 @@ class ClaudeCodeAgent(Agent):
                 cwd=workdir,
                 env=env,
             )
-            return self._stream(proc, prompt, self_hosted=self_hosted)
+            return self._stream(
+                proc, prompt, self_hosted=self_hosted, on_progress=on_progress
+            )
         except FileNotFoundError:
             logger.error("'claude' CLI not found")
             return AgentResponse(
@@ -190,6 +196,7 @@ class ClaudeCodeAgent(Agent):
         proc: subprocess.Popen,
         prompt: str,
         self_hosted: bool = False,
+        on_progress: Callable[[str], None] | None = None,
     ) -> AgentResponse:
         """Read NDJSON stream, show rolling status, return final result.
 
@@ -207,6 +214,21 @@ class ClaudeCodeAgent(Agent):
         proc.stdin.close()
 
         status = _StatusDisplay()
+        last_progress_ts: float = 0.0  # monotonic; throttle on_progress to 1/s
+
+        def _emit_progress(text: str) -> None:
+            nonlocal last_progress_ts
+            if on_progress is None:
+                return
+            now = time.monotonic()
+            if now - last_progress_ts < 1.0:
+                return
+            last_progress_ts = now
+            try:
+                on_progress(text)
+            except Exception:
+                logger.exception("on_progress callback raised; continuing")
+
         models_seen: set[str] = set()
         result_data: dict | None = None
         max_input_tokens: int = 0
@@ -311,10 +333,14 @@ class ClaudeCodeAgent(Agent):
             elif msg_type == "assistant" and "message" in event:
                 for block in event["message"].get("content", []):
                     if block.get("type") == "text":
-                        status.update(block["text"])
+                        text = block["text"]
+                        status.update(text)
+                        _emit_progress(text)
                     elif block.get("type") == "tool_use":
                         name = block.get("name", "?")
-                        status.update(f"[tool] {name}")
+                        line = f"[tool] {name}"
+                        status.update(line)
+                        _emit_progress(line)
 
             # --- Rate-limit events from CC CLI ---
 
