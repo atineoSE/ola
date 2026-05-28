@@ -1,13 +1,18 @@
 """Tests for openhands agent helpers and sandbox utilities."""
 
 import inspect
+import logging
 import os
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ola.agents.openhands import OpenHandsAgent, _TTFTTracker
+from ola.agents.openhands import (
+    OpenHandsAgent,
+    _TTFTTracker,
+    _make_event_progress_callback,
+)
 from ola.sandbox import is_sandbox
 from ola.stats import IterationStats
 
@@ -32,6 +37,100 @@ class TestRunSignature:
             )
         assert resp.success is False
         assert "LLM_API_KEY" in resp.output
+
+
+# ---------------------------------------------------------------------------
+# on_progress event callback tests
+# ---------------------------------------------------------------------------
+
+
+def _fake_message_event(text: str, source: str = "agent"):
+    """Return a MagicMock that satisfies isinstance(.., MessageEvent)."""
+    from openhands.sdk.event import MessageEvent
+    from openhands.sdk.llm import TextContent
+
+    ev = MagicMock(spec=MessageEvent)
+    ev.source = source
+    ev.llm_message = SimpleNamespace(content=[TextContent(text=text)])
+    return ev
+
+
+def _fake_action_event(tool_name: str, summary: str | None = None):
+    """Return a MagicMock that satisfies isinstance(.., ActionEvent)."""
+    from openhands.sdk.event import ActionEvent
+
+    ev = MagicMock(spec=ActionEvent)
+    ev.tool_name = tool_name
+    ev.summary = summary
+    return ev
+
+
+class TestEventProgressCallback:
+    def test_agent_message_invokes_on_progress_with_text(self):
+        seen: list[str] = []
+        cb = _make_event_progress_callback(seen.append)
+        # last_progress_ts initialises at 0.0 and now=1000.0 ⇒ diff > 1s, emit.
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            cb(_fake_message_event("Hello world"))
+        assert seen == ["Hello world"]
+
+    def test_user_message_is_ignored(self):
+        seen: list[str] = []
+        cb = _make_event_progress_callback(seen.append)
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            cb(_fake_message_event("user text", source="user"))
+        assert seen == []
+
+    def test_action_event_invokes_on_progress_with_tool_marker(self):
+        seen: list[str] = []
+        cb = _make_event_progress_callback(seen.append)
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            cb(_fake_action_event(tool_name="terminal", summary="run ls"))
+        assert seen == ["[terminal] run ls"]
+
+    def test_action_event_no_summary_still_shows_tool(self):
+        seen: list[str] = []
+        cb = _make_event_progress_callback(seen.append)
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            cb(_fake_action_event(tool_name="file_editor", summary=None))
+        assert seen == ["[file_editor]"]
+
+    def test_unknown_event_is_ignored(self):
+        seen: list[str] = []
+        cb = _make_event_progress_callback(seen.append)
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            cb(SimpleNamespace(source="agent"))  # not a MessageEvent/ActionEvent
+        assert seen == []
+
+    def test_rate_limited_to_one_per_second(self):
+        """Multiple events within 1s collapse to a single on_progress call."""
+        seen: list[str] = []
+        cb = _make_event_progress_callback(seen.append)
+        # All three fire at t=1000.0 → only the first should pass.
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            cb(_fake_message_event("A"))
+            cb(_fake_message_event("B"))
+            cb(_fake_message_event("C"))
+        assert seen == ["A"]
+
+    def test_fires_again_after_one_second(self):
+        seen: list[str] = []
+        cb = _make_event_progress_callback(seen.append)
+        # First at t=1000, second at t=1002 (>1s later).
+        with patch("ola.agents.openhands.time.monotonic", side_effect=[1000.0, 1002.0]):
+            cb(_fake_message_event("first"))
+            cb(_fake_message_event("second"))
+        assert seen == ["first", "second"]
+
+    def test_callback_exception_is_swallowed(self, caplog):
+        def bad(_msg: str) -> None:
+            raise RuntimeError("nope")
+
+        cb = _make_event_progress_callback(bad)
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            with caplog.at_level(logging.ERROR, logger="ola.agents.openhands"):
+                cb(_fake_message_event("boom"))
+        assert any("on_progress" in r.message for r in caplog.records)
 
 
 class TestIsSandbox:

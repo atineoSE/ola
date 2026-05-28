@@ -62,6 +62,54 @@ def _init_laminar():
 _POLICY_FILE = Path(__file__).resolve().parent / "NETWORK-POLICY.md"
 
 
+def _make_event_progress_callback(
+    on_progress: Callable[[str], None],
+) -> Callable[[object], None]:
+    """Build a Conversation `callbacks` entry that funnels OpenHands events
+    into a string-only ``on_progress`` callback, rate-limited to one call per
+    second per worker.
+
+    Recognised events:
+      * ``MessageEvent`` with ``source == "agent"`` — text from the agent.
+      * ``ActionEvent`` — ``[<tool_name>] <summary>`` for tool invocations.
+    All other event types are ignored.
+    """
+    from openhands.sdk.event import ActionEvent, MessageEvent
+    from openhands.sdk.llm import content_to_str
+
+    last_progress_ts: list[float] = [0.0]
+
+    def callback(event: object) -> None:
+        text: str | None = None
+        if (
+            isinstance(event, MessageEvent)
+            and getattr(event, "source", None) == "agent"
+        ):
+            try:
+                parts = content_to_str(event.llm_message.content)
+            except Exception:
+                parts = []
+            joined = " ".join(p for p in parts if p).strip()
+            if joined:
+                text = joined
+        elif isinstance(event, ActionEvent):
+            tool = getattr(event, "tool_name", "?") or "?"
+            summary = (getattr(event, "summary", None) or "").strip()
+            text = f"[{tool}] {summary}".strip()
+        if not text:
+            return
+        now = time.monotonic()
+        if now - last_progress_ts[0] < 1.0:
+            return
+        last_progress_ts[0] = now
+        try:
+            on_progress(text)
+        except Exception:
+            logger.exception("on_progress callback raised; continuing")
+
+    return callback
+
+
 class _TTFTTracker:
     """Track first/last chunk timestamps per response for TTFT calculation.
 
@@ -221,6 +269,12 @@ class OpenHandsAgent(Agent):
         tools = get_default_tools(enable_browser=False)
         persistence_dir = str(base / "trajectories")
 
+        progress_callbacks = (
+            [_make_event_progress_callback(on_progress)]
+            if on_progress is not None
+            else []
+        )
+
         # Try streaming first; fall back to non-streaming if the
         # provider doesn't support it (the SDK raises AssertionError
         # when litellm returns a non-streaming response for stream=True).
@@ -240,6 +294,7 @@ class OpenHandsAgent(Agent):
                 workspace=workdir,
                 persistence_dir=persistence_dir,
                 token_callbacks=[tracker.on_token] if tracker else [],
+                callbacks=progress_callbacks,
             )
 
             conversation.send_message(prompt)

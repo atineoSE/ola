@@ -1,6 +1,7 @@
 """Tests for the CodexAgent."""
 
 import json
+import logging
 import os
 from unittest.mock import MagicMock, patch
 
@@ -423,6 +424,117 @@ class TestConfigGeneration:
 # ---------------------------------------------------------------------------
 # Config builder unit tests
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# on_progress callback tests
+# ---------------------------------------------------------------------------
+
+
+class TestOnProgress:
+    def test_agent_message_invokes_on_progress(self):
+        """An agent_message item fires on_progress with its text."""
+        lines = [
+            _thread_started(),
+            _turn_started(),
+            _item_agent_message("Hello there"),
+            _turn_completed(),
+        ]
+        proc = _make_proc(lines)
+        seen: list[str] = []
+        CodexAgent(model="m")._stream(proc, on_progress=seen.append)
+        assert "Hello there" in seen
+
+    def test_command_execution_invokes_on_progress_with_cmd_marker(self):
+        """A command_execution item fires on_progress with '[cmd] <command>'."""
+        lines = [
+            _thread_started(),
+            _turn_started(),
+            _item_command_started("ls -la", item_id="c1"),
+            _turn_completed(),
+        ]
+        proc = _make_proc(lines)
+        seen: list[str] = []
+        CodexAgent(model="m")._stream(proc, on_progress=seen.append)
+        assert seen == ["[cmd] ls -la"]
+
+    def test_on_progress_rate_limited_to_one_per_second(self):
+        """Multiple progress events within 1s collapse to a single call."""
+        lines = [
+            _thread_started(),
+            _turn_started(),
+            _item_agent_message("A", item_id="m1"),
+            _item_agent_message("B", item_id="m2"),
+            _item_agent_message("C", item_id="m3"),
+            _turn_completed(),
+        ]
+        now = [1000.0]
+
+        def fake_monotonic():
+            return now[0]
+
+        proc = _make_proc(lines)
+        seen: list[str] = []
+        with patch("ola.agents.codex.time.monotonic", side_effect=fake_monotonic):
+            CodexAgent(model="m")._stream(proc, on_progress=seen.append)
+        # Only the first event fires; rate limit suppresses the rest.
+        assert seen == ["A"]
+
+    def test_on_progress_fires_again_after_one_second(self):
+        """After 1s elapses, on_progress fires again."""
+        lines = [
+            _thread_started(),
+            _turn_started(),
+            _item_agent_message("first", item_id="m1"),
+            _item_agent_message("second", item_id="m2"),
+            _turn_completed(),
+        ]
+        # Two events: first at t=1000, second at t=1002 (>1s later).
+        times = iter([1000.0, 1002.0])
+
+        def fake_monotonic():
+            try:
+                return next(times)
+            except StopIteration:
+                return 1002.0
+
+        proc = _make_proc(lines)
+        seen: list[str] = []
+        with patch("ola.agents.codex.time.monotonic", side_effect=fake_monotonic):
+            CodexAgent(model="m")._stream(proc, on_progress=seen.append)
+        assert seen == ["first", "second"]
+
+    def test_on_progress_none_is_safe(self):
+        """on_progress=None doesn't crash _stream."""
+        lines = [
+            _thread_started(),
+            _turn_started(),
+            _item_command_started("ls"),
+            _item_command_completed("ls"),
+            _item_agent_message("done"),
+            _turn_completed(),
+        ]
+        proc = _make_proc(lines)
+        resp = CodexAgent(model="m")._stream(proc, on_progress=None)
+        assert resp.success
+
+    def test_on_progress_callback_exception_is_swallowed(self, caplog):
+        """A raising on_progress callback must not break the stream."""
+        lines = [
+            _thread_started(),
+            _turn_started(),
+            _item_agent_message("boom"),
+            _turn_completed(),
+        ]
+
+        def bad(_msg: str) -> None:
+            raise RuntimeError("nope")
+
+        proc = _make_proc(lines)
+        with caplog.at_level(logging.ERROR, logger="ola.agents.codex"):
+            resp = CodexAgent(model="m")._stream(proc, on_progress=bad)
+        assert resp.success
+        assert any("on_progress" in r.message for r in caplog.records)
 
 
 class TestBuildConfigToml:

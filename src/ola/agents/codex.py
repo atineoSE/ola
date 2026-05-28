@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
@@ -161,10 +162,32 @@ class CodexAgent(Agent):
                 success=False,
             )
 
-        return self._stream(proc)
+        return self._stream(proc, on_progress=on_progress)
 
-    def _stream(self, proc: subprocess.Popen) -> AgentResponse:
+    def _stream(
+        self,
+        proc: subprocess.Popen,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> AgentResponse:
         status = _StatusDisplay()
+        last_progress_ts: float = 0.0  # monotonic; throttle on_progress to 1/s
+
+        def _emit_progress(text: str) -> None:
+            nonlocal last_progress_ts
+            if on_progress is None:
+                return
+            text = text.replace("\n", " ").strip()
+            if not text:
+                return
+            now = time.monotonic()
+            if now - last_progress_ts < 1.0:
+                return
+            last_progress_ts = now
+            try:
+                on_progress(text)
+            except Exception:
+                logger.exception("on_progress callback raised; continuing")
+
         models_seen: set[str] = set()
         # The codex v0.130.0 event stream doesn't surface the effective model;
         # fall back to whatever we configured.
@@ -198,11 +221,13 @@ class CodexAgent(Agent):
                 pass
 
             elif evt_type == "item.started":
-                self._render_item_status(event.get("item") or {}, status)
+                self._render_item_status(
+                    event.get("item") or {}, status, _emit_progress
+                )
 
             elif evt_type == "item.completed":
                 item = event.get("item") or {}
-                self._render_item_status(item, status)
+                self._render_item_status(item, status, _emit_progress)
                 if item.get("type") == "agent_message":
                     txt = item.get("text")
                     if txt:
@@ -268,17 +293,28 @@ class CodexAgent(Agent):
             stats=stats,
         )
 
-    def _render_item_status(self, item: dict, status: _StatusDisplay) -> None:
+    def _render_item_status(
+        self,
+        item: dict,
+        status: _StatusDisplay,
+        emit_progress: Callable[[str], None] | None = None,
+    ) -> None:
         """Push a status line for an assistant message or tool call."""
         if not isinstance(item, dict):
             return
         item_type = item.get("type", "")
+        line: str | None = None
         if item_type == "agent_message":
             text = item.get("text") or ""
             if text:
-                status.update(text)
+                line = text
         elif item_type == "command_execution":
             cmd = item.get("command") or "?"
-            status.update(f"[cmd] {cmd}")
+            line = f"[cmd] {cmd}"
         elif item_type:
-            status.update(f"[{item_type}]")
+            line = f"[{item_type}]"
+        if line is None:
+            return
+        status.update(line)
+        if emit_progress is not None:
+            emit_progress(line)
