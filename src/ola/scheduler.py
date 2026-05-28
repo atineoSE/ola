@@ -36,13 +36,10 @@ from ola.worktree import cleanup, commit, create, merge_back
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TASK_PROMPT = (
-    "You have one task to complete. The task is: {{task_text}} "
-    "(task id `{{task_id}}`). Do only this task and its automated tests, "
-    "then verify. When finished, **tick this task's checkbox in PLAN.md** "
-    "— your tick is the completion signal the harness uses to confirm "
-    "success. Do not modify any other task's checkbox in PLAN.md."
+_DEFAULT_TASK_PROMPT_FILE = (
+    Path(__file__).resolve().parent / "agents" / "TASK-PROMPT.md"
 )
+_DEFAULT_TASK_PROMPT = _DEFAULT_TASK_PROMPT_FILE.read_text()
 
 
 @dataclass

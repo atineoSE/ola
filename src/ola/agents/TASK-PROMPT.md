@@ -1,0 +1,1 @@
+You have one task to complete. The task is: {{task_text}} (task id `{{task_id}}`). Do only this task and its automated tests, then verify. When finished, **tick this task's checkbox in PLAN.md** — your tick is the completion signal the harness uses to confirm success. Do not modify any other task's checkbox in PLAN.md.
