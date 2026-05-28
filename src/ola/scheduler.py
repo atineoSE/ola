@@ -41,6 +41,16 @@ _DEFAULT_TASK_PROMPT_FILE = (
 )
 _DEFAULT_TASK_PROMPT = _DEFAULT_TASK_PROMPT_FILE.read_text()
 
+# Folder-wide circuit-breaker threshold: halt the folder after this many
+# consecutive stagnant attempts (agent reports success but does not tick its
+# checkbox). Ported from the old inner loop's ``_MAX_STAGNANT_LOOPS``. The
+# stagnation backstop task wires this into the scheduler's main loop.
+_MAX_STAGNANT_LOOPS = 5
+
+# Safety cap for rate-limit sleeps in the worker error path. A reset further
+# out than this is treated as a failure rather than slept through.
+_MAX_RATE_LIMIT_WAIT_SEC = 8 * 3600  # 8 hours
+
 
 @dataclass
 class _Job:
@@ -101,6 +111,49 @@ def _truncate(s: str, n: int = 500) -> str:
     return s if len(s) <= n else s[:n] + "..."
 
 
+def _run_with_rate_limit_resume(
+    agent: Agent,
+    prompt: str,
+    workdir: str,
+    state_dir: str | None,
+    labels: dict[str, str],
+    on_progress: Any | None,
+) -> Any | None:
+    """Run the agent, sleeping through rate-limit windows and resuming.
+
+    Moved out of the old inner loop's rate-limit branch: a ``rate_limited``
+    response is transient, so the worker sleeps until the reset and re-runs the
+    same task rather than burning a retry attempt. Returns the agent response,
+    or ``None`` when the reset is further out than ``_MAX_RATE_LIMIT_WAIT_SEC``
+    (the caller treats ``None`` as a failure).
+    """
+    while True:
+        response = agent.run(
+            prompt,
+            workdir,
+            state_dir=state_dir,
+            labels=labels,
+            on_progress=on_progress,
+        )
+        stats = response.stats
+        if not (stats.error_type == "rate_limited" and stats.rate_limit_resets_at):
+            return response
+        wait_sec = max(0, stats.rate_limit_resets_at - time.time()) + 10
+        if wait_sec > _MAX_RATE_LIMIT_WAIT_SEC:
+            logger.error(
+                "Rate limit reset too far away (%ds) for task %s. Giving up.",
+                int(wait_sec),
+                labels.get("task_id"),
+            )
+            return None
+        logger.warning(
+            "Rate limit hit on task %s. Sleeping %ds, then resuming.",
+            labels.get("task_id"),
+            int(wait_sec),
+        )
+        time.sleep(wait_sec)
+
+
 def _run_one_task(
     agent: Agent,
     folder: Path,
@@ -136,13 +189,18 @@ def _run_one_task(
         # Phase 6 will wire emitter → on_progress; today emitter is unused.
         on_progress = None
 
-        response = agent.run(
-            prompt,
-            workdir,
-            state_dir=state_dir,
-            labels=labels,
-            on_progress=on_progress,
+        response = _run_with_rate_limit_resume(
+            agent, prompt, workdir, state_dir, labels, on_progress
         )
+        if response is None:
+            with state_lock:
+                state.mark(
+                    task_id,
+                    "failed",
+                    last_error="rate limit reset too far away",
+                )
+                state.save()
+            return
 
         if not response.success:
             with state_lock:

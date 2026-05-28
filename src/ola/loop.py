@@ -4,26 +4,17 @@ import json
 import logging
 import subprocess
 import time
-from datetime import datetime
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse
 from ola.plan import (
     count_tasks,
     discover_plan_folders,
-    has_outstanding_tasks,
     read_file_if_exists,
 )
 from ola.stats import IterationStats, cache_hit_rate
 
-_DEFAULT_LOOP_PROMPT = (
-    Path(__file__).resolve().parent / "agents" / "DEFAULT-LOOP-PROMPT.md"
-)
-
 logger = logging.getLogger(__name__)
-
-_MAX_STAGNANT_LOOPS = 5
-_MAX_RATE_LIMIT_WAIT_SEC = 8 * 3600  # 8 hours — safety cap for rate-limit sleeps
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
@@ -126,24 +117,19 @@ def per_task_state_dir(folder: Path, agent: Agent, task_id: str) -> str | None:
     return str(path)
 
 
-def _last_loop_number(folder: Path) -> int:
-    """Return the highest loop-N number from STATS.jsonl, or 0 if none."""
-    stats_file = folder / "STATS.jsonl"
-    if not stats_file.exists():
-        return 0
-    highest = 0
-    for line in stats_file.read_text().strip().splitlines():
-        try:
-            phase = json.loads(line).get("phase", "")
-        except (json.JSONDecodeError, AttributeError):
-            continue
-        if phase.startswith("loop-"):
-            try:
-                num = int(phase.split("-", 1)[1])
-                highest = max(highest, num)
-            except (ValueError, IndexError):
-                continue
-    return highest
+def _initial_concurrency(folder: Path, default: int = 1) -> int:
+    """Read the starting concurrency cap from ``<folder>/.ola/concurrency``.
+
+    Returns *default* when the file is missing or malformed. This supplies the
+    scheduler's ``initial_cap``; Phase 5 adds live re-reading of the same file
+    on every scheduler tick.
+    """
+    cap_file = folder / ".ola" / "concurrency"
+    try:
+        value = int(cap_file.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return default
+    return value if value >= 1 else default
 
 
 def _append_stats(
@@ -232,10 +218,21 @@ def run_outer_loop(
 def _process_folder(
     agent: Agent, folder: Path, limit: int | None, agent_root: Path
 ) -> None:
-    """Process a single plan folder."""
+    """Process a single plan folder.
+
+    Runs the optional seed phase, then hands every unchecked task in PLAN.md
+    to the parallel scheduler. The old per-iteration inner loop is gone: task
+    lifecycle, the stagnation backstop, and rate-limit sleep-and-resume now
+    live in :mod:`ola.scheduler`.
+    """
+    # Imported here to avoid a circular import — scheduler imports loop for
+    # per_task_state_dir.
+    from ola.scheduler import run_folder
+
     workdir = str(Path.cwd())
 
-    # Create per-phase agent state directory
+    # Create the folder-level agent state directory. The seed phase uses it
+    # directly; the scheduler clones per-task state dirs alongside it.
     state_dir: str | None = None
     if agent.state_dir_name:
         agent_state_path = folder / agent.state_dir_name
@@ -243,7 +240,6 @@ def _process_folder(
         state_dir = str(agent_state_path)
 
     plan_file = folder / "PLAN.md"
-    loop_prompt_file = folder / "LOOP-PROMPT.md"
 
     # Seed phase: run SEED-PROMPT.md if it exists and PLAN.md doesn't yet
     seed_prompt = read_file_if_exists(folder / "SEED-PROMPT.md")
@@ -278,134 +274,19 @@ def _process_folder(
                 return
             _git_commit(agent_root, f"ola: {folder.name} seed")
 
-    # Copy default loop prompt if none was provided
-    if not loop_prompt_file.exists():
-        import shutil
-
-        shutil.copy2(_DEFAULT_LOOP_PROMPT, loop_prompt_file)
-        logger.info("Copied DEFAULT-LOOP-PROMPT.md → %s", loop_prompt_file)
-
-    loop_prompt = read_file_if_exists(loop_prompt_file)
-    if loop_prompt is None:
-        logger.warning("Skipping %s: no LOOP-PROMPT.md found.", folder.name)
+    if not plan_file.exists():
+        logger.warning("Skipping %s: no PLAN.md found.", folder.name)
         return
 
-    # Inject absolute plan path so the agent can find it from the code dir
-    effective_prompt = loop_prompt + f"\n\nPLAN.md is located at: {plan_file}"
-
-    # Loop phase – resume numbering from STATS.jsonl so restarts don't
-    # produce duplicate phase labels (e.g. a second "loop-1").
-    iteration = _last_loop_number(folder)
-    iterations_this_run = 0
-    stagnant_iterations = 0
-    while True:
-        if not has_outstanding_tasks(folder):
-            logger.info("No outstanding tasks in PLAN.md. Done with %s.", folder.name)
-            break
-
-        if limit is not None and iterations_this_run >= limit:
-            logger.info(
-                "Reached iteration limit (%d). Stopping %s.", limit, folder.name
-            )
-            break
-
-        iteration += 1
-        iterations_this_run += 1
-        logger.info("Iteration %d%s...", iteration, f"/{limit}" if limit else "")
-
-        tasks_before = count_tasks(folder)
-        t0 = time.monotonic()
-        labels = {"folder": folder.name, "phase": f"loop-{iteration}"}
-        try:
-            response = agent.run(
-                effective_prompt, workdir, state_dir=state_dir, labels=labels
-            )
-        except KeyboardInterrupt:
-            wall_ms = int((time.monotonic() - t0) * 1000)
-            stats = IterationStats(
-                error_type="interrupted",
-                error_message="KeyboardInterrupt during iteration",
-            )
-            tasks_after = count_tasks(folder)
-            _append_stats(
-                folder,
-                f"loop-{iteration}",
-                stats,
-                wall_ms,
-                agent,
-                tasks_before,
-                tasks_after,
-            )
-            logger.info(
-                "Interrupted during iteration %d of %s. Stats row written.",
-                iteration,
-                folder.name,
-            )
-            raise
-        wall_ms = int((time.monotonic() - t0) * 1000)
-        tasks_after = count_tasks(folder)
-        label = f"LOOP #{iteration}"
-        _log_response(label, response)
-        _log_stats(label, response.stats, wall_ms)
-        _append_stats(
-            folder,
-            f"loop-{iteration}",
-            response.stats,
-            wall_ms,
-            agent,
-            tasks_before,
-            tasks_after,
+    if limit is not None:
+        logger.info(
+            "--limit is ignored in parallel mode; task lifecycle is per-task,"
+            " not per-iteration."
         )
 
-        # Rate-limit sleep-and-resume: don't treat as a fatal failure.
-        if (
-            response.stats.error_type == "rate_limited"
-            and response.stats.rate_limit_resets_at
-        ):
-            wait_sec = max(0, response.stats.rate_limit_resets_at - time.time()) + 10
-            if wait_sec > _MAX_RATE_LIMIT_WAIT_SEC:
-                logger.error(
-                    "Rate limit reset too far away (%ds). Stopping.", int(wait_sec)
-                )
-                break
-            reset_ts = datetime.fromtimestamp(
-                response.stats.rate_limit_resets_at
-            ).isoformat(timespec="seconds")
-            logger.warning(
-                "Rate limit hit. Sleeping %ds until %s, then resuming %s.",
-                int(wait_sec),
-                reset_ts,
-                folder.name,
-            )
-            try:
-                time.sleep(wait_sec)
-            except KeyboardInterrupt:
-                logger.info("Sleep interrupted by user. Stopping %s.", folder.name)
-                raise
-            continue
-
-        if not response.success:
-            logger.error("Agent returned failure. Stopping %s.", folder.name)
-            break
-
-        # Stagnation backstop: break if the agent keeps succeeding but
-        # makes no task progress, to avoid infinite loops from parser bugs.
-        if tasks_after == tasks_before:
-            stagnant_iterations += 1
-        else:
-            stagnant_iterations = 0
-
-        if stagnant_iterations >= _MAX_STAGNANT_LOOPS:
-            logger.warning(
-                "No task progress for %d iterations in %s"
-                " — breaking to avoid infinite loop. tasks=%s",
-                _MAX_STAGNANT_LOOPS,
-                folder.name,
-                tasks_after,
-            )
-            break
-
-        _git_commit(agent_root, f"ola: {folder.name} loop #{iteration}")
+    cap = _initial_concurrency(folder)
+    logger.info("Dispatching tasks in %s (concurrency cap %d).", folder.name, cap)
+    run_folder(agent, folder, agent_root, cap)
 
 
 def _log_response(label: str, response: AgentResponse) -> None:

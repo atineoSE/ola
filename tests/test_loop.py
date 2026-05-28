@@ -2,19 +2,15 @@
 
 import json
 import logging
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from ola.agents.base import Agent, AgentResponse
 from ola.agents.claude_code import ClaudeCodeAgent
 from ola.loop import (
-    _MAX_STAGNANT_LOOPS,
     _append_stats,
     _git_commit,
-    _last_loop_number,
+    _initial_concurrency,
     _process_folder,
     per_task_state_dir,
 )
@@ -25,7 +21,7 @@ from ola.stats import IterationStats
 class _FakeAgent(Agent):
     mnemonic = "cc"
 
-    def run(self, prompt, workdir, state_dir=None, labels=None):
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
         raise NotImplementedError
 
     def version(self):
@@ -222,50 +218,29 @@ def test_stats_roundtrip_contract(tmp_path):
     assert it.tasks_completed_delta == 2
 
 
-def test_last_loop_number_no_file(tmp_path):
-    assert _last_loop_number(tmp_path) == 0
+# --- _initial_concurrency tests ---
 
 
-def test_last_loop_number_empty_file(tmp_path):
-    (tmp_path / "STATS.jsonl").write_text("")
-    assert _last_loop_number(tmp_path) == 0
+def test_initial_concurrency_missing_file_defaults_to_one(tmp_path):
+    assert _initial_concurrency(tmp_path) == 1
 
 
-def test_last_loop_number_only_seed(tmp_path):
-    (tmp_path / "STATS.jsonl").write_text(
-        json.dumps({"phase": "seed", "wall_ms": 100}) + "\n"
-    )
-    assert _last_loop_number(tmp_path) == 0
+def test_initial_concurrency_reads_integer(tmp_path):
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("4\n")
+    assert _initial_concurrency(tmp_path) == 4
 
 
-def test_last_loop_number_multiple_loops(tmp_path):
-    lines = [
-        json.dumps({"phase": "seed", "wall_ms": 100}),
-        json.dumps({"phase": "loop-1", "wall_ms": 200}),
-        json.dumps({"phase": "loop-2", "wall_ms": 300}),
-        json.dumps({"phase": "loop-3", "wall_ms": 400}),
-    ]
-    (tmp_path / "STATS.jsonl").write_text("\n".join(lines) + "\n")
-    assert _last_loop_number(tmp_path) == 3
+def test_initial_concurrency_malformed_defaults(tmp_path):
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("not a number")
+    assert _initial_concurrency(tmp_path) == 1
 
 
-def test_last_loop_number_skips_malformed_lines(tmp_path):
-    lines = [
-        json.dumps({"phase": "loop-1", "wall_ms": 100}),
-        "not valid json",
-        json.dumps({"phase": "loop-2", "wall_ms": 200}),
-    ]
-    (tmp_path / "STATS.jsonl").write_text("\n".join(lines) + "\n")
-    assert _last_loop_number(tmp_path) == 2
-
-
-def test_last_loop_number_non_numeric_suffix(tmp_path):
-    lines = [
-        json.dumps({"phase": "loop-abc", "wall_ms": 100}),
-        json.dumps({"phase": "loop-2", "wall_ms": 200}),
-    ]
-    (tmp_path / "STATS.jsonl").write_text("\n".join(lines) + "\n")
-    assert _last_loop_number(tmp_path) == 2
+def test_initial_concurrency_rejects_non_positive(tmp_path):
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("0")
+    assert _initial_concurrency(tmp_path) == 1
 
 
 # --- End-to-end roundtrip sentinel ---
@@ -420,281 +395,127 @@ def test_cc_stream_to_stats_jsonl_roundtrip(tmp_path):
     assert it.output_tokens == 80
 
 
-# --- Stagnation backstop tests ---
+# --- _process_folder dispatch tests ---
+#
+# The per-iteration inner loop is gone: _process_folder now runs the optional
+# seed phase and hands the folder to scheduler.run_folder. Task lifecycle,
+# the stagnation backstop, and rate-limit sleep-and-resume are exercised in
+# tests/test_scheduler.py.
 
 
-class _StagnantAgent(Agent):
-    """Agent that always succeeds but never completes any tasks."""
+class _SeedAgent(Agent):
+    """Agent that writes a PLAN.md when run (simulating the seed phase)."""
 
     mnemonic = "cc"
-    call_count = 0
 
-    def run(self, prompt, workdir, state_dir=None, labels=None):
+    def __init__(self, plan_text="- [ ] Seeded task\n", success=True):
+        super().__init__()
+        self.plan_text = plan_text
+        self.success = success
+        self.call_count = 0
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
         self.call_count += 1
-        return AgentResponse(output="All done!", success=True, stats=IterationStats())
+        # The seed prompt tells the agent where to write PLAN.md; honour it.
+        for token in prompt.split():
+            if token.endswith("PLAN.md"):
+                Path(token).write_text(self.plan_text)
+                break
+        return AgentResponse(
+            output="seeded", success=self.success, stats=IterationStats()
+        )
 
     def version(self):
         return "1.0.0"
 
 
-def test_stagnation_backstop_breaks_at_max(tmp_path, caplog):
-    """Loop breaks after _MAX_STAGNANT_LOOPS iterations with zero task progress."""
+def test_process_folder_dispatches_to_scheduler(tmp_path):
+    """With PLAN.md present, _process_folder hands the folder to the scheduler."""
     folder = tmp_path / "phase"
     folder.mkdir()
-    # PLAN.md with a task that never gets checked off (simulates parser bug)
-    (folder / "PLAN.md").write_text("- [ ] A task that never completes\n")
-    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
 
-    agent = _StagnantAgent()
+    agent = _FakeAgent()
+    with patch("ola.scheduler.run_folder") as mock_run:
+        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
 
+    mock_run.assert_called_once()
+    args = mock_run.call_args.args
+    assert args[0] is agent
+    assert args[1] == folder
+    assert args[2] == tmp_path
+    assert args[3] == 1  # default cap
+
+
+def test_process_folder_passes_concurrency_cap(tmp_path):
+    """The cap from .ola/concurrency is forwarded as the scheduler's initial_cap."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+    (folder / ".ola").mkdir()
+    (folder / ".ola" / "concurrency").write_text("3\n")
+
+    agent = _FakeAgent()
+    with patch("ola.scheduler.run_folder") as mock_run:
+        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
+
+    assert mock_run.call_args.args[3] == 3
+
+
+def test_process_folder_skips_when_no_plan(tmp_path, caplog):
+    """No PLAN.md and no seed prompt → warn and don't dispatch."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+
+    agent = _FakeAgent()
     with (
         caplog.at_level(logging.WARNING, logger="ola.loop"),
-        patch("ola.loop._git_commit"),
+        patch("ola.scheduler.run_folder") as mock_run,
     ):
         _process_folder(agent, folder, limit=None, agent_root=tmp_path)
 
-    # Agent was called exactly _MAX_STAGNANT_LOOPS times before the loop broke
-    assert agent.call_count == _MAX_STAGNANT_LOOPS
-
-    # Warning was logged
-    assert any(
-        "No task progress" in rec.message and str(_MAX_STAGNANT_LOOPS) in rec.message
-        for rec in caplog.records
-    )
-
-    # STATS.jsonl has exactly _MAX_STAGNANT_LOOPS rows
-    recs = _read_records(folder)
-    assert len(recs) == _MAX_STAGNANT_LOOPS
+    mock_run.assert_not_called()
+    assert any("no PLAN.md" in rec.message for rec in caplog.records)
 
 
-def test_stagnation_resets_on_progress(tmp_path):
-    """Stagnation counter resets when the agent makes task progress."""
+def test_process_folder_runs_seed_then_dispatches(tmp_path):
+    """Seed phase runs first (writing PLAN.md), then the scheduler is invoked."""
     folder = tmp_path / "phase"
     folder.mkdir()
-    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
+    (folder / "SEED-PROMPT.md").write_text("Make a plan.")
 
-    # Start with 2 unchecked tasks; agent completes one on call 4
-    plan_states = []
-    for i in range(_MAX_STAGNANT_LOOPS + 2):
-        if i < _MAX_STAGNANT_LOOPS - 2:
-            plan_states.append("- [ ] Task A\n- [ ] Task B\n")
-        elif i == _MAX_STAGNANT_LOOPS - 2:
-            # Agent "completes" task A on this iteration
-            plan_states.append("- [x] Task A\n- [ ] Task B\n")
-        else:
-            plan_states.append("- [x] Task A\n- [ ] Task B\n")
-
-    call_idx = 0
-
-    class _ProgressAgent(Agent):
-        mnemonic = "cc"
-
-        def run(self, prompt, workdir, state_dir=None, labels=None):
-            nonlocal call_idx
-            # Write the next plan state BEFORE returning so count_tasks sees it
-            (folder / "PLAN.md").write_text(
-                plan_states[min(call_idx, len(plan_states) - 1)]
-            )
-            call_idx += 1
-            return AgentResponse(output="ok", success=True, stats=IterationStats())
-
-        def version(self):
-            return "1.0.0"
-
-    # Initial plan state
-    (folder / "PLAN.md").write_text("- [ ] Task A\n- [ ] Task B\n")
-
-    agent = _ProgressAgent()
-    # Set limit high enough to observe the reset but still terminate
-    with patch("ola.loop._git_commit"):
-        _process_folder(
-            agent, folder, limit=_MAX_STAGNANT_LOOPS + 2, agent_root=tmp_path
-        )
-
-    # The agent ran more than _MAX_STAGNANT_LOOPS times because progress reset the counter
-    assert call_idx > _MAX_STAGNANT_LOOPS
-
-
-# --- Rate-limit sleep-and-resume tests ---
-
-
-class _RateLimitAgent(Agent):
-    """Agent that returns rate_limited on configurable iterations."""
-
-    mnemonic = "cc"
-
-    def __init__(self, rate_limit_iterations, resets_at):
-        self.rate_limit_iterations = set(rate_limit_iterations)
-        self.resets_at = resets_at
-        self.call_count = 0
-
-    def run(self, prompt, workdir, state_dir=None, labels=None):
-        self.call_count += 1
-        if self.call_count in self.rate_limit_iterations:
-            stats = IterationStats(
-                error_type="rate_limited",
-                error_message=f"five_hour limit hit, resets at {self.resets_at}",
-                rate_limit_resets_at=self.resets_at,
-            )
-            return AgentResponse(output="Rate limited", success=False, stats=stats)
-        stats = IterationStats()
-        return AgentResponse(output="ok", success=True, stats=stats)
-
-    def version(self):
-        return "1.0.0"
-
-
-def test_rate_limit_sleep_and_resume(tmp_path, caplog):
-    """Rate-limited iteration sleeps and resumes; loop does NOT break."""
-    folder = tmp_path / "phase"
-    folder.mkdir()
-    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
-    # Two tasks: agent "completes" one on call 2 (after waking from sleep)
-    (folder / "PLAN.md").write_text("- [ ] Task A\n- [ ] Task B\n")
-
-    resets_at = int(time.time()) + 3
-    agent = _RateLimitAgent(rate_limit_iterations={1}, resets_at=resets_at)
-
-    call_idx = [0]
-    original_run = agent.run
-
-    def tracking_run(prompt, workdir, state_dir=None, labels=None):
-        result = original_run(prompt, workdir, state_dir=state_dir, labels=labels)
-        call_idx[0] += 1
-        # On second real call, complete task A
-        if agent.call_count == 2:
-            (folder / "PLAN.md").write_text("- [x] Task A\n- [x] Task B\n")
-        return result
-
-    agent.run = tracking_run
-
-    sleep_durations = []
-    real_time = time.time
-
+    agent = _SeedAgent()
     with (
-        caplog.at_level(logging.WARNING, logger="ola.loop"),
         patch("ola.loop._git_commit"),
-        patch("ola.loop.time.sleep", side_effect=lambda d: sleep_durations.append(d)),
-        patch("ola.loop.time.time", side_effect=real_time),
+        patch("ola.scheduler.run_folder") as mock_run,
     ):
-        _process_folder(agent, folder, limit=5, agent_root=tmp_path)
+        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
 
-    # Agent was called twice: once rate-limited, once successful
-    assert agent.call_count == 2
-
-    # Sleep was called with roughly resets_at - now + 10s buffer
-    assert len(sleep_durations) == 1
-    assert 3 <= sleep_durations[0] <= 15
-
-    # STATS.jsonl has 2 rows: rate_limited + clean
-    recs = _read_records(folder)
-    assert len(recs) == 2
-    assert recs[0]["error_type"] == "rate_limited"
-    assert recs[1]["error_type"] is None
-
-
-def test_rate_limit_cap_exceeds_stops_loop(tmp_path, caplog):
-    """Loop breaks when rate limit reset is too far in the future."""
-    folder = tmp_path / "phase"
-    folder.mkdir()
-    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
-    (folder / "PLAN.md").write_text("- [ ] Task A\n")
-
-    resets_at = int(time.time()) + 9 * 3600  # 9 hours, above 8h cap
-    agent = _RateLimitAgent(rate_limit_iterations={1}, resets_at=resets_at)
-
-    with (
-        caplog.at_level(logging.ERROR, logger="ola.loop"),
-        patch("ola.loop._git_commit"),
-    ):
-        _process_folder(agent, folder, limit=5, agent_root=tmp_path)
-
-    # Agent was called once then loop broke
+    # Seed agent ran once and wrote PLAN.md.
     assert agent.call_count == 1
-
-    # Error was logged
-    assert any("Rate limit reset too far away" in rec.message for rec in caplog.records)
-
-    # No sleep was called (loop broke before sleeping)
+    assert (folder / "PLAN.md").read_text() == "- [ ] Seeded task\n"
+    # A "seed" stats row was written.
     recs = _read_records(folder)
     assert len(recs) == 1
-    assert recs[0]["error_type"] == "rate_limited"
+    assert recs[0]["phase"] == "seed"
+    # Scheduler was then dispatched against the seeded folder.
+    mock_run.assert_called_once()
 
 
-def test_rate_limit_sleep_interrupted_by_user(tmp_path):
-    """KeyboardInterrupt during rate-limit sleep propagates cleanly."""
+def test_process_folder_seed_failure_skips_dispatch(tmp_path):
+    """A failed seed phase aborts the folder before dispatching."""
     folder = tmp_path / "phase"
     folder.mkdir()
-    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
-    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+    (folder / "SEED-PROMPT.md").write_text("Make a plan.")
 
-    resets_at = int(time.time()) + 60
-    agent = _RateLimitAgent(rate_limit_iterations={1}, resets_at=resets_at)
-
-    real_time = time.time
-
+    agent = _SeedAgent(success=False)
     with (
         patch("ola.loop._git_commit"),
-        patch("ola.loop.time.sleep", side_effect=KeyboardInterrupt),
-        patch("ola.loop.time.time", side_effect=real_time),
-        pytest.raises(KeyboardInterrupt),
+        patch("ola.scheduler.run_folder") as mock_run,
     ):
-        _process_folder(agent, folder, limit=5, agent_root=tmp_path)
+        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
 
-    # Agent was called once before the interrupt
-    assert agent.call_count == 1
-
-
-# --- KeyboardInterrupt stats recording test ---
-
-
-class _InterruptingAgent(Agent):
-    """Agent that raises KeyboardInterrupt on the first call."""
-
-    mnemonic = "cc"
-    call_count = 0
-
-    def run(self, prompt, workdir, state_dir=None, labels=None):
-        self.call_count += 1
-        raise KeyboardInterrupt
-
-    def version(self):
-        return "1.0.0"
-
-
-def test_keyboard_interrupt_writes_stats_row(tmp_path, caplog):
-    """SIGINT mid-iteration writes a final STATS row with error_type='interrupted'."""
-    folder = tmp_path / "phase"
-    folder.mkdir()
-    (folder / "LOOP-PROMPT.md").write_text("Do the task.\n")
-    (folder / "PLAN.md").write_text("- [ ] Task A\n")
-
-    agent = _InterruptingAgent()
-
-    with (
-        caplog.at_level(logging.INFO, logger="ola.loop"),
-        patch("ola.loop._git_commit"),
-        pytest.raises(KeyboardInterrupt),
-    ):
-        _process_folder(agent, folder, limit=5, agent_root=tmp_path)
-
-    # Agent was called once before the interrupt
-    assert agent.call_count == 1
-
-    # A STATS row was written with error_type="interrupted"
-    recs = _read_records(folder)
-    assert len(recs) == 1
-    assert recs[0]["error_type"] == "interrupted"
-    assert recs[0]["error_message"] == "KeyboardInterrupt during iteration"
-    assert recs[0]["phase"] == "loop-1"
-    assert recs[0]["wall_ms"] >= 0
-
-    # Info log was emitted
-    assert any(
-        "Interrupted during iteration" in rec.message
-        and "Stats row written" in rec.message
-        for rec in caplog.records
-    )
+    mock_run.assert_not_called()
 
 
 # --- Stale git lock tests ---
@@ -742,7 +563,7 @@ class _StatelessAgent(Agent):
     mnemonic = "ss"
     state_dir_name = ""
 
-    def run(self, prompt, workdir, state_dir=None, labels=None):
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
         raise NotImplementedError
 
     def version(self):

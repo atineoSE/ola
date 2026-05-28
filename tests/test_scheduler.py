@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from ola.agents.base import Agent, AgentResponse
 from ola.plan import enumerate_tasks, set_task_checked, task_is_checked
@@ -108,6 +109,31 @@ class _StagnantAgent(Agent):
     def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
         return AgentResponse(
             output="silently lied", success=True, stats=IterationStats()
+        )
+
+    def version(self):
+        return "0.0.0"
+
+
+class _RateLimitedThenTicksAgent(_TickingAgent):
+    """Returns rate_limited on the first call, then succeeds and ticks."""
+
+    def __init__(self, resets_at) -> None:
+        super().__init__()
+        self._resets_at = resets_at
+        self.calls = 0
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        self.calls += 1
+        if self.calls == 1:
+            stats = IterationStats(
+                error_type="rate_limited",
+                error_message="limit hit",
+                rate_limit_resets_at=self._resets_at,
+            )
+            return AgentResponse(output="rate limited", success=False, stats=stats)
+        return super().run(
+            prompt, workdir, state_dir=state_dir, labels=labels, on_progress=on_progress
         )
 
     def version(self):
@@ -274,6 +300,60 @@ def test_run_folder_stagnant_agent_marks_failed(tmp_path):
     # No propagation commit landed.
     log = _log_oneline(repo, "main")
     assert len(log) == 2
+
+
+# --- Rate-limit sleep-and-resume (moved from the old inner loop) ---
+
+
+def test_run_folder_rate_limit_sleeps_then_resumes(tmp_path):
+    """A rate_limited response sleeps then re-runs the same task to completion."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Build the thing\n")
+    task = enumerate_tasks(folder)[0]
+
+    resets_at = int(time.time()) + 3
+    agent = _RateLimitedThenTicksAgent(resets_at=resets_at)
+
+    slept: list[float] = []
+    with patch("ola.scheduler.time.sleep", side_effect=lambda d: slept.append(d)):
+        run_folder(agent, folder, repo, initial_cap=1)
+
+    # Slept once (does not burn a retry attempt), then resumed and completed.
+    assert len(slept) == 1
+    assert 3 <= slept[0] <= 15
+    assert agent.calls == 2
+    assert task_is_checked(folder, task.task_id) is True
+
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "complete"
+    # Rate-limit resume is transient, so it counts as a single attempt.
+    assert entry.attempts == 1
+
+
+def test_run_folder_rate_limit_too_far_fails(tmp_path):
+    """A reset beyond the wait cap fails the task without sleeping."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Build the thing\n")
+    task = enumerate_tasks(folder)[0]
+
+    resets_at = int(time.time()) + 9 * 3600  # beyond the 8h cap
+    agent = _RateLimitedThenTicksAgent(resets_at=resets_at)
+
+    slept: list[float] = []
+    with patch("ola.scheduler.time.sleep", side_effect=lambda d: slept.append(d)):
+        run_folder(agent, folder, repo, initial_cap=1)
+
+    assert slept == []  # never slept
+    assert agent.calls == 1
+    assert task_is_checked(folder, task.task_id) is False
+
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "failed"
+    assert "rate limit" in entry.last_error.lower()
 
 
 # --- Concurrency ---
