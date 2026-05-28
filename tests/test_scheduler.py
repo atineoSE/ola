@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ola.agents.base import Agent, AgentResponse
+from ola.events.client import Emitter, LocalSink
 from ola.plan import enumerate_tasks, set_task_checked, task_is_checked
 from ola.scheduler import (
     _DEFAULT_TASK_PROMPT,
@@ -871,6 +872,98 @@ def test_run_folder_passes_substituted_prompt(tmp_path):
     assert f"id: {task.task_id}" in captured["prompt"]
     # Absolute PLAN.md path is appended so the agent can find the file.
     assert "PLAN.md is located at:" in captured["prompt"]
+
+
+# --- Event emission (Phase 6) ---
+
+
+class _ProgressTickingAgent(_TickingAgent):
+    """Ticking agent that also pings ``on_progress`` so ``working`` events fire."""
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        if on_progress is not None:
+            on_progress("doing the work")
+        return super().run(
+            prompt, workdir, state_dir=state_dir, labels=labels, on_progress=on_progress
+        )
+
+
+class _ProgressFailingAgent(Agent):
+    """Pings ``on_progress`` then returns success=False (drives a ``failed`` event)."""
+
+    mnemonic = "stub"
+    state_dir_name = ""
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        if on_progress is not None:
+            on_progress("about to fail")
+        return AgentResponse(output="boom", success=False, stats=IterationStats())
+
+    def version(self):
+        return "0.0.0"
+
+
+def test_run_folder_emits_all_event_types(tmp_path):
+    """A trivial parallel run writes started/working/complete/failed to events.jsonl."""
+    import json
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Will pass\n- [ ] Will fail\n")
+    tasks = enumerate_tasks(folder)
+
+    class _RoutingAgent(_ProgressTickingAgent):
+        """Succeeds on the first task, fails on the second."""
+
+        def __init__(self, fail_task_id):
+            super().__init__()
+            self._fail_task_id = fail_task_id
+            self._fail = _ProgressFailingAgent()
+
+        def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+            if labels["task_id"] == self._fail_task_id:
+                return self._fail.run(
+                    prompt,
+                    workdir,
+                    state_dir=state_dir,
+                    labels=labels,
+                    on_progress=on_progress,
+                )
+            return super().run(
+                prompt,
+                workdir,
+                state_dir=state_dir,
+                labels=labels,
+                on_progress=on_progress,
+            )
+
+    events_path = folder / ".ola" / "events.jsonl"
+    emitter = Emitter([LocalSink(events_path)])
+    agent = _RoutingAgent(fail_task_id=tasks[1].task_id)
+    run_folder(agent, folder, repo, initial_cap=2, emitter=emitter)
+    emitter.close()  # flush the LocalSink writer thread
+
+    records = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if line.strip()
+    ]
+    statuses = {r["status"] for r in records}
+    assert {"started", "working", "complete", "failed"} <= statuses
+
+    # Every envelope carries the v2 fields the schema requires.
+    for r in records:
+        assert r["schema_version"] == "2"
+        assert r["folder"] == "agent-folder"
+        assert r["agent_backend"] == "stub"
+        assert r["task_id"] in {t.task_id for t in tasks}
+
+    # seq is monotonic from 0 per (agent_id, attempt).
+    by_agent: dict[tuple, list[int]] = {}
+    for r in records:
+        by_agent.setdefault((r["agent_id"], r["attempt"]), []).append(r["seq"])
+    for seqs in by_agent.values():
+        assert seqs == list(range(len(seqs)))
 
 
 # --- read_concurrency tests ---

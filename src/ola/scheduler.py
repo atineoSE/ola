@@ -16,8 +16,9 @@ Concurrency is bounded by a live cap re-read from
 ``<folder>/.ola/concurrency`` on every scheduler tick: raising the file's
 value spawns new workers up to the new cap on the next tick, lowering it
 (including to ``0`` to pause) leaves running workers untouched and only
-gates new starts. The ``emitter`` slot is a Phase 6 hookup point; today the
-scheduler simply ignores ``None``.
+gates new starts. When an ``Emitter`` is supplied each worker emits a v2
+event stream (``started`` → ``working*`` → ``complete``/``failed``); an
+``emitter`` of ``None`` disables events entirely.
 """
 
 from __future__ import annotations
@@ -69,6 +70,69 @@ class _Job:
     task_id: str
     attempt: int
     started: float
+
+
+class _ProgressEmitter:
+    """Per-worker facade over an optional :class:`~ola.events.client.Emitter`.
+
+    Holds the envelope fields common to one task attempt (``agent_id``,
+    ``attempt``, ``folder``, ``task_id``, ``task_text``, ``agent_backend``) so
+    the worker only supplies the status-specific bits, and coalesces ``working``
+    events to at most one per second per worker (the rate the agent's
+    ``on_progress`` callback fires at can be much higher).
+
+    When the wrapped emitter is ``None`` every method is a no-op, so the
+    scheduler behaves identically with events disabled — the pre-Phase-6
+    default. ``agent_backend`` is the agent's mnemonic read as a *value* for the
+    envelope, never branched on, so the events path stays agent-agnostic.
+    """
+
+    def __init__(
+        self,
+        emitter: Any | None,
+        *,
+        agent_id: str,
+        attempt: int,
+        folder: str,
+        task_id: str,
+        task_text: str,
+        agent_backend: str,
+    ) -> None:
+        self._emitter = emitter
+        self._common: dict[str, Any] = {
+            "agent_id": agent_id,
+            "attempt": attempt,
+            "folder": folder,
+            "task_id": task_id,
+            "task_text": task_text,
+            "agent_backend": agent_backend,
+        }
+        self._last_working = 0.0
+        self._working_lock = threading.Lock()
+
+    def started(self) -> None:
+        if self._emitter is not None:
+            self._emitter.started(**self._common)
+
+    def working(self, message: str) -> None:
+        """Emit a ``working`` event, dropping it if one fired < 1s ago."""
+        if self._emitter is None:
+            return
+        now = time.monotonic()
+        with self._working_lock:
+            if now - self._last_working < 1.0:
+                return
+            self._last_working = now
+        self._emitter.working(**self._common, data={"message": message})
+
+    def complete(self) -> None:
+        if self._emitter is not None:
+            self._emitter.complete(**self._common)
+
+    def failed(self, error: str | None = None) -> None:
+        if self._emitter is not None:
+            data = {"error": error} if error else None
+            self._emitter.failed(**self._common, data=data)
 
 
 def read_concurrency(folder: Path, default: int = 1) -> int:
@@ -260,7 +324,17 @@ def _run_one_task(
     """
     worktree_path = create(folder, task_id)
     worktree_folder = worktree_path / folder.name
+    prog = _ProgressEmitter(
+        emitter,
+        agent_id=f"agent-{task_id}",
+        attempt=attempt,
+        folder=folder.name,
+        task_id=task_id,
+        task_text=task_text,
+        agent_backend=agent.mnemonic,
+    )
     try:
+        prog.started()
         prompt = _substitute(template, task_text, task_id)
         plan_in_worktree = worktree_folder / "PLAN.md"
         prompt += f"\n\nPLAN.md is located at: {plan_in_worktree}"
@@ -272,8 +346,9 @@ def _run_one_task(
             "attempt": str(attempt),
         }
 
-        # Phase 6 will wire emitter → on_progress; today emitter is unused.
-        on_progress = None
+        # The agent's coarse progress feeds `working` events (coalesced to at
+        # most one per second by _ProgressEmitter); a None emitter no-ops.
+        on_progress = prog.working
 
         tasks_before = count_tasks(worktree_folder)
         t0 = time.monotonic()
@@ -289,6 +364,7 @@ def _run_one_task(
                     last_error="rate limit reset too far away",
                 )
                 state.save()
+            prog.failed("rate limit reset too far away")
             return _OUTCOME_FAILED
 
         # Record a STATS.jsonl row for this attempt. The phase is the
@@ -316,6 +392,7 @@ def _run_one_task(
                 max_attempts,
                 _truncate(response.output),
             )
+            prog.failed(_truncate(response.output))
             return _OUTCOME_FAILED
 
         try:
@@ -342,6 +419,7 @@ def _run_one_task(
                 max_attempts,
                 "stagnant: agent did not tick its checkbox",
             )
+            prog.failed("stagnant: agent did not tick its checkbox")
             return _OUTCOME_STAGNANT
 
         with plan_lock:
@@ -350,6 +428,7 @@ def _run_one_task(
             state.mark(task_id, "complete", last_error=None)
             state.save()
         cleanup(worktree_path, keep_on_failure=False)
+        prog.complete()
         return _OUTCOME_COMPLETE
     except BaseException as exc:
         with state_lock:
@@ -358,6 +437,7 @@ def _run_one_task(
                 state.save()
             except Exception:
                 logger.exception("Failed to record task failure for %s", task_id)
+        prog.failed(str(exc))
         raise
 
 
@@ -377,7 +457,9 @@ def run_folder(
     not preempt running workers, and a cap of ``0`` pauses new starts while
     letting in-flight workers finish. *initial_cap* also supplies the default
     when the concurrency file is missing or malformed.
-    *emitter* defaults to ``None`` (no events); Phase 6 will populate it.
+    *emitter* is an optional :class:`~ola.events.client.Emitter`; when supplied
+    each worker emits ``started``/``working``/``complete``/``failed`` events for
+    its attempt. It defaults to ``None`` (events disabled).
     *max_attempts* is the retry ceiling: a worker that fails is requeued (same
     ``task_id``, ``attempt += 1``) while its attempt count is below this value;
     the default ``0`` means no retries.
