@@ -325,6 +325,93 @@ def test_run_folder_stagnant_agent_marks_failed(tmp_path):
     assert len(log) == 2
 
 
+def test_run_folder_stagnant_exhausts_attempts_then_fails(tmp_path):
+    """A stagnant agent is retried up to max_attempts, then the task stays failed."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Pretend success\n")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _StagnantAgent()
+    run_folder(agent, folder, repo, initial_cap=1, max_attempts=2)
+
+    # Still unticked; merge_back never ran so no propagation commit landed.
+    assert task_is_checked(folder, task.task_id) is False
+    log = _log_oneline(repo, "main")
+    assert len(log) == 2  # initial + folder-add
+
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "failed"
+    assert entry.attempts == 2  # initial attempt + one retry
+    assert "stagnant" in entry.last_error.lower()
+
+
+def test_run_folder_halts_after_consecutive_stagnant(tmp_path):
+    """Five consecutive stagnant attempts halt the folder, sparing later tasks."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    plan = "".join(f"- [ ] Task {i}\n" for i in range(6))
+    folder = _setup_folder(repo, "agent-folder", plan)
+    tasks = enumerate_tasks(folder)
+
+    agent = _StagnantAgent()
+    # cap=1 keeps the stagnant attempts strictly sequential and deterministic.
+    run_folder(agent, folder, repo, initial_cap=1, max_attempts=0)
+
+    # The circuit breaker trips at the 5th consecutive stagnant attempt, so
+    # only five tasks were ever dispatched; the sixth is left untouched.
+    state = TaskState.load(folder)
+    failed = [t for t in tasks if state.get(t.task_id).status == "failed"]
+    pending = [t for t in tasks if state.get(t.task_id).status == "pending"]
+    assert len(failed) == 5
+    assert len(pending) == 1
+    assert all("stagnant" in state.get(t.task_id).last_error.lower() for t in failed)
+
+    # No propagation commits landed.
+    assert len(_log_oneline(repo, "main")) == 2
+
+
+def test_run_folder_stagnation_counter_resets_on_progress(tmp_path):
+    """A real success between stagnant attempts resets the folder-wide counter.
+
+    With stagnant tasks interleaved with successes, the consecutive count never
+    reaches the threshold, so the folder runs to completion instead of halting.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    # 4 stagnant + 1 success + 4 stagnant: never 5 consecutive stagnant.
+    plan = (
+        "".join(f"- [ ] Stagnant {i}\n" for i in range(4))
+        + "- [ ] Real work\n"
+        + "".join(f"- [ ] Stagnant {i}\n" for i in range(4, 8))
+    )
+    folder = _setup_folder(repo, "agent-folder", plan)
+    tasks = enumerate_tasks(folder)
+    success_task = tasks[4]
+
+    class _MixedAgent(_TickingAgent):
+        def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+            if labels["task_id"] == success_task.task_id:
+                return super().run(
+                    prompt,
+                    workdir,
+                    state_dir=state_dir,
+                    labels=labels,
+                    on_progress=on_progress,
+                )
+            return AgentResponse(output="lied", success=True, stats=IterationStats())
+
+    agent = _MixedAgent()
+    run_folder(agent, folder, repo, initial_cap=1, max_attempts=0)
+
+    # Every task was attempted (no halt): the success completed, the rest failed.
+    state = TaskState.load(folder)
+    assert state.get(success_task.task_id).status == "complete"
+    stagnant = [t for t in tasks if t.task_id != success_task.task_id]
+    assert all(state.get(t.task_id).status == "failed" for t in stagnant)
+
+
 # --- max_attempts retries ---
 
 

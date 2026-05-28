@@ -51,6 +51,13 @@ _MAX_STAGNANT_LOOPS = 5
 # out than this is treated as a failure rather than slept through.
 _MAX_RATE_LIMIT_WAIT_SEC = 8 * 3600  # 8 hours
 
+# Worker outcomes reported back to the main loop, which folds them into the
+# folder-wide stagnation counter. ``STAGNANT`` (agent reported success but did
+# not tick its checkbox) advances the counter; anything else resets it.
+_OUTCOME_COMPLETE = "complete"
+_OUTCOME_FAILED = "failed"
+_OUTCOME_STAGNANT = "stagnant"
+
 
 @dataclass
 class _Job:
@@ -197,12 +204,16 @@ def _run_one_task(
     state_lock: threading.Lock,
     stats_lock: threading.Lock,
     emitter: Any | None,
-) -> None:
+) -> str:
     """Run a single task end-to-end in its own worktree.
 
     On agent success + checkbox tick: propagates to the agent-folder branch
     and cleans up the worktree. On any other outcome: marks the task failed
-    and retains the worktree for post-mortem.
+    (or requeues it for retry) and retains the worktree for post-mortem.
+
+    Returns one of the ``_OUTCOME_*`` constants so the main loop can fold the
+    result into the folder-wide stagnation counter. A raised exception is an
+    out-of-band hard failure that the main loop treats as non-stagnant.
     """
     worktree_path = create(folder, task_id)
     worktree_folder = worktree_path / folder.name
@@ -235,7 +246,7 @@ def _run_one_task(
                     last_error="rate limit reset too far away",
                 )
                 state.save()
-            return
+            return _OUTCOME_FAILED
 
         # Record a STATS.jsonl row for this attempt. The phase is the
         # parallel-mode shape ``task-<task_id>-<attempt>`` (replacing the old
@@ -262,25 +273,33 @@ def _run_one_task(
                 max_attempts,
                 _truncate(response.output),
             )
-            return
+            return _OUTCOME_FAILED
 
         try:
             ticked = task_is_checked(worktree_folder, task_id)
         except (FileNotFoundError, KeyError):
             ticked = False
         if not ticked:
-            # Stagnant: the dedicated stagnation backstop (separate task)
-            # will count this toward retries and the folder-wide circuit
-            # breaker. For now, surface it as a failure and keep the
-            # worktree for debugging.
-            with state_lock:
-                state.mark(
-                    task_id,
-                    "failed",
-                    last_error="stagnant: agent did not tick its checkbox",
-                )
-                state.save()
-            return
+            # Stagnant: the agent reported success but never ticked its
+            # checkbox, so the work it claimed isn't done. Skip merge_back,
+            # count the attempt toward --max-attempts (requeue if any remain),
+            # and keep the worktree for debugging. The returned outcome
+            # advances the folder-wide stagnation circuit breaker.
+            logger.warning(
+                "task %s (attempt %d) reported success but did not tick its "
+                "checkbox — stagnant.",
+                task_id,
+                attempt,
+            )
+            _fail_or_requeue(
+                state,
+                state_lock,
+                task_id,
+                attempt,
+                max_attempts,
+                "stagnant: agent did not tick its checkbox",
+            )
+            return _OUTCOME_STAGNANT
 
         with plan_lock:
             _propagate(worktree_path, folder, agent_root, task_id)
@@ -288,6 +307,7 @@ def _run_one_task(
             state.mark(task_id, "complete", last_error=None)
             state.save()
         cleanup(worktree_path, keep_on_failure=False)
+        return _OUTCOME_COMPLETE
     except BaseException as exc:
         with state_lock:
             try:
@@ -329,9 +349,16 @@ def run_folder(
     cap = max(initial_cap, 1)
     in_flight: dict[Future, _Job] = {}
 
+    # Folder-wide circuit breaker: count consecutive stagnant attempts across
+    # any tasks; reset on any non-stagnant outcome (real success or a
+    # non-stagnant failure). When it reaches _MAX_STAGNANT_LOOPS we halt the
+    # folder rather than spin forever on an agent that never makes progress.
+    consecutive_stagnant = 0
+    halted = False
+
     with ThreadPoolExecutor(max_workers=cap) as executor:
         while True:
-            while len(in_flight) < cap:
+            while not halted and len(in_flight) < cap:
                 with state_lock:
                     next_task = state.next_pending()
                     if next_task is None:
@@ -382,3 +409,21 @@ def run_folder(
                         exc,
                         exc_info=exc,
                     )
+                    # A hard error is a (non-stagnant) failure: reset the run.
+                    consecutive_stagnant = 0
+                    continue
+                if fut.result() == _OUTCOME_STAGNANT:
+                    consecutive_stagnant += 1
+                else:
+                    consecutive_stagnant = 0
+
+            if consecutive_stagnant >= _MAX_STAGNANT_LOOPS:
+                logger.warning(
+                    "No task progress for %d attempts in %s"
+                    " — breaking to avoid infinite loop. tasks=%s",
+                    _MAX_STAGNANT_LOOPS,
+                    folder.name,
+                    count_tasks(folder),
+                )
+                halted = True
+                break
