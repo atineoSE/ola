@@ -68,6 +68,46 @@ class _Job:
     started: float
 
 
+def read_concurrency(folder: Path, default: int = 1) -> int:
+    """Read the live concurrency cap from ``<folder>/.ola/concurrency``.
+
+    Re-read by the scheduler on every tick so the cap can be adjusted at
+    runtime. Parsing rules:
+
+    - **Missing file** → *default* (silent; the absence of the file is the
+      normal "no parallelism configured" case).
+    - **Malformed** (not a single integer) → *default*, logging a warning.
+    - **Negative** → rejected, returning *default* and logging a warning.
+    - **Zero** → returned as-is. A cap of ``0`` means "pause new starts; let
+      in-flight workers finish" — it is a valid, distinct state, not malformed.
+    - **Positive** → returned as-is.
+    """
+    cap_file = folder / ".ola" / "concurrency"
+    try:
+        raw = cap_file.read_text()
+    except FileNotFoundError:
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            "Malformed concurrency cap in %s (%r); using default %d.",
+            cap_file,
+            raw.strip(),
+            default,
+        )
+        return default
+    if value < 0:
+        logger.warning(
+            "Negative concurrency cap in %s (%d); using default %d.",
+            cap_file,
+            value,
+            default,
+        )
+        return default
+    return value
+
+
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     result = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True)
     if result.returncode != 0:

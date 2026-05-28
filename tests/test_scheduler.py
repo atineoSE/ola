@@ -15,6 +15,7 @@ from ola.scheduler import (
     _DEFAULT_TASK_PROMPT,
     _load_task_prompt,
     _substitute,
+    read_concurrency,
     run_folder,
 )
 from ola.stats import IterationStats
@@ -791,3 +792,57 @@ def test_run_folder_passes_substituted_prompt(tmp_path):
     assert f"id: {task.task_id}" in captured["prompt"]
     # Absolute PLAN.md path is appended so the agent can find the file.
     assert "PLAN.md is located at:" in captured["prompt"]
+
+
+# --- read_concurrency tests ---
+
+
+def test_read_concurrency_missing_file_defaults(tmp_path):
+    """No .ola/concurrency file → default, silently."""
+    assert read_concurrency(tmp_path) == 1
+    assert read_concurrency(tmp_path, default=4) == 4
+
+
+def test_read_concurrency_reads_positive_integer(tmp_path):
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("5\n")
+    assert read_concurrency(tmp_path) == 5
+
+
+def test_read_concurrency_zero_is_valid_pause(tmp_path):
+    """Cap of 0 ('pause new starts') is a valid value, not malformed."""
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("0")
+    assert read_concurrency(tmp_path) == 0
+
+
+def test_read_concurrency_negative_rejected(tmp_path):
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("-3")
+    assert read_concurrency(tmp_path, default=2) == 2
+
+
+def test_read_concurrency_malformed_defaults(tmp_path):
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("not a number")
+    assert read_concurrency(tmp_path, default=2) == 2
+
+
+def test_read_concurrency_malformed_logs_warning(tmp_path, caplog):
+    import logging
+
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("abc")
+    with caplog.at_level(logging.WARNING, logger="ola.scheduler"):
+        read_concurrency(tmp_path)
+    assert any("Malformed concurrency cap" in r.message for r in caplog.records)
+
+
+def test_read_concurrency_negative_logs_warning(tmp_path, caplog):
+    import logging
+
+    (tmp_path / ".ola").mkdir()
+    (tmp_path / ".ola" / "concurrency").write_text("-1")
+    with caplog.at_level(logging.WARNING, logger="ola.scheduler"):
+        read_concurrency(tmp_path)
+    assert any("Negative concurrency cap" in r.message for r in caplog.records)
