@@ -1,10 +1,22 @@
 """Plan folder discovery and PLAN.md parsing."""
 
+import hashlib
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
-_CHECKBOX_RE = re.compile(r"^[ \t]*[-*+] \[( |x|X)\] ")
+_CHECKBOX_RE = re.compile(r"^[ \t]*[-*+] \[( |x|X)\] (.*)$")
 _FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
+
+
+@dataclass(frozen=True)
+class Task:
+    """A single checkbox line in PLAN.md."""
+
+    task_id: str
+    text: str
+    line_no: int
+    checked: bool
 
 
 def _count_checkboxes(text: str) -> tuple[int, int]:
@@ -73,3 +85,42 @@ def read_file_if_exists(path: Path) -> str | None:
     if path.exists():
         return path.read_text()
     return None
+
+
+def _enumerate_tasks_from_text(text: str) -> list[Task]:
+    """Walk *text* line-by-line, skipping fenced code blocks, yielding Tasks.
+
+    Task ids are derived from a sha1 of the checkbox text; collisions get a
+    `-2`, `-3`, ... suffix in enumeration order.
+    """
+    tasks: list[Task] = []
+    seen_ids: dict[str, int] = {}
+    in_fence = False
+    for i, line in enumerate(text.splitlines(), start=1):
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _CHECKBOX_RE.match(line)
+        if not m:
+            continue
+        checked = m.group(1) != " "
+        task_text = m.group(2).rstrip()
+        base_id = "t-" + hashlib.sha1(task_text.encode("utf-8")).hexdigest()[:8]
+        count = seen_ids.get(base_id, 0) + 1
+        seen_ids[base_id] = count
+        task_id = base_id if count == 1 else f"{base_id}-{count}"
+        tasks.append(Task(task_id=task_id, text=task_text, line_no=i, checked=checked))
+    return tasks
+
+
+def enumerate_tasks(folder: Path) -> list[Task]:
+    """Return the ordered list of checkbox tasks in *folder*'s PLAN.md.
+
+    Skips fenced code blocks. Returns an empty list if PLAN.md is missing.
+    """
+    plan_file = folder / "PLAN.md"
+    if not plan_file.exists():
+        return []
+    return _enumerate_tasks_from_text(plan_file.read_text())
