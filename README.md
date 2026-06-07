@@ -1,6 +1,4 @@
-# ola
-
-Outer Loop of Agents — A harness to run long-horizon agentic loops
+# OLA: Outer Loop of Agents — A harness to run long-horizon agentic loops
 
 `ola` is a light harness that allows to run AI coding agents for long-horizon tasks. With a simple folder structure and a few markdown files, you can direct long-running coding tasks. 
 
@@ -77,40 +75,14 @@ Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside
 For OpenHands:
 * Set your environment vars at the `.env` in the agent folder, including base URL, API key, model name and optional parameters. See example at `.env.example`.
 
-> **`${VAR}` references:** `.env` values may reference **host** environment
-> variables, e.g. `LLM_BASE_URL="https://${SUBSTRATE_INSTANCE_IP}/v1"` — handy
-> when an endpoint (e.g. a daily GPU instance) changes without editing `.env`.
-> python-dotenv is the single interpolation engine; the host is the single
-> source of truth for these values.
->
-> - A plain `${NAME}` whose name is **not** assigned within the `.env` itself
->   is **mandatory**: if it is unset or empty in the host environment, `ola`
->   **fails fast** with a clear message rather than silently using an empty
->   value — the host environment must be sound before proceeding.
-> - `${NAME:-default}` is **optional** (the default is used if unset).
-> - A bare `$NAME` (no braces) is left literal — python-dotenv does not
->   interpolate it — so it is not treated as a reference.
->
-> A Docker sandbox is an isolated microVM that does **not** inherit your host
-> environment. `ola-sandbox` resolves the `.env` on the **host** (failing
-> fast there if a mandatory var is missing) and writes the fully-resolved
-> snapshot into the sandbox at `~/.ola/agent.env`; the in-sandbox `ola` loads
-> that snapshot (no `${VAR}` left to interpolate). The same resolved values
-> drive the network allowlist. They are also exported into the sandbox login
-> shell (so the standalone `openhands` CLI, `codex`, and manual `litellm`/
-> `curl` probes see the same `LLM_*` as ola's SDK path — including the
-> `LLM_SKIP_TLS_VERIFY` → `SSL_VERIFY` translation), and the OpenHands CLI's
-> `~/.openhands/agent_settings.json` is re-patched with the resolved
-> model/key/base_url (its host copy carries a stale, possibly-rotated
-> endpoint). This is re-evaluated on every `ola-sandbox` create **and**
-> reconnect — exactly like `allowlist.txt` — so closing and reconnecting
-> picks up a changed host value. (`ola env` performs the validate-and-resolve
-> step; run it directly on the host to check your `.env`.)
-
 For Claude Code:
 * If using an Anthropic subscription, install Claude Code and login. This will store credentials in your keychain.
 * If using an API key, define it in your `.env` in the agent folder.
 * For a self-hosted Anthropic-compatible endpoint, set `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` in `.env` — the same vars used by OpenHands and Codex. cc translates them to `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` (and mirrors the model into `ANTHROPIC_SMALL_FAST_MODEL`). When self-hosted, OAuth credentials are not copied into the per-phase state dir. Add `LLM_SKIP_TLS_VERIFY=true` if the server uses a self-signed certificate.
+
+For Codex:
+
+* Setup your `~/.codex/config.toml` to use the desired model (similar to OpenHands).
 
 ## Docker Sandbox
 
