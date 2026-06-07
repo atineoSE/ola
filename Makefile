@@ -1,12 +1,15 @@
-.PHONY: install test test-py test-sh test-integration sandbox-dev
+.PHONY: install test test-py test-sh test-e2e test-integration sandbox-dev
 
 install: sandbox-dev ## Install ola CLI globally and build local dev sandbox image
 	uv tool install --editable .
 
-test: test-py test-sh ## Run python + shell tests (default)
+test: test-py test-sh ## Run python + shell tests (default; test-py includes e2e)
 
-test-py: ## Run python unit tests
+test-py: ## Run python unit + e2e tests
 	uv run --group dev pytest tests/ -v
+
+test-e2e: ## Run only the hermetic end-to-end pipeline tests
+	uv run --group dev pytest tests/e2e/ -v
 
 test-sh: ## Run shell unit tests (requires bats: npm install -g bats bats-support bats-assert)
 	bats tests/test_ola_sh.bats

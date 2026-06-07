@@ -1,0 +1,12 @@
+# Secrets — never commit your filled-in env
+.env
+
+# Per-phase agent state (auto-created by ola)
+*/.claude/
+*/.openhands/
+*/.codex/
+
+# Parallel-mode runtime artifacts (keep .ola/concurrency, which is config)
+*/.ola/worktrees/
+*/.ola/events.jsonl
+*/.ola/tasks.json

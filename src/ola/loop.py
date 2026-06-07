@@ -2,9 +2,11 @@
 
 import json
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ola.agents.base import Agent, AgentResponse
 from ola.plan import (
@@ -13,6 +15,9 @@ from ola.plan import (
     read_file_if_exists,
 )
 from ola.stats import IterationStats, cache_hit_rate
+
+if TYPE_CHECKING:
+    from ola.events import Emitter
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +135,28 @@ def _initial_concurrency(folder: Path, default: int = 1) -> int:
     except (FileNotFoundError, ValueError):
         return default
     return value if value >= 1 else default
+
+
+def _build_emitter(folder: Path) -> "Emitter":
+    """Build the event emitter for a folder's parallel run.
+
+    Always attaches a :class:`~ola.events.client.LocalSink` writing to
+    ``<folder>/.ola/events.jsonl`` (the folder's audit trail, also the source
+    ola-top reads per-task progress from). When ``OLA_COLLECTOR_URL`` is set in
+    the environment, an :class:`~ola.events.client.HttpSink` is added so events
+    are also POSTed to a remote collector. Both sinks are fire-and-forget.
+    """
+    from ola.events import Emitter, HttpSink, LocalSink, Sink
+
+    sinks: list[Sink] = [LocalSink(folder / ".ola" / "events.jsonl")]
+    collector_url = os.environ.get("OLA_COLLECTOR_URL")
+    if collector_url:
+        try:
+            sinks.append(HttpSink(collector_url))
+            logger.info("Emitting events to collector at %s", collector_url)
+        except Exception:  # noqa: BLE001 - never let event setup break a run
+            logger.exception("Failed to set up HTTP event sink; continuing local-only")
+    return Emitter(sinks)
 
 
 def _append_stats(
@@ -291,7 +318,13 @@ def _process_folder(
 
     cap = _initial_concurrency(folder)
     logger.info("Dispatching tasks in %s (concurrency cap %d).", folder.name, cap)
-    run_folder(agent, folder, agent_root, cap, max_attempts=max_attempts)
+    emitter = _build_emitter(folder)
+    try:
+        run_folder(
+            agent, folder, agent_root, cap, emitter=emitter, max_attempts=max_attempts
+        )
+    finally:
+        emitter.close()
 
 
 def _log_response(label: str, response: AgentResponse) -> None:

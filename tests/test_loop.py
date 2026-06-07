@@ -518,6 +518,109 @@ def test_process_folder_seed_failure_skips_dispatch(tmp_path):
     mock_run.assert_not_called()
 
 
+# --- Emitter wiring tests ---
+
+
+def test_build_emitter_local_only(tmp_path, monkeypatch):
+    """Without OLA_COLLECTOR_URL the emitter has a single LocalSink."""
+    from ola.events.client import LocalSink
+
+    from ola.loop import _build_emitter
+
+    monkeypatch.delenv("OLA_COLLECTOR_URL", raising=False)
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    emitter = _build_emitter(folder)
+    try:
+        assert len(emitter._sinks) == 1
+        assert isinstance(emitter._sinks[0], LocalSink)
+        assert emitter._sinks[0]._path == folder / ".ola" / "events.jsonl"
+    finally:
+        emitter.close()
+
+
+def test_build_emitter_adds_http_sink(tmp_path, monkeypatch):
+    """OLA_COLLECTOR_URL adds an HttpSink alongside the LocalSink."""
+    from ola.events.client import HttpSink, LocalSink
+
+    from ola.loop import _build_emitter
+
+    monkeypatch.setenv("OLA_COLLECTOR_URL", "http://collector.test")
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    emitter = _build_emitter(folder)
+    try:
+        kinds = {type(s) for s in emitter._sinks}
+        assert LocalSink in kinds
+        assert HttpSink in kinds
+    finally:
+        emitter.close()
+
+
+def test_process_folder_passes_emitter_to_scheduler(tmp_path, monkeypatch):
+    """_process_folder builds an emitter and forwards it to run_folder."""
+    from ola.events.client import Emitter
+
+    monkeypatch.delenv("OLA_COLLECTOR_URL", raising=False)
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+
+    agent = _FakeAgent()
+    with patch("ola.scheduler.run_folder") as mock_run:
+        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
+
+    emitter = mock_run.call_args.kwargs["emitter"]
+    assert isinstance(emitter, Emitter)
+
+
+def test_process_folder_writes_events_jsonl(tmp_path):
+    """End-to-end: a real scheduler run produces an events.jsonl audit trail."""
+    import subprocess
+
+    def _git(cwd, *args):
+        subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, check=True)
+
+    # An agent repo with one folder containing a single task.
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@e.com")
+    _git(tmp_path, "config", "user.name", "T")
+    _git(tmp_path, "config", "commit.gpgsign", "false")
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+
+    class _TickAgent(Agent):
+        mnemonic = "cc"
+
+        def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+            # Tick the single task's checkbox in the worktree PLAN.md. The
+            # prompt mentions "PLAN.md" in prose too, so match the path token.
+            for token in prompt.split():
+                if token.endswith("PLAN.md") and "/" in token:
+                    p = Path(token)
+                    p.write_text(p.read_text().replace("- [ ]", "- [x]"))
+                    break
+            return AgentResponse(output="done", success=True, stats=IterationStats())
+
+        def version(self):
+            return "1.0.0"
+
+    _process_folder(_TickAgent(), folder, limit=None, agent_root=tmp_path)
+
+    events_file = folder / ".ola" / "events.jsonl"
+    assert events_file.exists()
+    statuses = [
+        json.loads(line)["status"]
+        for line in events_file.read_text().splitlines()
+        if line.strip()
+    ]
+    assert "started" in statuses
+    assert "complete" in statuses
+
+
 # --- Stale git lock tests ---
 
 
