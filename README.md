@@ -54,7 +54,7 @@ project/
       .ola/             # Parallel-mode sidecar (auto-created; see below)
         concurrency     # Optional: integer concurrency cap for this folder
         tasks.json      # Per-task state spine
-        events.jsonl    # v2 event stream (audit trail; read by ola-top)
+        events.jsonl    # Event stream (audit trail; read by ola-top)
         worktrees/      # One git worktree per in-flight task
     02-implement/
       LOOP-PROMPT.md

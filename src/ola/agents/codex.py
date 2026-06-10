@@ -8,7 +8,7 @@ from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
-from ola.agents.base import Agent, AgentResponse
+from ola.agents.base import Agent, AgentResponse, ProgressCallback
 from ola.agents.openhands import _resolve_localhost
 from ola.stats import IterationStats
 
@@ -95,7 +95,7 @@ class CodexAgent(Agent):
         workdir: str,
         state_dir: str | None = None,
         labels: dict[str, str] | None = None,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> AgentResponse:
         api_key = os.getenv("LLM_API_KEY")
         if not api_key:
@@ -167,7 +167,7 @@ class CodexAgent(Agent):
     def _stream(
         self,
         proc: subprocess.Popen,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> AgentResponse:
         status = _StatusDisplay()
         last_progress_ts: float = 0.0  # monotonic; throttle on_progress to 1/s

@@ -10,13 +10,13 @@ import time
 import pytest
 
 from ola.events import (
-    SCHEMA_VERSION,
     Emitter,
     Event,
     HttpSink,
     LocalSink,
     NullSink,
     Sink,
+    metrics_block,
 )
 
 _TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -47,9 +47,22 @@ class _RecordingSink(Sink):
         self.closed = True
 
 
+def test_metrics_block_computes_tokens_per_sec() -> None:
+    block = metrics_block(output_tokens=500, decode_ms=10_000)
+    assert block == {
+        "output_tokens": 500,
+        "decode_ms": 10_000,
+        "tokens_per_sec": 50.0,
+    }
+
+
+def test_metrics_block_zero_decode_yields_zero_rate() -> None:
+    block = metrics_block(output_tokens=42, decode_ms=0)
+    assert block["tokens_per_sec"] == 0
+
+
 def test_event_to_dict_round_trips_through_json() -> None:
     event = Event(
-        schema_version=SCHEMA_VERSION,
         agent_id="agent-0042",
         attempt=0,
         seq=3,
@@ -66,7 +79,6 @@ def test_event_to_dict_round_trips_through_json() -> None:
 
 def test_event_to_json_is_single_line() -> None:
     event = Event(
-        schema_version=SCHEMA_VERSION,
         agent_id="a",
         attempt=0,
         seq=0,
@@ -80,10 +92,9 @@ def test_event_to_json_is_single_line() -> None:
     assert "\n" not in event.to_json()
 
 
-def test_emitter_stamps_schema_version_and_timestamp() -> None:
+def test_emitter_stamps_timestamp() -> None:
     emitter = Emitter([NullSink()])
     event = emitter.started(**_BASE)
-    assert event.schema_version == SCHEMA_VERSION
     assert _TS_RE.match(event.ts), event.ts
 
 
@@ -202,7 +213,6 @@ def test_invalid_status_rejected() -> None:
 
 def _make_event(seq: int = 0, status: str = "started") -> Event:
     return Event(
-        schema_version=SCHEMA_VERSION,
         agent_id="agent-0001",
         attempt=0,
         seq=seq,

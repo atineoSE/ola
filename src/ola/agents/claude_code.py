@@ -6,11 +6,11 @@ import subprocess
 import sys
 import time
 from collections import deque
-from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ola.agents.base import Agent, AgentResponse
+from ola.agents.base import Agent, AgentResponse, ProgressCallback
+from ola.events.schema import metrics_block
 from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ class ClaudeCodeAgent(Agent):
         workdir: str,
         state_dir: str | None = None,
         labels: dict[str, str] | None = None,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> AgentResponse:
         try:
             return self._run_once(prompt, workdir, state_dir, on_progress=on_progress)
@@ -130,7 +130,7 @@ class ClaudeCodeAgent(Agent):
         prompt: str,
         workdir: str,
         state_dir: str | None = None,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> AgentResponse:
         cmd = [
             "claude",
@@ -196,7 +196,7 @@ class ClaudeCodeAgent(Agent):
         proc: subprocess.Popen,
         prompt: str,
         self_hosted: bool = False,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> AgentResponse:
         """Read NDJSON stream, show rolling status, return final result.
 
@@ -224,8 +224,17 @@ class ClaudeCodeAgent(Agent):
             if now - last_progress_ts < 1.0:
                 return
             last_progress_ts = now
+            # Throughput counters update at turn boundaries (message_delta);
+            # until the first turn completes there is nothing to report.
+            metrics = (
+                metrics_block(
+                    output_tokens=cum_output_tokens, decode_ms=total_decode_ms
+                )
+                if cum_output_tokens or total_decode_ms
+                else None
+            )
             try:
-                on_progress(text)
+                on_progress(text, metrics)
             except Exception:
                 logger.exception("on_progress callback raised; continuing")
 
@@ -236,6 +245,7 @@ class ClaudeCodeAgent(Agent):
         # Per-turn timing via granular stream events
         total_ttft_ms: int = 0
         total_decode_ms: int = 0
+        cum_output_tokens: int = 0
         turn_start: float | None = None
         token_start: float | None = None
 
@@ -322,9 +332,13 @@ class ClaudeCodeAgent(Agent):
                         total_ttft_ms += int((token_start - turn_start) * 1000)
 
                 elif inner_type == "message_delta":
-                    # Turn complete — accumulate decode time
+                    # Turn complete — accumulate decode time and output tokens
+                    # (message_delta usage.output_tokens is the message total)
                     if token_start is not None:
                         total_decode_ms += int((time.monotonic() - token_start) * 1000)
+                    cum_output_tokens += (inner.get("usage") or {}).get(
+                        "output_tokens", 0
+                    )
                     turn_start = None
                     token_start = None
 
@@ -424,6 +438,7 @@ class ClaudeCodeAgent(Agent):
                 max_input_tokens=max_input_tokens,
                 ttft_ms=total_ttft_ms,
                 llm_ms=llm_ms,
+                decode_ms=total_decode_ms,
                 error_type="rate_limited",
                 error_message=f"{rl_type} limit hit, resets at {resets_iso}",
                 rate_limit_resets_at=resets_at,
@@ -443,6 +458,7 @@ class ClaudeCodeAgent(Agent):
                 max_input_tokens=max_input_tokens,
                 ttft_ms=total_ttft_ms,
                 llm_ms=llm_ms,
+                decode_ms=total_decode_ms,
                 error_type=api_error_type,
                 error_message=api_error_message,
             )
@@ -459,6 +475,7 @@ class ClaudeCodeAgent(Agent):
                 max_input_tokens=max_input_tokens,
                 ttft_ms=total_ttft_ms,
                 llm_ms=llm_ms,
+                decode_ms=total_decode_ms,
                 error_type="no_result_event",
                 error_message=(stderr[:500] if stderr else None),
             )
@@ -489,6 +506,7 @@ class ClaudeCodeAgent(Agent):
             max_input_tokens=max_input_tokens,
             ttft_ms=total_ttft_ms,
             llm_ms=llm_ms,
+            decode_ms=total_decode_ms,
         )
 
     def _parse_result(
@@ -498,6 +516,7 @@ class ClaudeCodeAgent(Agent):
         max_input_tokens: int = 0,
         ttft_ms: int = 0,
         llm_ms: int = 0,
+        decode_ms: int = 0,
     ) -> AgentResponse:
         """Parse the final 'result' event from the stream."""
         output = data.get("result", "")
@@ -529,6 +548,7 @@ class ClaudeCodeAgent(Agent):
             max_input_tokens=max_input_tokens,
             ttft_ms=ttft_ms,
             llm_ms=llm_ms,
+            decode_ms=decode_ms,
             error_type=error_type,
             error_message=error_message,
         )

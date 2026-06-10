@@ -16,7 +16,7 @@ Concurrency is bounded by a live cap re-read from
 ``<folder>/.ola/concurrency`` on every scheduler tick: raising the file's
 value spawns new workers up to the new cap on the next tick, lowering it
 (including to ``0`` to pause) leaves running workers untouched and only
-gates new starts. When an ``Emitter`` is supplied each worker emits a v2
+gates new starts. When an ``Emitter`` is supplied each worker emits an
 event stream (``started`` → ``working*`` → ``complete``/``failed``); an
 ``emitter`` of ``None`` disables events entirely.
 """
@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from ola.agents.base import Agent
+from ola.events.schema import metrics_block
 from ola.loop import _append_stats, per_task_state_dir
 from ola.plan import count_tasks, set_task_checked, task_is_checked
 from ola.taskstate import TaskState
@@ -114,7 +115,7 @@ class _ProgressEmitter:
         if self._emitter is not None:
             self._emitter.started(**self._common)
 
-    def working(self, message: str) -> None:
+    def working(self, message: str, metrics: dict[str, Any] | None = None) -> None:
         """Emit a ``working`` event, dropping it if one fired < 1s ago."""
         if self._emitter is None:
             return
@@ -123,16 +124,41 @@ class _ProgressEmitter:
             if now - self._last_working < 1.0:
                 return
             self._last_working = now
-        self._emitter.working(**self._common, data={"message": message})
+        data: dict[str, Any] = {"message": message}
+        if metrics:
+            data["metrics"] = metrics
+        self._emitter.working(**self._common, data=data)
 
-    def complete(self) -> None:
+    def complete(self, stats: Any | None = None) -> None:
         if self._emitter is not None:
-            self._emitter.complete(**self._common)
+            metrics = _final_metrics(stats)
+            data = {"metrics": metrics} if metrics else None
+            self._emitter.complete(**self._common, data=data)
 
-    def failed(self, error: str | None = None) -> None:
+    def failed(self, error: str | None = None, stats: Any | None = None) -> None:
         if self._emitter is not None:
-            data = {"error": error} if error else None
-            self._emitter.failed(**self._common, data=data)
+            data: dict[str, Any] = {}
+            if error:
+                data["error"] = error
+            metrics = _final_metrics(stats)
+            if metrics:
+                data["metrics"] = metrics
+            self._emitter.failed(**self._common, data=data or None)
+
+
+def _final_metrics(stats: Any | None) -> dict[str, Any] | None:
+    """Build the terminal ``metrics`` block from an attempt's IterationStats.
+
+    Returns ``None`` when the backend reported no throughput numbers at all —
+    the block is optional in the schema, so absence beats a row of zeros.
+    """
+    if stats is None:
+        return None
+    output_tokens = getattr(stats, "output_tokens", 0)
+    decode_ms = getattr(stats, "decode_ms", 0)
+    if not output_tokens and not decode_ms:
+        return None
+    return metrics_block(output_tokens=output_tokens, decode_ms=decode_ms)
 
 
 def read_concurrency(folder: Path, default: int = 1) -> int:
@@ -392,7 +418,7 @@ def _run_one_task(
                 max_attempts,
                 _truncate(response.output),
             )
-            prog.failed(_truncate(response.output))
+            prog.failed(_truncate(response.output), stats=response.stats)
             return _OUTCOME_FAILED
 
         try:
@@ -419,7 +445,9 @@ def _run_one_task(
                 max_attempts,
                 "stagnant: agent did not tick its checkbox",
             )
-            prog.failed("stagnant: agent did not tick its checkbox")
+            prog.failed(
+                "stagnant: agent did not tick its checkbox", stats=response.stats
+            )
             return _OUTCOME_STAGNANT
 
         with plan_lock:
@@ -428,7 +456,7 @@ def _run_one_task(
             state.mark(task_id, "complete", last_error=None)
             state.save()
         cleanup(worktree_path, keep_on_failure=False)
-        prog.complete()
+        prog.complete(stats=response.stats)
         return _OUTCOME_COMPLETE
     except BaseException as exc:
         with state_lock:

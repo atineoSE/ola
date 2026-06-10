@@ -1,8 +1,8 @@
-"""Ola v2 event schema and emission.
+"""Ola event schema and emission.
 
 Public surface:
 
-- :class:`~ola.events.schema.Event` — the v2 envelope dataclass + serializer.
+- :class:`~ola.events.schema.Event` — the envelope dataclass + serializer.
 - :class:`~ola.events.client.Emitter` — assembles envelopes and fans them out.
 - :class:`~ola.events.client.Sink` / :class:`~ola.events.client.NullSink` —
   the sink interface and a no-op default.
@@ -15,7 +15,7 @@ The authoritative wire spec is ``src/ola/events/SCHEMA.md``.
 """
 
 from ola.events.client import Emitter, HttpSink, LocalSink, NullSink, Sink
-from ola.events.schema import SCHEMA_VERSION, VALID_STATUSES, Event
+from ola.events.schema import VALID_STATUSES, Event, metrics_block
 
 __all__ = [
     "Emitter",
@@ -23,7 +23,7 @@ __all__ = [
     "HttpSink",
     "LocalSink",
     "NullSink",
-    "SCHEMA_VERSION",
     "Sink",
     "VALID_STATUSES",
+    "metrics_block",
 ]

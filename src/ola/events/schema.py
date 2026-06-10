@@ -1,14 +1,16 @@
-"""Ola v2 event envelope (schema_version ``"2"``).
+"""Ola event envelope.
 
 The envelope is the on-the-wire shape every emitted event takes, whether it
 lands in ``<folder>/.ola/events.jsonl`` or is POSTed to a collector. The
 authoritative field-by-field spec lives in :doc:`SCHEMA.md` (next to this
 module); this dataclass is its executable mirror.
 
-Lifecycle: ``started → working* → complete | failed``. There is no
-``baseline``/``verified`` state — Ola has no built-in verifier. The ``data``
-slot is opaque to the transport and collector: tasks that want to publish
-metrics attach them there.
+Lifecycle: ``started → working* → complete | failed``. The ``data`` slot is a
+status-specific payload typed in SCHEMA.md (``working`` carries a progress
+``message``; ``working``/``complete``/``failed`` may carry a ``metrics`` block
+with cumulative ``output_tokens``/``decode_ms``/``tokens_per_sec``). The
+collector stores it verbatim; visualizing consumers interpret it and ignore
+unknown keys.
 """
 
 from __future__ import annotations
@@ -17,11 +19,26 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-SCHEMA_VERSION = "2"
-
 # Allowed values for the ``status`` field. ``working`` may repeat; the other
 # three are terminal/initial markers in the lifecycle.
 VALID_STATUSES: frozenset[str] = frozenset({"started", "working", "complete", "failed"})
+
+
+def metrics_block(*, output_tokens: int, decode_ms: int) -> dict[str, Any]:
+    """Build the ``Metrics`` payload defined in SCHEMA.md.
+
+    Counters are cumulative per attempt; ``tokens_per_sec`` is the lifetime
+    average (``0`` when no decode time has been observed, e.g. backends that
+    report token counts but not timing).
+    """
+    tokens_per_sec = (
+        round(output_tokens / (decode_ms / 1000), 1) if decode_ms > 0 else 0
+    )
+    return {
+        "output_tokens": output_tokens,
+        "decode_ms": decode_ms,
+        "tokens_per_sec": tokens_per_sec,
+    }
 
 
 @dataclass(frozen=True)
@@ -29,12 +46,11 @@ class Event:
     """One immutable event envelope.
 
     All fields except ``data`` are scalar metadata that the collector indexes
-    on. ``data`` is status-specific and treated as opaque downstream. Instances
+    on. ``data`` is the status-specific payload defined in SCHEMA.md. Instances
     are frozen because an event, once assembled by the emitter, is a record of
     something that happened — sinks must not mutate it.
     """
 
-    schema_version: str
     agent_id: str
     attempt: int
     seq: int
@@ -49,7 +65,6 @@ class Event:
     def to_dict(self) -> dict[str, Any]:
         """Return the envelope as a plain dict, ready for ``json.dumps``."""
         return {
-            "schema_version": self.schema_version,
             "agent_id": self.agent_id,
             "attempt": self.attempt,
             "seq": self.seq,

@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from ola.agents.base import Agent, AgentResponse
+from ola.agents.base import Agent, AgentResponse, ProgressCallback
 from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ _POLICY_FILE = Path(__file__).resolve().parent / "NETWORK-POLICY.md"
 
 
 def _make_event_progress_callback(
-    on_progress: Callable[[str], None],
+    on_progress: ProgressCallback,
 ) -> Callable[[object], None]:
     """Build a Conversation `callbacks` entry that funnels OpenHands events
     into a string-only ``on_progress`` callback, rate-limited to one call per
@@ -145,6 +145,13 @@ class _TTFTTracker:
                 total += ttft_secs
         return int(total * 1000)
 
+    def total_decode_ms(self) -> int:
+        """Total time spent receiving chunks, summed over all responses."""
+        total = 0.0
+        for rid, first in self.first_chunk.items():
+            total += self.last_chunk.get(rid, first) - first
+        return int(total * 1000)
+
 
 class OpenHandsAgent(Agent):
     """Agent that delegates to OpenHands SDK."""
@@ -167,7 +174,7 @@ class OpenHandsAgent(Agent):
         workdir: str,
         state_dir: str | None = None,
         labels: dict[str, str] | None = None,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> AgentResponse:
         # Initialize Laminar BEFORE importing OpenHands SDK. The SDK
         # auto-instruments via lmnr at import time — if it sees
@@ -361,13 +368,15 @@ class OpenHandsAgent(Agent):
             # For now we store llm_ms and the loop will derive tool_ms.
             llm_ms = int(total_llm_secs * 1000)
 
-            # Derive TTFT from streaming chunk timing
+            # Derive TTFT and decode time from streaming chunk timing
             ttft_ms = 0
+            decode_ms = 0
             if tracker is not None:
                 all_latencies = []
                 for metrics in usage_to_metrics.values():
                     all_latencies.extend(metrics.response_latencies)
                 ttft_ms = tracker.total_ttft_ms(all_latencies)
+                decode_ms = tracker.total_decode_ms()
 
             return IterationStats(
                 # prompt_tokens already includes cache reads in OH
@@ -378,6 +387,7 @@ class OpenHandsAgent(Agent):
                 num_turns=num_turns,
                 models=models,
                 llm_ms=llm_ms,
+                decode_ms=decode_ms,
                 max_input_tokens=max_input_tokens,
                 ttft_ms=ttft_ms,
                 streamed=tracker is not None,

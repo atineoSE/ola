@@ -57,8 +57,11 @@ def _content_block_start() -> str:
     return _stream_event({"type": "content_block_start"})
 
 
-def _message_delta() -> str:
-    return _stream_event({"type": "message_delta"})
+def _message_delta(output_tokens: int = 0) -> str:
+    inner: dict = {"type": "message_delta"}
+    if output_tokens:
+        inner["usage"] = {"output_tokens": output_tokens}
+    return _stream_event(inner)
 
 
 def _result(
@@ -122,6 +125,15 @@ def _run_stream(lines: list[str], returncode: int = 0) -> MagicMock:
     return agent._stream(proc, "test prompt")
 
 
+def _progress_recorder(seen: list[str]):
+    """on_progress that records messages only (metrics are tested separately)."""
+
+    def cb(message: str, metrics: dict | None = None) -> None:
+        seen.append(message)
+
+    return cb
+
+
 # ---------------------------------------------------------------------------
 # Existing tests
 # ---------------------------------------------------------------------------
@@ -156,7 +168,9 @@ class TestClaudeCodeAgent:
         """run() accepts a callable for on_progress without erroring."""
         agent = ClaudeCodeAgent()
         with patch.object(agent, "_run_once", return_value=None) as m:
-            agent.run(prompt="hi", workdir="/tmp", on_progress=lambda msg: None)
+            agent.run(
+                prompt="hi", workdir="/tmp", on_progress=lambda msg, metrics=None: None
+            )
         m.assert_called_once()
 
 
@@ -380,7 +394,7 @@ class TestOnProgress:
         proc = _make_proc(lines)
         seen: list[str] = []
         agent = ClaudeCodeAgent()
-        agent._stream(proc, "test prompt", on_progress=seen.append)
+        agent._stream(proc, "test prompt", on_progress=_progress_recorder(seen))
         assert seen == ["Hello world"]
 
     def test_tool_use_invokes_on_progress_with_tool_marker(self):
@@ -400,7 +414,7 @@ class TestOnProgress:
         proc = _make_proc(lines)
         seen: list[str] = []
         agent = ClaudeCodeAgent()
-        agent._stream(proc, "test prompt", on_progress=seen.append)
+        agent._stream(proc, "test prompt", on_progress=_progress_recorder(seen))
         assert seen == ["[tool] Read"]
 
     def test_on_progress_rate_limited_to_one_per_second(self):
@@ -438,7 +452,7 @@ class TestOnProgress:
         seen: list[str] = []
         with patch("ola.agents.claude_code.time.monotonic", side_effect=fake_monotonic):
             agent = ClaudeCodeAgent()
-            agent._stream(proc, "test prompt", on_progress=seen.append)
+            agent._stream(proc, "test prompt", on_progress=_progress_recorder(seen))
         # Only the first text fires; the next two are dropped by the rate limit.
         assert seen == ["A"]
 
@@ -474,7 +488,7 @@ class TestOnProgress:
         seen: list[str] = []
         with patch("ola.agents.claude_code.time.monotonic", side_effect=fake_monotonic):
             agent = ClaudeCodeAgent()
-            agent._stream(proc, "test prompt", on_progress=seen.append)
+            agent._stream(proc, "test prompt", on_progress=_progress_recorder(seen))
         assert seen == ["first", "second"]
 
     def test_on_progress_none_is_safe(self):
@@ -512,7 +526,7 @@ class TestOnProgress:
             _result(),
         ]
 
-        def bad_progress(_msg: str) -> None:
+        def bad_progress(_msg: str, _metrics: dict | None = None) -> None:
             raise RuntimeError("nope")
 
         proc = _make_proc(lines)
@@ -558,12 +572,84 @@ class TestOnProgress:
             prompt="hi",
             workdir=str(tmp_path),
             state_dir=str(tmp_path / "state"),
-            on_progress=seen.append,
+            on_progress=_progress_recorder(seen),
         )
         assert resp.success
         assert seen == ["[tool] Grep"]
         # Stash for any future assertions; suppresses unused-var lint
         captured["ok"] = True
+
+    def test_on_progress_metrics_none_before_first_turn_completes(self):
+        """Until a message_delta lands there are no counters to report."""
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "warming up"}]},
+                }
+            ),
+            _result(),
+        ]
+        proc = _make_proc(lines)
+        seen: list[tuple[str, dict | None]] = []
+        agent = ClaudeCodeAgent()
+        agent._stream(
+            proc, "test prompt", on_progress=lambda m, x=None: seen.append((m, x))
+        )
+        assert seen == [("warming up", None)]
+
+    def test_on_progress_carries_metrics_after_turn_completes(self):
+        """After message_delta the callback receives the cumulative Metrics block."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _message_delta(output_tokens=120),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "done a turn"}]},
+                }
+            ),
+            _result(),
+        ]
+        proc = _make_proc(lines)
+        seen: list[tuple[str, dict | None]] = []
+        agent = ClaudeCodeAgent()
+        agent._stream(
+            proc, "test prompt", on_progress=lambda m, x=None: seen.append((m, x))
+        )
+        assert len(seen) == 1
+        message, metrics = seen[0]
+        assert message == "done a turn"
+        assert metrics is not None
+        assert metrics["output_tokens"] == 120
+        assert set(metrics) == {"output_tokens", "decode_ms", "tokens_per_sec"}
+
+
+# ---------------------------------------------------------------------------
+# Decode-time stats tests
+# ---------------------------------------------------------------------------
+
+
+class TestDecodeStats:
+    def test_decode_ms_recorded_in_stats(self):
+        """decode_ms lands in IterationStats from per-turn stream timing."""
+        call_count = 0
+
+        def fake_monotonic():
+            nonlocal call_count
+            call_count += 1
+            # message_start: turn_start = 5; content_block_start: token_start
+            # = 10 (ttft 5000ms); message_delta: now = 15 (decode 5000ms).
+            return call_count * 5.0
+
+        lines = _single_turn_lines()
+        with patch("ola.agents.claude_code.time.monotonic", side_effect=fake_monotonic):
+            resp = _run_stream(lines)
+        assert resp.stats.decode_ms == 5000
+        assert resp.stats.ttft_ms == 5000
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,8 @@
-"""Event emitter and sink abstraction for Ola v2 events.
+"""Event emitter and sink abstraction for Ola events.
 
 :class:`Emitter` is the harness-facing surface: it owns envelope assembly
-(``schema_version``, ``ts``, and a monotonic ``seq`` per ``(agent_id,
-attempt)``) and fans each assembled :class:`~ola.events.schema.Event` out to a
-set of sinks. Callers only supply the event-specific metadata via
+(``ts`` and a monotonic ``seq`` per ``(agent_id, attempt)``) and fans each
+assembled :class:`~ola.events.schema.Event` out to a set of sinks. Callers only supply the event-specific metadata via
 :meth:`Emitter.started`, :meth:`Emitter.working`, :meth:`Emitter.complete`,
 and :meth:`Emitter.failed`.
 
@@ -25,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ola.events.schema import SCHEMA_VERSION, VALID_STATUSES, Event
+from ola.events.schema import VALID_STATUSES, Event
 
 logger = logging.getLogger(__name__)
 
@@ -217,11 +216,10 @@ class HttpSink(Sink):
 
 
 class Emitter:
-    """Assembles v2 envelopes and dispatches them to its sinks.
+    """Assembles event envelopes and dispatches them to its sinks.
 
     The emitter is the single owner of envelope-level invariants:
 
-    - ``schema_version`` is always :data:`~ola.events.schema.SCHEMA_VERSION`.
     - ``ts`` is stamped at emit time in UTC millisecond ISO-8601.
     - ``seq`` is a monotonic counter scoped to each ``(agent_id, attempt)``
       pair, starting at ``0`` for the first event of that pair and
@@ -261,7 +259,6 @@ class Emitter:
         if status not in VALID_STATUSES:
             raise ValueError(f"Invalid event status: {status!r}")
         event = Event(
-            schema_version=SCHEMA_VERSION,
             agent_id=agent_id,
             attempt=attempt,
             seq=self._next_seq(agent_id, attempt),

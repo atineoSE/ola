@@ -310,7 +310,7 @@ def _truncate(text: str, limit: int = _TASK_TEXT_MAX) -> str:
 
 
 def _parse_ts(ts: str) -> datetime | None:
-    """Parse a v2 event ISO-8601 timestamp (trailing 'Z'), or None if malformed."""
+    """Parse an event ISO-8601 timestamp (trailing 'Z'), or None if malformed."""
     try:
         return datetime.fromisoformat(ts)
     except (ValueError, TypeError):

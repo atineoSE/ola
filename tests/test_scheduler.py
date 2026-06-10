@@ -878,14 +878,23 @@ def test_run_folder_passes_substituted_prompt(tmp_path):
 
 
 class _ProgressTickingAgent(_TickingAgent):
-    """Ticking agent that also pings ``on_progress`` so ``working`` events fire."""
+    """Ticking agent that also pings ``on_progress`` so ``working`` events fire.
+
+    Passes a throughput ``metrics`` block on the progress ping and returns
+    non-zero token/decode stats, so terminal events carry ``metrics`` too.
+    """
 
     def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
         if on_progress is not None:
-            on_progress("doing the work")
-        return super().run(
+            on_progress(
+                "doing the work",
+                {"output_tokens": 10, "decode_ms": 500, "tokens_per_sec": 20.0},
+            )
+        response = super().run(
             prompt, workdir, state_dir=state_dir, labels=labels, on_progress=on_progress
         )
+        response.stats = IterationStats(output_tokens=100, decode_ms=2000)
+        return response
 
 
 class _ProgressFailingAgent(Agent):
@@ -951,9 +960,8 @@ def test_run_folder_emits_all_event_types(tmp_path):
     statuses = {r["status"] for r in records}
     assert {"started", "working", "complete", "failed"} <= statuses
 
-    # Every envelope carries the v2 fields the schema requires.
+    # Every envelope carries the fields the schema requires.
     for r in records:
-        assert r["schema_version"] == "2"
         assert r["folder"] == "agent-folder"
         assert r["agent_backend"] == "stub"
         assert r["task_id"] in {t.task_id for t in tasks}
@@ -964,6 +972,32 @@ def test_run_folder_emits_all_event_types(tmp_path):
         by_agent.setdefault((r["agent_id"], r["attempt"]), []).append(r["seq"])
     for seqs in by_agent.values():
         assert seqs == list(range(len(seqs)))
+
+    # working events carry the message plus the metrics block the agent passed.
+    working = [r for r in records if r["status"] == "working"]
+    assert working
+    with_metrics = [r for r in working if "metrics" in r["data"]]
+    assert with_metrics
+    assert with_metrics[0]["data"]["metrics"]["output_tokens"] == 10
+
+    # complete events carry the final metrics derived from response.stats
+    # (100 tokens over 2000ms decode → 50.0 tok/s).
+    complete = [r for r in records if r["status"] == "complete"]
+    assert complete
+    for r in complete:
+        assert r["data"]["metrics"] == {
+            "output_tokens": 100,
+            "decode_ms": 2000,
+            "tokens_per_sec": 50.0,
+        }
+
+    # failed events carry the error; the failing stub reports no throughput
+    # stats, so the optional metrics block is omitted rather than zeroed.
+    failed = [r for r in records if r["status"] == "failed"]
+    assert failed
+    for r in failed:
+        assert r["data"]["error"]
+        assert "metrics" not in r["data"]
 
 
 # --- read_concurrency tests ---

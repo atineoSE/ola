@@ -248,8 +248,8 @@ def test_events_lifecycle_per_task(tmp_path):
 
     events = read_events(folder)
     assert events, "events.jsonl should be written for a parallel run"
-    # Every event carries the v2 schema version and a known status.
-    assert {e["schema_version"] for e in events} == {"2"}
+    # Every event carries a known lifecycle status.
+    assert {e["status"] for e in events} <= {"started", "working", "complete", "failed"}
 
     for task in enumerate_tasks(folder):
         statuses = _statuses(events, task.task_id)
