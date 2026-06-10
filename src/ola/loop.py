@@ -44,6 +44,27 @@ def _ensure_git(cwd: Path) -> None:
             gitignore.write_text(".env\n")
         _git(cwd, "init")
         _git_commit(cwd, "Initial commit")
+    _exclude_ola_artifacts(cwd)
+
+
+def _exclude_ola_artifacts(cwd: Path) -> None:
+    """Idempotently exclude ``.ola/`` runtime artifacts from git.
+
+    Uses ``.git/info/exclude`` — shared by every worktree of the repo and
+    invisible to the user's own ``.gitignore``. Without it the provisioned
+    ``.ola/bin/ola-blocked`` script and other sidecar files would be swept
+    into ``git add -A`` commits.
+    """
+    exclude = cwd / ".git" / "info" / "exclude"
+    if not exclude.parent.is_dir():
+        return
+    existing = exclude.read_text() if exclude.exists() else ""
+    if ".ola/" in existing.splitlines():
+        return
+    with open(exclude, "a") as f:
+        if existing and not existing.endswith("\n"):
+            f.write("\n")
+        f.write(".ola/\n")
 
 
 def _clear_lock(cwd: Path) -> None:
@@ -223,24 +244,54 @@ def run_outer_loop(
     plan_path: Path,
     limit: int | None = None,
     max_attempts: int = 0,
+    janitor_enabled: bool = True,
 ) -> None:
     """Run the outer loop over plan subfolders."""
     _load_agent_env(plan_path)
 
     _ensure_git(plan_path)
 
+    # One folder per discovery pass: a janitor may create a letter-suffixed
+    # sibling (e.g. 01a-init-leftovers) while 01-init is running, and it must
+    # be picked up before 02-… — re-discovering after every folder makes the
+    # lexicographic sort do the interleaving.
     processed: set[Path] = set()
     while True:
         folders = discover_plan_folders(plan_path)
-        remaining = [f for f in folders if f not in processed]
-        if not remaining:
+        folder = next((f for f in folders if f not in processed), None)
+        if folder is None:
             if not processed:
                 logger.info("No subfolders found in %s. Nothing to do.", plan_path)
             break
-        for folder in remaining:
-            logger.info("Processing: %s", folder.name)
-            _process_folder(agent, folder, limit, plan_path, max_attempts)
-            processed.add(folder)
+        logger.info("Processing: %s", folder.name)
+        _process_folder(agent, folder, limit, plan_path, max_attempts, janitor_enabled)
+        processed.add(folder)
+
+    _log_attention_summary(plan_path)
+
+
+def _log_attention_summary(plan_path: Path) -> None:
+    """Log a 'human attention needed' block for escalations and blocked tasks."""
+    blockers = sorted(plan_path.glob("*/BLOCKERS.md"))
+    blocked_tasks: list[str] = []
+    for tasks_file in sorted(plan_path.glob("*/.ola/tasks.json")):
+        try:
+            raw = json.loads(tasks_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        for entry in raw.get("tasks", []):
+            if entry.get("status") == "blocked":
+                blocked_tasks.append(
+                    f"{tasks_file.parent.parent.name}: {entry.get('text', '?')}"
+                    f" ({entry.get('last_error') or 'no reason recorded'})"
+                )
+    if not blockers and not blocked_tasks:
+        return
+    logger.warning("=== Human attention needed ===")
+    for path in blockers:
+        logger.warning("Escalated blockers: %s", path)
+    for line in blocked_tasks:
+        logger.warning("Blocked task — %s", line)
 
 
 def _process_folder(
@@ -249,6 +300,7 @@ def _process_folder(
     limit: int | None,
     agent_root: Path,
     max_attempts: int = 0,
+    janitor_enabled: bool = True,
 ) -> None:
     """Process a single plan folder.
 
@@ -307,7 +359,13 @@ def _process_folder(
             _git_commit(agent_root, f"ola: {folder.name} seed")
 
     if not plan_file.exists():
-        logger.warning("Skipping %s: no PLAN.md found.", folder.name)
+        if (folder / "BLOCKERS.md").exists():
+            logger.info(
+                "Skipping %s: BLOCKERS.md present — awaiting human input.",
+                folder.name,
+            )
+        else:
+            logger.warning("Skipping %s: no PLAN.md found.", folder.name)
         return
 
     if limit is not None:
@@ -321,7 +379,13 @@ def _process_folder(
     emitter = _build_emitter(folder)
     try:
         run_folder(
-            agent, folder, agent_root, cap, emitter=emitter, max_attempts=max_attempts
+            agent,
+            folder,
+            agent_root,
+            cap,
+            emitter=emitter,
+            max_attempts=max_attempts,
+            janitor_enabled=janitor_enabled,
         )
     finally:
         emitter.close()

@@ -97,6 +97,12 @@ def main() -> None:
         help="Disable debug logging",
     )
     parser.add_argument(
+        "--no-janitor",
+        action="store_true",
+        help="Disable the janitor: blocked tasks stay blocked instead of"
+        " triggering an automatic unblock/escalate run",
+    )
+    parser.add_argument(
         "--skip-sandbox",
         action="store_true",
         help="Allow running outside a Docker sandbox",
@@ -129,7 +135,13 @@ def main() -> None:
         sys.exit(1)
 
     agent = create_agent(args.agent, model=args.model)
-    run_outer_loop(agent, plan_path, limit=args.limit, max_attempts=args.max_attempts)
+    run_outer_loop(
+        agent,
+        plan_path,
+        limit=args.limit,
+        max_attempts=args.max_attempts,
+        janitor_enabled=not args.no_janitor,
+    )
 
 
 if __name__ == "__main__":

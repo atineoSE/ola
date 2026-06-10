@@ -271,3 +271,122 @@ def test_events_lifecycle_per_task(tmp_path):
     # Monitor's per-task reader folds events in without error.
     rows = read_task_rows(folder)
     assert {r.task_id for r in rows} == {t.task_id for t in enumerate_tasks(folder)}
+
+
+# --- 10. Blocked task → janitor unblocks --------------------------------------
+
+
+def test_blocked_task_janitor_unblocks(tmp_path):
+    """A blocked task triggers a janitor that injects a prereq and defers the
+    task to a leftovers folder that runs before later-numbered folders."""
+    agent_path = build_agent_repo(tmp_path, "blocked")
+    folder = agent_path / "01-init"
+
+    agent = ScriptedAgent(
+        block_tasks={"Call the FOO API": "FOO_API_KEY is not available"}
+    )
+    run_pipeline(agent, agent_path)
+
+    # The janitor ran exactly once, for the blocked task in 01-init.
+    assert len(agent.janitor_calls) == 1
+    assert agent.janitor_calls[0][0] == "01-init"
+
+    # The prerequisite was dispatched and completed in the same folder run.
+    prereq = [
+        t for t in enumerate_tasks(folder) if t.text == "Provision the prerequisite"
+    ]
+    assert len(prereq) == 1 and prereq[0].checked
+
+    # The blocked task's line is gone from 01-init's plan and its entry was
+    # reconciled out of tasks.json by the post-janitor resync.
+    assert "Call the FOO API" not in (folder / "PLAN.md").read_text()
+    assert all(t["text"] != "Call the FOO API" for t in read_tasks(folder))
+
+    # The leftovers folder exists, ran to completion, and ran BEFORE 02-next.
+    leftovers = agent_path / "01a-init-leftovers"
+    assert leftovers.is_dir()
+    moved = enumerate_tasks(leftovers)
+    assert [t.text for t in moved] == ["Call the FOO API"]
+    assert moved[0].checked
+    call_folders = [f for (f, _t, _a) in agent.calls]
+    assert call_folders.index("01a-init-leftovers") < call_folders.index("02-next")
+
+    # The janitor's edits were committed by the harness.
+    subjects = git_log_subjects(agent_path)
+    assert any(s.startswith("ola: 01-init janitor t-") for s in subjects)
+
+    # Events: a failed event flagged blocked, and a janitor lifecycle that
+    # completes — all under the existing envelope.
+    events = read_events(folder)
+    blocked_failed = [
+        e for e in events if e["status"] == "failed" and e["data"].get("blocked")
+    ]
+    assert len(blocked_failed) == 1
+    janitor_events = [e for e in events if e["agent_id"].startswith("janitor-")]
+    assert janitor_events
+    assert janitor_events[0]["status"] == "started"
+    assert janitor_events[0]["data"] == {"role": "janitor"}
+    assert janitor_events[-1]["status"] == "complete"
+
+
+# --- 11. Blocked task → janitor escalates --------------------------------------
+
+
+def test_blocked_task_janitor_escalates(tmp_path):
+    """When unblocking needs a human, the janitor files BLOCKERS.md and the
+    pipeline keeps moving past it."""
+    agent_path = build_agent_repo(tmp_path, "blocked")
+    folder = agent_path / "01-init"
+
+    agent = ScriptedAgent(
+        block_tasks={"Call the FOO API": "needs a paid account only a human can open"},
+        janitor_action="escalate",
+    )
+    run_pipeline(agent, agent_path)
+
+    # The blockers folder exists with both explanations, and no PLAN.md, so
+    # the outer loop skipped it without stalling.
+    blockers = agent_path / "01b-init-blockers"
+    assert blockers.is_dir()
+    content = (blockers / "BLOCKERS.md").read_text()
+    assert "Call the FOO API" in content
+    assert "needs a paid account" in content
+    assert not (blockers / "PLAN.md").exists()
+
+    # The escalated task's line was removed from the live plan; the rest of
+    # the pipeline completed (01-init's other task and all of 02-next).
+    assert "Call the FOO API" not in (folder / "PLAN.md").read_text()
+    assert all(t.checked for t in enumerate_tasks(folder))
+    assert all(t.checked for t in enumerate_tasks(agent_path / "02-next"))
+
+
+# --- 12. Blocked is terminal: dispatched once despite retries ------------------
+
+
+def test_blocked_task_never_retried(tmp_path):
+    agent_path = build_agent_repo(tmp_path, "blocked")
+    folder = agent_path / "01-init"
+
+    agent = ScriptedAgent(
+        block_tasks={"Call the FOO API": "missing key"},
+    )
+    run_pipeline(agent, agent_path, max_attempts=3, janitor_enabled=False)
+
+    # With the janitor off, the blocked entry stays in tasks.json, terminal.
+    (blocked_entry,) = [
+        t for t in read_tasks(folder) if t["text"] == "Call the FOO API"
+    ]
+    assert blocked_entry["status"] == "blocked"
+    assert blocked_entry["attempts"] == 1
+    assert blocked_entry["last_error"] == "blocked: missing key"
+
+    # Dispatched exactly once despite max_attempts=3; no janitor ran.
+    blocked_calls = [
+        (f, t, a) for (f, t, a) in agent.calls if t == blocked_entry["task_id"]
+    ]
+    assert len(blocked_calls) == 1
+    assert agent.janitor_calls == []
+
+    # The monitor surfaces the blocked status.
+    fs = read_folder_status(folder)
+    assert "blocked" in {r.status for r in fs.task_rows}

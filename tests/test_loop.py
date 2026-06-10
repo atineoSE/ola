@@ -724,3 +724,123 @@ def test_per_task_state_dir_idempotent(tmp_path):
 
     assert p1 == p2
     assert (Path(p1) / "marker").read_text() == "keep"
+
+
+# --- .ola/ git exclusion ---
+
+
+def test_exclude_ola_artifacts_appends_once(tmp_path):
+    import subprocess
+
+    from ola.loop import _exclude_ola_artifacts
+
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    _exclude_ola_artifacts(tmp_path)
+    _exclude_ola_artifacts(tmp_path)  # idempotent
+
+    exclude = (tmp_path / ".git" / "info" / "exclude").read_text()
+    assert exclude.splitlines().count(".ola/") == 1
+
+
+def test_exclude_ola_artifacts_noop_without_git(tmp_path):
+    from ola.loop import _exclude_ola_artifacts
+
+    _exclude_ola_artifacts(tmp_path)  # no .git → silently does nothing
+    assert not (tmp_path / ".git").exists()
+
+
+# --- BLOCKERS.md folders are skipped quietly ---
+
+
+def test_process_folder_skips_blockers_folder(tmp_path, caplog):
+    folder = tmp_path / "01b-init-blockers"
+    folder.mkdir()
+    (folder / "BLOCKERS.md").write_text("# Needs a human\n")
+
+    agent = _FakeAgent()
+    with caplog.at_level(logging.INFO, logger="ola.loop"):
+        _process_folder(agent, folder, None, tmp_path)
+
+    assert any("awaiting human input" in r.message for r in caplog.records)
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+# --- run_outer_loop re-discovery ---
+
+
+def test_run_outer_loop_picks_up_midrun_sibling_before_later_folders(tmp_path):
+    """A 01a- folder created while 01- runs is processed before 02-."""
+    from ola.loop import run_outer_loop
+
+    for name in ("01-init", "02-utils"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "PLAN.md").write_text("- [x] done\n")
+
+    order: list[str] = []
+
+    def fake_process(
+        agent, folder, limit, agent_root, max_attempts=0, janitor_enabled=True
+    ):
+        order.append(folder.name)
+        if folder.name == "01-init":
+            sibling = tmp_path / "01a-init-leftovers"
+            sibling.mkdir()
+            (sibling / "PLAN.md").write_text("- [x] moved task\n")
+
+    agent = _FakeAgent()
+    with (
+        patch("ola.loop._process_folder", side_effect=fake_process),
+        patch("ola.loop._load_agent_env"),
+        patch("ola.loop._ensure_git"),
+    ):
+        run_outer_loop(agent, tmp_path)
+
+    assert order == ["01-init", "01a-init-leftovers", "02-utils"]
+
+
+# --- end-of-run attention summary ---
+
+
+def test_log_attention_summary_reports_blockers_and_blocked_tasks(tmp_path, caplog):
+    from ola.loop import _log_attention_summary
+
+    blockers = tmp_path / "01b-init-blockers"
+    blockers.mkdir()
+    (blockers / "BLOCKERS.md").write_text("# Needs a human\n")
+
+    folder = tmp_path / "01-init"
+    (folder / ".ola").mkdir(parents=True)
+    (folder / ".ola" / "tasks.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_id": "t-abc",
+                        "text": "Call the FOO API",
+                        "line_no": 1,
+                        "status": "blocked",
+                        "attempts": 1,
+                        "last_error": "blocked: missing key",
+                    }
+                ]
+            }
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="ola.loop"):
+        _log_attention_summary(tmp_path)
+
+    messages = [r.message for r in caplog.records]
+    assert any("Human attention needed" in m for m in messages)
+    assert any("BLOCKERS.md" in m for m in messages)
+    assert any("Call the FOO API" in m and "missing key" in m for m in messages)
+
+
+def test_log_attention_summary_silent_when_clean(tmp_path, caplog):
+    from ola.loop import _log_attention_summary
+
+    (tmp_path / "01-init").mkdir()
+    with caplog.at_level(logging.WARNING, logger="ola.loop"):
+        _log_attention_summary(tmp_path)
+    assert caplog.records == []

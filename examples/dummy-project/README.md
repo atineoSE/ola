@@ -68,5 +68,18 @@ at a time — expand it in `ola-top` to see the per-task view. Change the number
 (or `echo 3 > agent/03-parallel/.ola/concurrency`) at any time; the cap is
 re-read live.
 
+## Blocked tasks and the janitor
+
+If an agent cannot complete a task for out-of-scope reasons (say a task needs
+an API key that isn't configured), it runs the `ola-blocked` script that ola
+provisions into its worktree (the shipped `TASK-PROMPT.md` tells it how) and
+stops. The task turns `blocked` (magenta in `ola-top`) and a **janitor** agent
+is dispatched immediately: it either injects the missing prerequisite into the
+live plan and defers the blocked task to a sibling `NNa-…-leftovers/` folder
+that runs next, or — when only a human can help — files a
+`NNb-…-blockers/BLOCKERS.md` that ola skips and reports at the end of the run.
+To see it happen, add a task like `- [ ] Call the FOO API using FOO_API_KEY`
+to a plan and run with a real agent.
+
 > **Security note:** never put real API keys in `agent/.env.example` or commit
 > `agent/.env`. The example ships only placeholders.

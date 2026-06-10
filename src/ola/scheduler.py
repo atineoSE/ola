@@ -27,14 +27,22 @@ import logging
 import subprocess
 import threading
 import time
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ola.agents.base import Agent
+from ola.blocked import (
+    clear_blocked_record,
+    provision_blocked_script,
+    read_blocked_record,
+)
+from ola.blocked import BlockedRecord
 from ola.events.schema import metrics_block
-from ola.loop import _append_stats, per_task_state_dir
+from ola.janitor import run_janitor
+from ola.loop import _append_stats, _exclude_ola_artifacts, per_task_state_dir
 from ola.plan import count_tasks, set_task_checked, task_is_checked
 from ola.taskstate import TaskState
 from ola.worktree import cleanup, commit, create, merge_back
@@ -59,9 +67,12 @@ _MAX_RATE_LIMIT_WAIT_SEC = 8 * 3600  # 8 hours
 # Worker outcomes reported back to the main loop, which folds them into the
 # folder-wide stagnation counter. ``STAGNANT`` (agent reported success but did
 # not tick its checkbox) advances the counter; anything else resets it.
+# ``BLOCKED`` (task self-reported as blocked via the ola-blocked script) is
+# terminal for the task — never retried — and triggers a janitor run.
 _OUTCOME_COMPLETE = "complete"
 _OUTCOME_FAILED = "failed"
 _OUTCOME_STAGNANT = "stagnant"
+_OUTCOME_BLOCKED = "blocked"
 
 
 @dataclass
@@ -145,6 +156,21 @@ class _ProgressEmitter:
                 data["metrics"] = metrics
             self._emitter.failed(**self._common, data=data or None)
 
+    def blocked(self, reason: str, stats: Any | None = None) -> None:
+        """Emit a ``failed`` event carrying the additive ``blocked`` flag.
+
+        The event schema has no ``blocked`` status; per SCHEMA.md consumers
+        ignore unknown ``data`` keys, so a self-reported blockage rides as a
+        ``failed`` event with ``data.blocked = true``.
+        """
+        if self._emitter is None:
+            return
+        data: dict[str, Any] = {"error": f"blocked: {reason}", "blocked": True}
+        metrics = _final_metrics(stats)
+        if metrics:
+            data["metrics"] = metrics
+        self._emitter.failed(**self._common, data=data)
+
 
 def _final_metrics(stats: Any | None) -> dict[str, Any] | None:
     """Build the terminal ``metrics`` block from an attempt's IterationStats.
@@ -222,8 +248,14 @@ def _load_task_prompt(folder: Path) -> str:
     return _DEFAULT_TASK_PROMPT
 
 
-def _substitute(template: str, task_text: str, task_id: str) -> str:
-    return template.replace("{{task_text}}", task_text).replace("{{task_id}}", task_id)
+def _substitute(
+    template: str, task_text: str, task_id: str, blocked_cmd: str = ""
+) -> str:
+    return (
+        template.replace("{{task_text}}", task_text)
+        .replace("{{task_id}}", task_id)
+        .replace("{{blocked_cmd}}", blocked_cmd)
+    )
 
 
 def _propagate(
@@ -350,6 +382,8 @@ def _run_one_task(
     """
     worktree_path = create(folder, task_id)
     worktree_folder = worktree_path / folder.name
+    clear_blocked_record(folder, task_id)
+    blocked_cmd = provision_blocked_script(worktree_path, folder, task_id)
     prog = _ProgressEmitter(
         emitter,
         agent_id=f"agent-{task_id}",
@@ -361,7 +395,7 @@ def _run_one_task(
     )
     try:
         prog.started()
-        prompt = _substitute(template, task_text, task_id)
+        prompt = _substitute(template, task_text, task_id, str(blocked_cmd))
         plan_in_worktree = worktree_folder / "PLAN.md"
         prompt += f"\n\nPLAN.md is located at: {plan_in_worktree}"
         workdir = str(worktree_path)
@@ -409,6 +443,42 @@ def _run_one_task(
                 tasks_after,
             )
 
+        try:
+            ticked = task_is_checked(worktree_folder, task_id)
+        except (FileNotFoundError, KeyError):
+            ticked = False
+        record = read_blocked_record(folder, task_id)
+
+        if ticked and response.success:
+            # Checkbox is truth: a tick wins even over a stray blocked marker.
+            clear_blocked_record(folder, task_id)
+            with plan_lock:
+                _propagate(worktree_path, folder, agent_root, task_id)
+            with state_lock:
+                state.mark(task_id, "complete", last_error=None)
+                state.save()
+            cleanup(worktree_path, keep_on_failure=False)
+            prog.complete(stats=response.stats)
+            return _OUTCOME_COMPLETE
+
+        if record is not None:
+            # The task self-reported as blocked via the ola-blocked script.
+            # Terminal for this task — no retry regardless of --max-attempts;
+            # the main loop dispatches a janitor to arrange unblocking. The
+            # reason is recorded, so the worktree holds nothing worth keeping.
+            logger.warning(
+                "task %s (attempt %d) reported BLOCKED: %s",
+                task_id,
+                attempt,
+                record.reason,
+            )
+            with state_lock:
+                state.mark(task_id, "blocked", last_error=f"blocked: {record.reason}")
+                state.save()
+            cleanup(worktree_path, keep_on_failure=False)
+            prog.blocked(record.reason, stats=response.stats)
+            return _OUTCOME_BLOCKED
+
         if not response.success:
             _fail_or_requeue(
                 state,
@@ -421,43 +491,27 @@ def _run_one_task(
             prog.failed(_truncate(response.output), stats=response.stats)
             return _OUTCOME_FAILED
 
-        try:
-            ticked = task_is_checked(worktree_folder, task_id)
-        except (FileNotFoundError, KeyError):
-            ticked = False
-        if not ticked:
-            # Stagnant: the agent reported success but never ticked its
-            # checkbox, so the work it claimed isn't done. Skip merge_back,
-            # count the attempt toward --max-attempts (requeue if any remain),
-            # and keep the worktree for debugging. The returned outcome
-            # advances the folder-wide stagnation circuit breaker.
-            logger.warning(
-                "task %s (attempt %d) reported success but did not tick its "
-                "checkbox — stagnant.",
-                task_id,
-                attempt,
-            )
-            _fail_or_requeue(
-                state,
-                state_lock,
-                task_id,
-                attempt,
-                max_attempts,
-                "stagnant: agent did not tick its checkbox",
-            )
-            prog.failed(
-                "stagnant: agent did not tick its checkbox", stats=response.stats
-            )
-            return _OUTCOME_STAGNANT
-
-        with plan_lock:
-            _propagate(worktree_path, folder, agent_root, task_id)
-        with state_lock:
-            state.mark(task_id, "complete", last_error=None)
-            state.save()
-        cleanup(worktree_path, keep_on_failure=False)
-        prog.complete(stats=response.stats)
-        return _OUTCOME_COMPLETE
+        # Stagnant: the agent reported success but never ticked its
+        # checkbox, so the work it claimed isn't done. Skip merge_back,
+        # count the attempt toward --max-attempts (requeue if any remain),
+        # and keep the worktree for debugging. The returned outcome
+        # advances the folder-wide stagnation circuit breaker.
+        logger.warning(
+            "task %s (attempt %d) reported success but did not tick its "
+            "checkbox — stagnant.",
+            task_id,
+            attempt,
+        )
+        _fail_or_requeue(
+            state,
+            state_lock,
+            task_id,
+            attempt,
+            max_attempts,
+            "stagnant: agent did not tick its checkbox",
+        )
+        prog.failed("stagnant: agent did not tick its checkbox", stats=response.stats)
+        return _OUTCOME_STAGNANT
     except BaseException as exc:
         with state_lock:
             try:
@@ -476,6 +530,7 @@ def run_folder(
     initial_cap: int,
     emitter: Any | None = None,
     max_attempts: int = 0,
+    janitor_enabled: bool = True,
 ) -> None:
     """Process every pending task in *folder*/PLAN.md in parallel.
 
@@ -491,9 +546,17 @@ def run_folder(
     *max_attempts* is the retry ceiling: a worker that fails is requeued (same
     ``task_id``, ``attempt += 1``) while its attempt count is below this value;
     the default ``0`` means no retries.
+    *janitor_enabled* controls whether a task that self-reports BLOCKED
+    dispatches a janitor run (see :mod:`ola.janitor`); when ``False`` the task
+    simply stays ``blocked`` in tasks.json.
     """
     folder = Path(folder)
     agent_root = Path(agent_root)
+
+    # Keep .ola/ runtime artifacts (provisioned ola-blocked scripts, sidecar
+    # state) out of worktree `git add -A` commits even when the caller didn't
+    # go through run_outer_loop's _ensure_git.
+    _exclude_ola_artifacts(agent_root)
 
     state = TaskState.sync_from_plan(folder)
     state.save()
@@ -524,6 +587,33 @@ def run_folder(
     # folder rather than spin forever on an agent that never makes progress.
     consecutive_stagnant = 0
     halted = False
+
+    # Janitor lane: at most one janitor runs per folder, off to the side of
+    # the worker pool — it is harness overhead, not a plan task, so it never
+    # occupies a concurrency slot. Further blockers queue behind it; a later
+    # janitor sees the earlier one's PLAN.md edits via fresh reads.
+    janitor_queue: deque[tuple[BlockedRecord, str, int]] = deque()
+    janitor_future: Future | None = None
+    janitor_pool = ThreadPoolExecutor(max_workers=1)
+
+    def _janitor_job(record: BlockedRecord, task_text: str, attempt: int) -> bool:
+        ok = run_janitor(
+            agent,
+            folder,
+            agent_root,
+            record,
+            task_text,
+            attempt,
+            plan_lock,
+            emitter,
+        )
+        # Reconcile the live plan in place: janitor-added prerequisite
+        # checkboxes become pending entries dispatchable in this same run,
+        # and the removed blocked line is dropped from tasks.json.
+        with state_lock:
+            state.resync()
+            state.save()
+        return ok
 
     try:
         while True:
@@ -567,7 +657,18 @@ def run_folder(
                     started=time.monotonic(),
                 )
 
-            if not in_flight:
+            # Dispatch the next queued janitor when the lane is free.
+            if janitor_future is None and janitor_queue:
+                record, blocked_text, blocked_attempt = janitor_queue.popleft()
+                janitor_future = janitor_pool.submit(
+                    _janitor_job, record, blocked_text, blocked_attempt
+                )
+
+            wait_set: list[Future] = list(in_flight.keys())
+            if janitor_future is not None:
+                wait_set.append(janitor_future)
+
+            if not wait_set:
                 if halted:
                     break
                 with state_lock:
@@ -581,11 +682,20 @@ def run_folder(
                 continue
 
             done, _ = wait(
-                list(in_flight.keys()),
+                wait_set,
                 timeout=1.0,
                 return_when=FIRST_COMPLETED,
             )
             for fut in done:
+                if fut is janitor_future:
+                    # A janitor crash must not kill the folder; the blocked
+                    # task simply stays blocked (it is recorded in tasks.json
+                    # and .ola/blocked/ for post-mortem).
+                    exc = fut.exception()
+                    if exc is not None:
+                        logger.error("janitor run raised: %s", exc, exc_info=exc)
+                    janitor_future = None
+                    continue
                 job = in_flight.pop(fut)
                 exc = fut.exception()
                 if exc is not None:
@@ -599,10 +709,26 @@ def run_folder(
                     # A hard error is a (non-stagnant) failure: reset the run.
                     consecutive_stagnant = 0
                     continue
-                if fut.result() == _OUTCOME_STAGNANT:
+                outcome = fut.result()
+                if outcome == _OUTCOME_STAGNANT:
                     consecutive_stagnant += 1
                 else:
+                    # BLOCKED is signal, not stagnation — like any other
+                    # non-stagnant outcome it resets the circuit breaker.
                     consecutive_stagnant = 0
+                if outcome == _OUTCOME_BLOCKED and janitor_enabled:
+                    record = read_blocked_record(folder, job.task_id)
+                    if record is None:
+                        logger.error(
+                            "blocked marker for task %s vanished before the "
+                            "janitor could be dispatched.",
+                            job.task_id,
+                        )
+                    else:
+                        with state_lock:
+                            entry = state.get(job.task_id)
+                            blocked_text = entry.text if entry else job.task_id
+                        janitor_queue.append((record, blocked_text, job.attempt))
 
             if consecutive_stagnant >= _MAX_STAGNANT_LOOPS:
                 logger.warning(
@@ -618,3 +744,4 @@ def run_folder(
         executor.shutdown(wait=True)
         for retired in retired_executors:
             retired.shutdown(wait=True)
+        janitor_pool.shutdown(wait=True)

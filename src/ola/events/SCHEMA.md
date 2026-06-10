@@ -64,10 +64,18 @@ tolerate the absence of keys marked optional.
 
 | Status | Payload |
 | --- | --- |
-| `started` | `{}` |
+| `started` | `{"role"?: string}` — `role` is `"janitor"` for janitor runs (see below); absent for ordinary task attempts. |
 | `working` | `{"message": string, "metrics"?: Metrics}` — `message` is a short progress string (e.g. current tool name or message snippet). |
 | `complete` | `{"metrics"?: Metrics}` — `metrics` carries the attempt's final totals. |
-| `failed` | `{"error"?: string, "metrics"?: Metrics}` — `error` is a short human-readable failure reason; `metrics` carries totals up to the failure. |
+| `failed` | `{"error"?: string, "blocked"?: boolean, "metrics"?: Metrics}` — `error` is a short human-readable failure reason; `blocked: true` marks an attempt that ended because the task self-reported as blocked via the `ola-blocked` escape hatch (the `error` then starts with `blocked:`); `metrics` carries totals up to the failure. |
+
+### Janitor runs
+
+A blocked task dispatches a janitor agent (see `ola.janitor`). Janitor runs
+reuse this envelope unchanged: `agent_id` takes the form `janitor-<task_id>`,
+`task_id`/`task_text`/`attempt` identify the blocked task that triggered the
+run, and the `started` payload carries `{"role": "janitor"}`. There is no new
+status — the lifecycle is the usual `started → working* → complete | failed`.
 
 ### `Metrics`
 

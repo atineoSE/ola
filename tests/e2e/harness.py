@@ -24,6 +24,7 @@ repo in a tmp dir.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -56,6 +57,21 @@ class ScriptedAgent(Agent):
     whose number is below it fails, later attempts fall through to ``action``.
     Use it with ``--max-attempts`` to exercise retries.
 
+    ``block_tasks`` maps task text → reason: a matching task run executes the
+    *provisioned* ``.ola/bin/ola-blocked`` script (exercising the escape hatch
+    end-to-end) and returns without ticking. Each entry blocks only once —
+    when the task reappears later (e.g. in a leftovers folder) it falls
+    through to ``action``.
+
+    Janitor runs (``labels["phase"] == "janitor"``) behave per
+    ``janitor_action``:
+
+    * ``"unblock"`` — appends ``janitor_prereq`` as a new checkbox to the
+      current PLAN.md, removes the blocked task's line, and creates the
+      leftovers folder dictated by the prompt with the moved task.
+    * ``"escalate"`` — creates the blockers folder dictated by the prompt
+      with a BLOCKERS.md and removes the blocked task's line.
+
     Seed phase (a run with no ``task_id`` label) writes ``seed_plan`` to the
     PLAN.md path named in the prompt.
     """
@@ -70,18 +86,29 @@ class ScriptedAgent(Agent):
         source_file: str | None = None,
         fail_until_attempt: int = 0,
         seed_plan: str = "- [ ] Seeded task\n",
+        block_tasks: dict[str, str] | None = None,
+        janitor_action: str = "unblock",
+        janitor_prereq: str = "Provision the prerequisite",
     ) -> None:
         super().__init__()
         self.action = action
         self.source_file = source_file
         self.fail_until_attempt = fail_until_attempt
         self.seed_plan = seed_plan
+        self.block_tasks = dict(block_tasks or {})
+        self.janitor_action = janitor_action
+        self.janitor_prereq = janitor_prereq
         # Recorded (folder, task_id, attempt) for every task run, in order.
         self.calls: list[tuple[str, str, int]] = []
+        # Recorded (folder, task_id) for every janitor run, in order.
+        self.janitor_calls: list[tuple[str, str]] = []
 
     def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
         labels = labels or {}
         task_id = labels.get("task_id")
+
+        if labels.get("phase") == "janitor":
+            return self._run_janitor(prompt, Path(workdir), labels)
 
         # Seed phase: no task_id. Write the configured plan to the named path.
         if task_id is None:
@@ -95,6 +122,15 @@ class ScriptedAgent(Agent):
             on_progress(f"working on {task_id} (attempt {attempt})")
 
         wt_folder = Path(workdir) / folder
+
+        task_text = self._task_text(prompt)
+        if task_text in self.block_tasks:
+            reason = self.block_tasks.pop(task_text)  # block only once
+            script = Path(workdir) / ".ola" / "bin" / "ola-blocked"
+            subprocess.run(
+                [str(script), "--reason", reason], capture_output=True, check=True
+            )
+            return AgentResponse(output="blocked", success=True, stats=IterationStats())
 
         fail_now = self.fail_until_attempt and attempt < self.fail_until_attempt
         if fail_now or self.action == "fail":
@@ -114,6 +150,51 @@ class ScriptedAgent(Agent):
             success=True,
             stats=IterationStats(input_tokens=10, output_tokens=5),
         )
+
+    def _run_janitor(self, prompt: str, root: Path, labels: dict) -> AgentResponse:
+        """Perform the unblock/escalate edits a real janitor would."""
+        folder = root / labels["folder"]
+        self.janitor_calls.append((labels["folder"], labels["task_id"]))
+        # The blocked task's text and the dictated sibling names, parsed from
+        # the substituted JANITOR-PROMPT.
+        blocked_text = re.search(r"- Task: (.*?) \(task id", prompt).group(1)
+        plan = folder / "PLAN.md"
+        lines = [ln for ln in plan.read_text().splitlines() if blocked_text not in ln]
+
+        if self.janitor_action == "unblock":
+            sibling_name = re.search(
+                r"named exactly `([^`]+-leftovers)`", prompt
+            ).group(1)
+            lines.append(f"- [ ] {self.janitor_prereq}")
+            sibling = root / sibling_name
+            sibling.mkdir()
+            (sibling / "PLAN.md").write_text(
+                f"This task was blocked ({labels['task_id']}); prerequisites are"
+                " assumed complete by the time this folder runs.\n\n"
+                f"- [ ] {blocked_text}\n"
+            )
+        else:
+            sibling_name = re.search(r"named exactly `([^`]+-blockers)`", prompt).group(
+                1
+            )
+            reason = re.search(r"reason for blocking: (.*)", prompt).group(1)
+            sibling = root / sibling_name
+            sibling.mkdir()
+            (sibling / "BLOCKERS.md").write_text(
+                f"# Blocked: {blocked_text}\n\n"
+                f"Worker's reason: {reason}\n\n"
+                "Janitor: cannot unblock without a human (scripted escalate).\n"
+            )
+
+        plan.write_text("\n".join(lines) + "\n")
+        return AgentResponse(
+            output="janitor done", success=True, stats=IterationStats()
+        )
+
+    @staticmethod
+    def _task_text(prompt: str) -> str | None:
+        m = re.search(r"The task is: (.*?) \(task id", prompt)
+        return m.group(1) if m else None
 
     def _write_seed_plan(self, prompt: str) -> None:
         for token in prompt.split():
@@ -174,11 +255,19 @@ def build_example_repo(tmp_path: Path, *folders: str) -> Path:
     return _init_agent_repo(agent)
 
 
-def run_pipeline(agent: Agent, agent_path: Path, *, max_attempts: int = 0) -> None:
+def run_pipeline(
+    agent: Agent,
+    agent_path: Path,
+    *,
+    max_attempts: int = 0,
+    janitor_enabled: bool = True,
+) -> None:
     """Run the full outer loop over *agent_path* with *agent*."""
     from ola.loop import run_outer_loop
 
-    run_outer_loop(agent, agent_path, max_attempts=max_attempts)
+    run_outer_loop(
+        agent, agent_path, max_attempts=max_attempts, janitor_enabled=janitor_enabled
+    )
 
 
 # --- Inspection helpers -------------------------------------------------------

@@ -104,6 +104,7 @@ _TASK_STATUS_STYLES: dict[str, str] = {
     "running": "cyan",
     "failed": "red",
     "pending": "dim",
+    "blocked": "magenta",
 }
 
 # Max characters of a task's last-progress message shown in the expanded view

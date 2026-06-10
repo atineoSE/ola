@@ -16,7 +16,7 @@ from typing import Any
 from ola.plan import enumerate_tasks
 
 _VALID_STATUSES: frozenset[str] = frozenset(
-    {"pending", "running", "complete", "failed"}
+    {"pending", "running", "complete", "failed", "blocked"}
 )
 
 
@@ -86,6 +86,35 @@ class TaskState:
                     status="complete" if t.checked else "pending",
                 )
         return synced
+
+    def resync(self) -> None:
+        """Re-read PLAN.md and reconcile the entries **in place**.
+
+        Used after a janitor edits the live PLAN.md mid-run. Unlike
+        :meth:`sync_from_plan` this mutates the existing instance, because
+        in-flight workers hold a reference to it. New checkbox lines become
+        pending entries; lines that disappeared are dropped — except entries
+        still ``running``, which are preserved so an in-flight worker's
+        :meth:`mark` cannot raise. Caller must hold the state lock.
+        """
+        entries: dict[str, TaskEntry] = {}
+        for t in enumerate_tasks(self._folder):
+            prior = self._entries.get(t.task_id)
+            if prior is not None:
+                prior.text = t.text
+                prior.line_no = t.line_no
+                entries[t.task_id] = prior
+            else:
+                entries[t.task_id] = TaskEntry(
+                    task_id=t.task_id,
+                    text=t.text,
+                    line_no=t.line_no,
+                    status="complete" if t.checked else "pending",
+                )
+        for task_id, entry in self._entries.items():
+            if task_id not in entries and entry.status == "running":
+                entries[task_id] = entry
+        self._entries = entries
 
     def mark(self, task_id: str, status: str, **kwargs: Any) -> None:
         """Set ``status`` (and optional extra fields) on the entry for ``task_id``.

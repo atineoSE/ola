@@ -1052,3 +1052,227 @@ def test_read_concurrency_negative_logs_warning(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="ola.scheduler"):
         read_concurrency(tmp_path)
     assert any("Negative concurrency cap" in r.message for r in caplog.records)
+
+
+# --- Blocked tasks + janitor ---
+
+
+class _BlockingAgent(Agent):
+    """Stub agent that runs the provisioned ola-blocked script and stops."""
+
+    mnemonic = "stub"
+    state_dir_name = ""
+
+    def __init__(self, reason: str = "missing API key") -> None:
+        super().__init__()
+        self.reason = reason
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        with self._lock:
+            self.calls += 1
+        script = Path(workdir) / ".ola" / "bin" / "ola-blocked"
+        subprocess.run(
+            [str(script), "--reason", self.reason], capture_output=True, check=True
+        )
+        return AgentResponse(
+            output="blocked myself", success=True, stats=IterationStats()
+        )
+
+    def version(self):
+        return "0.0.0"
+
+
+def test_run_folder_blocked_task_is_terminal_no_retry(tmp_path):
+    """A blocked task is marked blocked once and never retried, even with retries left."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Needs a secret\n")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _BlockingAgent(reason="FOO_API_KEY is not available")
+    run_folder(
+        agent, folder, repo, initial_cap=1, max_attempts=3, janitor_enabled=False
+    )
+
+    # Dispatched exactly once despite max_attempts=3.
+    assert agent.calls == 1
+
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "blocked"
+    assert entry.attempts == 1
+    assert entry.last_error == "blocked: FOO_API_KEY is not available"
+
+    # Unticked, no propagation commit, and the worktree was cleaned up (the
+    # reason is recorded; nothing in the worktree is worth a post-mortem).
+    assert task_is_checked(folder, task.task_id) is False
+    assert len(_log_oneline(repo, "main")) == 2
+    assert not (folder / ".ola" / "worktrees" / task.task_id).exists()
+
+    # The marker is retained as the audit record.
+    assert (folder / ".ola" / "blocked" / f"{task.task_id}.reason").exists()
+
+
+def test_run_folder_blocked_emits_failed_event_with_blocked_flag(tmp_path):
+    import json
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Needs a secret\n")
+
+    events_path = folder / ".ola" / "events.jsonl"
+    emitter = Emitter([LocalSink(events_path)])
+    agent = _BlockingAgent(reason="no key")
+    run_folder(
+        agent, folder, repo, initial_cap=1, emitter=emitter, janitor_enabled=False
+    )
+    emitter.close()
+
+    records = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if line.strip()
+    ]
+    failed = [r for r in records if r["status"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["data"]["blocked"] is True
+    assert failed[0]["data"]["error"] == "blocked: no key"
+
+
+def test_run_folder_blocked_does_not_trip_stagnation_breaker(tmp_path):
+    """Six consecutive blocked tasks are signal, not stagnation: no halt."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    plan = "".join(f"- [ ] Task {i}\n" for i in range(6))
+    folder = _setup_folder(repo, "agent-folder", plan)
+    tasks = enumerate_tasks(folder)
+
+    agent = _BlockingAgent()
+    run_folder(agent, folder, repo, initial_cap=1, janitor_enabled=False)
+
+    # All six were dispatched (a stagnation halt would have stopped at five).
+    state = TaskState.load(folder)
+    assert all(state.get(t.task_id).status == "blocked" for t in tasks)
+
+
+def test_run_folder_tick_beats_blocked_marker(tmp_path):
+    """A task that ticks its checkbox completes even if it also ran ola-blocked."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Confused task\n")
+    task = enumerate_tasks(folder)[0]
+
+    class _TickAndBlockAgent(_TickingAgent):
+        def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+            script = Path(workdir) / ".ola" / "bin" / "ola-blocked"
+            subprocess.run(
+                [str(script), "--reason", "second thoughts"],
+                capture_output=True,
+                check=True,
+            )
+            return super().run(
+                prompt,
+                workdir,
+                state_dir=state_dir,
+                labels=labels,
+                on_progress=on_progress,
+            )
+
+    agent = _TickAndBlockAgent()
+    run_folder(agent, folder, repo, initial_cap=1, janitor_enabled=False)
+
+    state = TaskState.load(folder)
+    assert state.get(task.task_id).status == "complete"
+    assert task_is_checked(folder, task.task_id) is True
+    # The stray marker was cleared — checkbox is truth.
+    assert not (folder / ".ola" / "blocked" / f"{task.task_id}.reason").exists()
+
+
+class _BlockThenJanitorAgent(_TickingAgent):
+    """Blocks one task, then unblocks it when called in the janitor role.
+
+    As the janitor it does what JANITOR-PROMPT mandates for outcome A:
+    appends a prerequisite checkbox to the live PLAN.md, removes the blocked
+    line, and creates the leftovers sibling folder named in the prompt.
+    """
+
+    def __init__(self, block_task_id: str, block_text: str) -> None:
+        super().__init__()
+        self._block_task_id = block_task_id
+        self._block_text = block_text
+        self.janitor_invocations: list[dict] = []
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        labels = labels or {}
+        if labels.get("phase") == "janitor":
+            with self._lock:
+                self.janitor_invocations.append({"labels": dict(labels)})
+            root = Path(workdir)
+            folder = root / labels["folder"]
+            plan = folder / "PLAN.md"
+            lines = [
+                ln for ln in plan.read_text().splitlines() if self._block_text not in ln
+            ]
+            lines.append("- [ ] Provision the secret")
+            plan.write_text("\n".join(lines) + "\n")
+            leftovers_name = re.search(
+                r"named exactly `([^`]+-leftovers)`", prompt
+            ).group(1)
+            leftovers = root / leftovers_name
+            leftovers.mkdir()
+            (leftovers / "PLAN.md").write_text(
+                "Blocked earlier (missing secret); prerequisites assumed done.\n\n"
+                f"- [ ] {self._block_text}\n"
+            )
+            return AgentResponse(
+                output="unblocked", success=True, stats=IterationStats()
+            )
+        if labels.get("task_id") == self._block_task_id:
+            script = Path(workdir) / ".ola" / "bin" / "ola-blocked"
+            subprocess.run(
+                [str(script), "--reason", "missing secret"],
+                capture_output=True,
+                check=True,
+            )
+            return AgentResponse(output="blocked", success=True, stats=IterationStats())
+        return super().run(
+            prompt, workdir, state_dir=state_dir, labels=labels, on_progress=on_progress
+        )
+
+
+def test_run_folder_blocked_dispatches_janitor_and_runs_prereq(tmp_path):
+    """The janitor's prerequisite task is picked up in the same folder run."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "01-api", "- [ ] Call the FOO API\n")
+    blocked = enumerate_tasks(folder)[0]
+
+    agent = _BlockThenJanitorAgent(blocked.task_id, "Call the FOO API")
+    run_folder(agent, folder, repo, initial_cap=1)
+
+    # The janitor ran once, in the agent root, labelled as janitor.
+    assert len(agent.janitor_invocations) == 1
+    jl = agent.janitor_invocations[0]["labels"]
+    assert jl["phase"] == "janitor"
+    assert jl["task_id"] == blocked.task_id
+
+    # The prerequisite was dispatched in the same run and completed.
+    prereq = [t for t in enumerate_tasks(folder) if t.text == "Provision the secret"]
+    assert len(prereq) == 1
+    state = TaskState.load(folder)
+    assert state.get(prereq[0].task_id).status == "complete"
+
+    # The blocked task's line was removed from the plan and its entry
+    # reconciled out of tasks.json by the post-janitor resync.
+    assert state.get(blocked.task_id) is None
+    assert "Call the FOO API" not in (folder / "PLAN.md").read_text()
+
+    # The leftovers folder exists with the moved task, and the janitor's
+    # edits were committed by the harness.
+    leftovers = repo / "01a-api-leftovers"
+    assert leftovers.is_dir()
+    assert "Call the FOO API" in (leftovers / "PLAN.md").read_text()
+    log = _log_oneline(repo, "main")
+    assert any(f"janitor {blocked.task_id}" in ln for ln in log)

@@ -405,3 +405,20 @@ class TestTaskIsChecked:
         fake = "t-" + hashlib.sha1(b"Not a real task").hexdigest()[:8]
         with pytest.raises(KeyError):
             task_is_checked(tmp_path, fake)
+
+
+class TestDiscoverPlanFolders:
+    def test_letter_suffixed_folders_sort_between_indices(self, tmp_path):
+        from ola.plan import discover_plan_folders
+
+        names = ["02-utils", "01b-init-blockers", "01-init", "01a-init-leftovers"]
+        for name in names:
+            (tmp_path / name).mkdir()
+
+        discovered = [p.name for p in discover_plan_folders(tmp_path)]
+        assert discovered == [
+            "01-init",
+            "01a-init-leftovers",
+            "01b-init-blockers",
+            "02-utils",
+        ]

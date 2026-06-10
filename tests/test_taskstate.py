@@ -223,3 +223,77 @@ class TestTaskEntry:
         assert e.status == "pending"
         assert e.attempts == 0
         assert e.last_error is None
+
+
+class TestBlockedStatus:
+    def test_mark_accepts_blocked(self, tmp_path):
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "blocked", last_error="blocked: missing key")
+        assert state.get(alpha_id).status == "blocked"
+
+    def test_blocked_round_trips_through_save_load(self, tmp_path):
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "blocked", last_error="blocked: missing key")
+        state.save()
+        reloaded = TaskState.load(tmp_path)
+        assert reloaded.get(alpha_id).status == "blocked"
+
+    def test_blocked_is_not_pending(self, tmp_path):
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        state.mark(state.all()[0].task_id, "blocked")
+        assert state.next_pending() is None
+
+
+class TestResync:
+    def test_adds_new_plan_lines_as_pending(self, tmp_path):
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        _write_plan(tmp_path, "- [ ] Alpha\n- [ ] New prereq\n")
+        state.resync()
+        assert [e.text for e in state.all()] == ["Alpha", "New prereq"]
+        assert state.all()[1].status == "pending"
+
+    def test_drops_removed_blocked_entry(self, tmp_path):
+        _write_plan(tmp_path, "- [ ] Alpha\n- [ ] Beta\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "blocked")
+        _write_plan(tmp_path, "- [ ] Beta\n")  # janitor removed Alpha's line
+        state.resync()
+        assert state.get(alpha_id) is None
+        assert [e.text for e in state.all()] == ["Beta"]
+
+    def test_preserves_removed_but_running_entry(self, tmp_path):
+        """An in-flight worker's entry survives line removal so mark() can't raise."""
+        _write_plan(tmp_path, "- [ ] Alpha\n- [ ] Beta\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "running")
+        _write_plan(tmp_path, "- [ ] Beta\n")
+        state.resync()
+        assert state.get(alpha_id) is not None
+        assert state.get(alpha_id).status == "running"
+        state.mark(alpha_id, "failed")  # no KeyError
+
+    def test_mutates_in_place(self, tmp_path):
+        """Workers hold a reference to the state object; resync must not replace it."""
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alias = state
+        _write_plan(tmp_path, "- [ ] Alpha\n- [ ] New prereq\n")
+        state.resync()
+        assert [e.text for e in alias.all()] == ["Alpha", "New prereq"]
+
+    def test_preserves_status_of_surviving_entries(self, tmp_path):
+        _write_plan(tmp_path, "- [ ] Alpha\n- [ ] Beta\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "complete", attempts=1)
+        state.resync()
+        assert state.get(alpha_id).status == "complete"
+        assert state.get(alpha_id).attempts == 1

@@ -127,9 +127,20 @@ For each unchecked task in `PLAN.md`, a worker:
 
 A per-folder circuit breaker halts the folder after 5 consecutive stagnant attempts, so a stuck agent can't spin forever.
 
+### Blocked tasks and the janitor
+
+A task agent that cannot complete its task because something **out of scope** is missing (a prerequisite, a credential, an undecided design) should not guess and should not tick its checkbox. ola provisions a small escape hatch into every task worktree — `.ola/bin/ola-blocked` — and the task prompt tells the agent to run it with a one-sentence reason and stop. A blocked task is terminal: it is never retried, regardless of `--max-attempts`, and it does not trip the stagnation circuit breaker.
+
+Instead, the harness immediately dispatches a **janitor** — a sibling agent run (same backend/model) primed to unblock aggressively, while the folder's other tasks keep running. The janitor produces exactly one of two outcomes:
+
+* **Unblock** (strongly preferred): it adds the missing prerequisite work as new unchecked checkboxes to the *current* folder's `PLAN.md` (picked up in the same run) and moves the blocked task into a new sibling **leftovers folder** — e.g. `01-init` spawns `01a-init-leftovers/PLAN.md` — which sorts right after the current folder and therefore runs before `02-…`.
+* **Escalate** (last resort): when a human or an unobtainable resource is genuinely required, it creates a sibling **blockers folder** — e.g. `01b-init-blockers/BLOCKERS.md` — with the task, the worker's reason, and why it couldn't be unblocked. Folders without a `PLAN.md` are skipped, so the rest of the pipeline keeps advancing; ola lists all blockers in a "human attention needed" summary at the end of the run.
+
+The full contract (folder naming, suffix allocation, tick-beats-marker) lives in [`src/ola/agents/CONTRACT.md`](./src/ola/agents/CONTRACT.md), which is also inlined into the janitor's prompt at runtime. Disable the janitor with `--no-janitor` if you want blocked tasks to simply stay blocked.
+
 ### State & events
 
-* `<folder>/.ola/tasks.json` — the per-task state spine (`pending` / `running` / `complete` / `failed`, plus `attempts` and `last_error`), reconciled from `PLAN.md` on each run.
+* `<folder>/.ola/tasks.json` — the per-task state spine (`pending` / `running` / `complete` / `failed` / `blocked`, plus `attempts` and `last_error`), reconciled from `PLAN.md` on each run.
 * `<folder>/.ola/events.jsonl` — a v2 event stream (`started` → `working`* → `complete`/`failed`) written for every attempt; this is the audit trail and the source [ola-top](./docs/ola-top.md) reads per-task progress from. The wire format is documented in [`src/ola/events/SCHEMA.md`](./src/ola/events/SCHEMA.md). Set `OLA_COLLECTOR_URL` to additionally POST events to a remote collector.
 
 Monitor a parallel run with [`ola-top`](./docs/ola-top.md), which renders a live per-task view with a `running N / cap M` badge.
