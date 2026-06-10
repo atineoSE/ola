@@ -48,7 +48,7 @@ This provides **`ola-sandbox`** — creates or reconnects to a Docker sandbox.
 
 ## Create a sandbox
 
-From the `project/src` directory:
+From your project repo directory (the code dir, e.g. `dummy-project/dummy-project`):
 
 ```bash
 ola-sandbox my-sandbox
@@ -58,8 +58,8 @@ This will:
 1. Extract Claude OAuth credentials from macOS Keychain (`cc-credentials`)
 2. Resolve & validate `agent/.env` on the host (`ola env`) — **fails fast** if a mandatory `${VAR}` is unset
 3. Apply the network policy from `agent/allowlist.txt` **and** the resolved `.env` endpoints (additive to default policy)
-4. Create a sandbox with the project directory (parent of `src/`) as workspace — both `src/` and `agent/` are writable
-5. Copy credentials into the sandbox, write the resolved env snapshot to `~/.ola/agent.env`, and set the shell to land in `src/`
+4. Create a sandbox with the workspace root (parent of the project repo) as workspace — both the project repo and `agent/` are writable
+5. Copy credentials into the sandbox, write the resolved env snapshot to `~/.ola/agent.env`, and set the shell to land in the project repo
 
 Running `ola-sandbox my-sandbox` again reconnects to the existing sandbox and re-runs steps 2–3 and the snapshot refresh (picking up changed host values).
 

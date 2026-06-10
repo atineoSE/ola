@@ -33,15 +33,14 @@ ola [-f <agent-folder>] [-a cc|oh|codex] [-m MODEL] [-l LIMIT] [--max-attempts N
 ## Folder structure
 
 ```
-project/
-  src/                  # your source code (must be a git repo)
+project/                # workspace root (the example ships this as dummy-project/)
+  project/              # your source code, the project repo (must be a git repo)
   agent/                # ola agent folder (git repo created by ola if missing)
     .env                # LLM_BASE_URL, LMNR_BASE_URL, etc. (gitignored)
     allowlist.txt       # Optional: Domain list to allow inside the sandbox
     01-setup/           # Plan subfolder
       SEED-PROMPT.md    # Optional: runs once to generate PLAN.md
-      LOOP-PROMPT.md    # Optional: prompt used each iteration
-      TASK-PROMPT.md    # Optional: per-task prompt template (parallel mode)
+      TASK-PROMPT.md    # Optional: per-task prompt template
       PLAN.md           # Optional: markdown todo list
       .claude/          # Claude Code config dir (auto-created by ola)
         projects/...    # conversation history auto-created by claude
@@ -57,7 +56,7 @@ project/
         events.jsonl    # Event stream (audit trail; read by ola-top)
         worktrees/      # One git worktree per in-flight task
     02-implement/
-      LOOP-PROMPT.md
+      TASK-PROMPT.md
       PLAN.md
       .claude/
       .openhands/
@@ -78,11 +77,11 @@ A plan subfolder must contain only ONE of these two files:
 * `SEED-PROMPT.md`: this will create the `PLAN.md` file, which will drive the loop, or
 * `PLAN.md`: it already contains the plan and thus no seed is needed.
 
-While `PLAN.md` has unchecked tasks (`- [ ]`), the agent runs `LOOP-PROMPT.md` repeatedly. The agent stops when all tasks are checked or the iteration limit is reached.
+While `PLAN.md` has unchecked tasks (`- [ ]`), ola dispatches each one to the agent using `TASK-PROMPT.md` — a per-task template with `{{task_text}}` and `{{task_id}}` placeholders. A task is done once its checkbox is ticked; the folder completes when every box is checked. See [Parallel execution](#parallel-execution) for how tasks are scheduled and isolated.
 
-The `LOOP-PROMT.md` is optional and it will be initialized to a sensible default if missing. However, it is recommended that this file is manually created, since it's key to drive the agent through long-running tasks.
+`TASK-PROMPT.md` is optional and falls back to a sensible default if missing. However, it is recommended to write one, since it's key to driving the agent reliably through each task.
 
-The agent folder must be its own git repository (ola initialises one if missing). ola commits to this repo after each seed phase and loop iteration, tracking plan progress independently from your source code.
+The agent folder must be its own git repository (ola initialises one if missing). ola commits to this repo after each seed phase and each completed task, tracking plan progress independently from your source code.
 
 Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside each plan subfolder. For Claude Code, `CLAUDE_CONFIG_DIR` is set to `.claude/`, giving each phase its own conversation history that persists across sandbox sessions. For OpenHands, logs and trajectories are written to `.openhands/logs/` and `.openhands/trajectories/`.
 

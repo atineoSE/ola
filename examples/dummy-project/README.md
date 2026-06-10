@@ -14,8 +14,8 @@ watch the harness work without a large bill or a real codebase.
 ## Layout
 
 ```
-dummy-project/
-  src/                     # your "source code" repo (empty placeholder here)
+dummy-project/             # workspace root
+  dummy-project/           # the project repo — your "source code" (empty placeholder here)
   agent/
     .env.example           # copy to .env and fill in your provider
     01-find-date/          # SEED-PROMPT.md → agent generates PLAN.md, then runs it
@@ -38,7 +38,7 @@ with its own `PLAN.md`, not in a later task of the same plan.
    ```bash
    cp -r examples/dummy-project /tmp/ola-demo
    cd /tmp/ola-demo
-   git init src                       # ola requires src/ to be a git repo
+   git init dummy-project             # the project repo must be a git repo
    ```
 
 2. Configure an agent. For OpenHands/Codex, copy the env template and fill it in:
@@ -49,11 +49,11 @@ with its own `PLAN.md`, not in a later task of the same plan.
 
    For Claude Code with a subscription, just have `claude` installed and logged in.
 
-3. From `src/`, run a phase (use `--skip-sandbox` only when running on the host
-   without a Docker sandbox):
+3. From the project repo, run a phase (use `--skip-sandbox` only when running
+   on the host without a Docker sandbox):
 
    ```bash
-   cd src
+   cd dummy-project
    ola -a cc --skip-sandbox            # processes 01-find-date, 02-utils, 03-parallel in order
    ```
 

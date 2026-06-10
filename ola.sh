@@ -450,7 +450,7 @@ ola-sandbox() {
   _ola_inject_sidecar "$name" "$_env_blob"
   _ola_inject_oh_settings "$name" "$_env_blob"
 
-  # Export the resolved env into the login shell and land in the src dir.
+  # Export the resolved env into the login shell and land in the project repo.
   _ola_setup_shell_rc "$name" "$code_dir"
 
   # Attach to the sandbox (foreground, interactive)
