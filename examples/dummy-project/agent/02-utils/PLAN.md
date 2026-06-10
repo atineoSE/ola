@@ -1,5 +1,8 @@
 # Plan: tiny string utilities
 
-- [ ] Create utils.py with a `slugify(text)` function
-- [ ] Add a `truncate(text, n)` function to utils.py
-- [ ] Add a README note documenting both functions
+Tasks in one plan are independent by contract — each of these touches its own
+file, so they are safe to run in any order (or concurrently).
+
+- [ ] Create slugify.py with a `slugify(text)` function
+- [ ] Create truncate.py with a `truncate(text, n)` function
+- [ ] Create wordcount.py with a `word_count(text)` function

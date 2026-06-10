@@ -11,9 +11,14 @@ agent would (ticking checkboxes, optionally editing source files, or
 deliberately failing/stalling), so the surrounding harness logic is exercised
 exactly as in production.
 
-Fixtures live under ``tests/e2e/fixtures/<name>/`` as ready-to-copy agent
-folders (one or more ``NN-…`` plan subfolders). :func:`build_agent_repo`
-copies one into an isolated git-backed agent repo in a tmp dir.
+Happy-path scenarios are sourced straight from the shipped example
+(``examples/dummy-project/agent``) via :func:`build_example_repo`, so the
+example users run is the same content the suite verifies and cannot silently
+rot. Failure-mode scenarios (retry, stagnation) live under
+``tests/e2e/fixtures/<name>/`` — their behaviour is scripted in the stub, not
+expressible in a runnable example — and are copied via
+:func:`build_agent_repo`. Both builders produce an isolated git-backed agent
+repo in a tmp dir.
 """
 
 from __future__ import annotations
@@ -28,6 +33,9 @@ from ola.plan import set_task_checked
 from ola.stats import IterationStats
 
 FIXTURES = Path(__file__).parent / "fixtures"
+EXAMPLE_AGENT = (
+    Path(__file__).resolve().parents[2] / "examples" / "dummy-project" / "agent"
+)
 
 
 # --- Stub agent ---------------------------------------------------------------
@@ -124,16 +132,14 @@ def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, check=True)
 
 
-def build_agent_repo(tmp_path: Path, fixture: str) -> Path:
-    """Copy fixture *fixture* into an isolated git-backed agent repo.
+def _init_agent_repo(agent: Path) -> Path:
+    """Turn *agent* into a git repo with the runtime ignore rules.
 
-    Returns the agent-folder path. ``.ola/`` is gitignored so per-run runtime
-    artifacts (worktrees, tasks.json, events.jsonl) never pollute commits,
-    while any ``.ola/concurrency`` shipped by the fixture stays on disk for the
+    ``.ola/`` is gitignored so per-run runtime artifacts (worktrees,
+    tasks.json, events.jsonl) never pollute commits, while any
+    ``.ola/concurrency`` shipped by the scenario stays on disk for the
     scheduler to read.
     """
-    agent = tmp_path / "agent"
-    shutil.copytree(FIXTURES / fixture, agent)
     (agent / ".gitignore").write_text(".env\n.ola/\n")
     _git(agent, "init", "-b", "main")
     _git(agent, "config", "user.email", "e2e@example.com")
@@ -142,6 +148,30 @@ def build_agent_repo(tmp_path: Path, fixture: str) -> Path:
     _git(agent, "add", "-A")
     _git(agent, "commit", "-m", "fixture import")
     return agent
+
+
+def build_agent_repo(tmp_path: Path, fixture: str) -> Path:
+    """Copy fixture *fixture* into an isolated git-backed agent repo."""
+    agent = tmp_path / "agent"
+    shutil.copytree(FIXTURES / fixture, agent)
+    return _init_agent_repo(agent)
+
+
+def build_example_repo(tmp_path: Path, *folders: str) -> Path:
+    """Copy phase folders from ``examples/dummy-project/agent`` into a repo.
+
+    With no *folders* given, copies every ``NN-…`` phase folder of the
+    example. Only the phase folders are copied (not ``.env.example`` or the
+    example's own ``.gitignore``), keeping the run hermetic.
+    """
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    names = folders or sorted(
+        p.name for p in EXAMPLE_AGENT.iterdir() if p.is_dir() and p.name[0].isdigit()
+    )
+    for name in names:
+        shutil.copytree(EXAMPLE_AGENT / name, agent / name)
+    return _init_agent_repo(agent)
 
 
 def run_pipeline(agent: Agent, agent_path: Path, *, max_attempts: int = 0) -> None:

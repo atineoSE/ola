@@ -1,10 +1,15 @@
 """End-to-end tests for the ola pipeline against a scripted stub agent.
 
-Each test copies a fixture agent folder into an isolated git repo, runs the
-real outer loop, and asserts on the resulting artifacts across every dimension
-the pipeline produces: PLAN.md checkboxes, the agent-repo git history,
+Each test copies an agent folder into an isolated git repo, runs the real
+outer loop, and asserts on the resulting artifacts across every dimension the
+pipeline produces: PLAN.md checkboxes, the agent-repo git history,
 ``.ola/tasks.json``, ``STATS.jsonl``, ``.ola/events.jsonl``, worktree
 lifecycle, source-edit merge-back, and the ola-top monitor data layer.
+
+Happy-path scenarios run directly off ``examples/dummy-project/agent`` — the
+shipped example doubles as the test corpus, so these tests also guarantee the
+example keeps parsing and scheduling correctly. Failure-mode scenarios
+(retry, stagnation) use test-only fixtures under ``tests/e2e/fixtures/``.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from ola.scheduler import _MAX_STAGNANT_LOOPS
 from .harness import (
     ScriptedAgent,
     build_agent_repo,
+    build_example_repo,
     git_log_subjects,
     read_events,
     read_stats,
@@ -33,8 +39,8 @@ def _statuses(events: list[dict], task_id: str) -> list[str]:
 
 
 def test_sequential_plan_all_complete(tmp_path):
-    agent_path = build_agent_repo(tmp_path, "plan-sequential")
-    folder = agent_path / "01-build"
+    agent_path = build_example_repo(tmp_path, "02-utils")
+    folder = agent_path / "02-utils"
 
     run_pipeline(ScriptedAgent(), agent_path)
 
@@ -48,7 +54,7 @@ def test_sequential_plan_all_complete(tmp_path):
 
     # One per-task commit per task landed on the agent branch.
     subjects = git_log_subjects(agent_path)
-    assert sum(s.startswith("ola: 01-build ") for s in subjects) == 3
+    assert sum(s.startswith("ola: 02-utils ") for s in subjects) == 3
 
     # No .ola/concurrency file → sequential (cap 1).
     fs = read_folder_status(folder)
@@ -60,8 +66,8 @@ def test_sequential_plan_all_complete(tmp_path):
 
 
 def test_parallel_plan_all_land_on_branch(tmp_path):
-    agent_path = build_agent_repo(tmp_path, "parallel")
-    folder = agent_path / "01-parallel"
+    agent_path = build_example_repo(tmp_path, "03-parallel")
+    folder = agent_path / "03-parallel"
 
     agent = ScriptedAgent()
     run_pipeline(agent, agent_path)
@@ -73,16 +79,17 @@ def test_parallel_plan_all_land_on_branch(tmp_path):
 
     # Four distinct per-task commits.
     subjects = git_log_subjects(agent_path)
-    assert sum(s.startswith("ola: 01-parallel ") for s in subjects) == 4
+    assert sum(s.startswith("ola: 03-parallel ") for s in subjects) == 4
 
     # Worktrees cleaned up on success.
     for t in tasks:
         assert not worktree_dir(folder, t.task_id).exists()
 
-    # Monitor sees a parallel folder at cap 3 with all tasks complete.
+    # Monitor sees a parallel folder at the example's shipped cap of 2 with
+    # all tasks complete.
     fs = read_folder_status(folder)
     assert fs.is_parallel
-    assert fs.concurrency_cap == 3
+    assert fs.concurrency_cap == 2
     assert fs.tasks_completed == 4
     assert {r.status for r in fs.task_rows} == {"complete"}
 
@@ -91,8 +98,8 @@ def test_parallel_plan_all_land_on_branch(tmp_path):
 
 
 def test_seed_then_execute(tmp_path):
-    agent_path = build_agent_repo(tmp_path, "seed-only")
-    folder = agent_path / "01-seed"
+    agent_path = build_example_repo(tmp_path, "01-find-date")
+    folder = agent_path / "01-find-date"
     assert not (folder / "PLAN.md").exists()
 
     agent = ScriptedAgent(seed_plan="- [ ] Seeded task A\n- [ ] Seeded task B\n")
@@ -105,7 +112,7 @@ def test_seed_then_execute(tmp_path):
 
     # A seed commit and a seed STATS row exist.
     subjects = git_log_subjects(agent_path)
-    assert any(s == "ola: 01-seed seed" for s in subjects)
+    assert any(s == "ola: 01-find-date seed" for s in subjects)
     phases = [r["phase"] for r in read_stats(folder)]
     assert "seed" in phases
     assert sum(p.startswith("task-") for p in phases) == 2
@@ -115,21 +122,25 @@ def test_seed_then_execute(tmp_path):
 
 
 def test_multi_folder_ordering(tmp_path):
-    agent_path = build_agent_repo(tmp_path, "multi-folder")
+    # The full example: a seed folder, then a sequential and a parallel plan.
+    agent_path = build_example_repo(tmp_path)
 
     agent = ScriptedAgent()
     run_pipeline(agent, agent_path)
 
-    # Both folders fully complete.
-    for name in ("01-first", "02-second"):
+    # All folders fully complete (01-find-date's plan comes from the seed).
+    names = ("01-find-date", "02-utils", "03-parallel")
+    for name in names:
         tasks = enumerate_tasks(agent_path / name)
-        assert all(t.checked for t in tasks), name
+        assert tasks and all(t.checked for t in tasks), name
 
-    # Folders run sequentially: every 01-first call precedes any 02-second call.
+    # Folders run in index order: every call for folder N precedes any call
+    # for folder N+1.
     folders_in_call_order = [folder for (folder, _tid, _att) in agent.calls]
-    first_idxs = [i for i, f in enumerate(folders_in_call_order) if f == "01-first"]
-    second_idxs = [i for i, f in enumerate(folders_in_call_order) if f == "02-second"]
-    assert max(first_idxs) < min(second_idxs)
+    for earlier, later in zip(names, names[1:]):
+        earlier_idxs = [i for i, f in enumerate(folders_in_call_order) if f == earlier]
+        later_idxs = [i for i, f in enumerate(folders_in_call_order) if f == later]
+        assert max(earlier_idxs) < min(later_idxs), (earlier, later)
 
 
 # --- 5. Failure then retry ----------------------------------------------------
@@ -217,32 +228,33 @@ def test_stagnation_backstop_bounds_retries(tmp_path):
 
 
 def test_source_edit_merges_back(tmp_path):
-    agent_path = build_agent_repo(tmp_path, "source-edit")
-    folder = agent_path / "01-edit"
+    agent_path = build_example_repo(tmp_path, "02-utils")
+    folder = agent_path / "02-utils"
 
     agent = ScriptedAgent(source_file="widget.py")
     run_pipeline(agent, agent_path)
 
-    # The file the agent wrote in its worktree was cherry-picked onto the
+    # The file each task wrote in its worktree was cherry-picked onto the
     # agent branch (PLAN.md tick excluded from the cherry-pick, applied
-    # separately) and is present + committed.
+    # separately) and is present + committed. Tasks run sequentially, so the
+    # last task's edit is the surviving content.
     merged = folder / "widget.py"
     assert merged.exists()
     assert "implemented by" in merged.read_text()
 
     tracked = git_log_subjects(agent_path)
-    assert any(s.startswith("ola: 01-edit ") for s in tracked)
+    assert any(s.startswith("ola: 02-utils ") for s in tracked)
 
-    (task,) = enumerate_tasks(folder)
-    assert task.checked
+    tasks = enumerate_tasks(folder)
+    assert tasks and all(t.checked for t in tasks)
 
 
 # --- 9. Events lifecycle envelope sequence ------------------------------------
 
 
 def test_events_lifecycle_per_task(tmp_path):
-    agent_path = build_agent_repo(tmp_path, "parallel")
-    folder = agent_path / "01-parallel"
+    agent_path = build_example_repo(tmp_path, "03-parallel")
+    folder = agent_path / "03-parallel"
 
     run_pipeline(ScriptedAgent(), agent_path)
 

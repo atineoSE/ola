@@ -1,13 +1,15 @@
 # Dummy project — a runnable ola example
 
 A minimal, **safe-to-run** example project that exercises the main ola features:
-a seed phase, a sequential plan, and a parallel plan. The tasks are trivial
-(find the date, write small files) so you can watch the harness work without a
-large bill or a real codebase.
+a seed phase, a plan run at the default cap (one task at a time), and a plan run
+in parallel. The tasks are trivial (find the date, write small files) so you can
+watch the harness work without a large bill or a real codebase.
 
-> These same scenarios are covered as hermetic, network-free tests in
-> [`tests/e2e/`](../../tests/e2e/) — this folder is the human-facing companion
-> you can actually run end to end with a real agent.
+> These folders double as the happy-path e2e scenarios: the hermetic,
+> network-free suite in [`tests/e2e/`](../../tests/e2e/) copies them verbatim
+> and drives the real pipeline over them with a stub agent. If you edit this
+> example, run `make test-e2e` — the tests keep it from silently rotting, and
+> this folder stays the human-facing version you can run with a real agent.
 
 ## Layout
 
@@ -17,9 +19,16 @@ dummy-project/
   agent/
     .env.example           # copy to .env and fill in your provider
     01-find-date/          # SEED-PROMPT.md → agent generates PLAN.md, then runs it
-    02-utils/              # a ready-made sequential PLAN.md
+    02-utils/              # a ready-made PLAN.md, run at the default cap of 1
     03-parallel/           # a PLAN.md + .ola/concurrency=2 → runs tasks in parallel
 ```
+
+The layout illustrates ola's ordering contract: tasks **within** a `PLAN.md`
+are implicitly independent and parallel-safe (the concurrency cap only decides
+how many run at once), while ordering between dependent stages comes from the
+indexed folders — `01-find-date` completes before `02-utils` starts, and so on.
+Work that depends on other work belongs in a later `NN-description/` folder
+with its own `PLAN.md`, not in a later task of the same plan.
 
 ## Run it
 

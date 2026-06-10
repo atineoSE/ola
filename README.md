@@ -65,7 +65,14 @@ project/
       .ola/
 ```
 
-Plan subfolders are processed in order.
+### Ordering: folders are sequential, tasks are parallel
+
+The plan structure carries an implicit contract with two levels:
+
+* **Tasks within one `PLAN.md` are independent and parallel-safe.** ola may run them concurrently (see [Parallel execution](#parallel-execution)) and gives no guarantee about their relative order. Never write a task that relies on a sibling task in the same plan having run first — even at the default concurrency cap of 1, order is not part of the contract.
+* **Ordering comes from folders.** Plan subfolders are processed strictly in name order (`01-…`, `02-…`, …), and a folder must fully complete before the next one starts.
+
+To express dependent work, split it into indexed `NN-description/` folders — one folder per dependency stage — each with its own `PLAN.md` of mutually independent tasks.
 
 A plan subfolder must contain only ONE of these two files:
 * `SEED-PROMPT.md`: this will create the `PLAN.md` file, which will drive the loop, or
