@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 ola = "ola.cli:main"
 ola-top = "ola.monitor.cli:main"
+ola-dashboard = "ola.dashboard.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=9.0"]
