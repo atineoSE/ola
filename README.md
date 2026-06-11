@@ -141,7 +141,7 @@ The full contract (folder naming, suffix allocation, tick-beats-marker) lives in
 ### State & events
 
 * `<folder>/.ola/tasks.json` — the per-task state spine (`pending` / `running` / `complete` / `failed` / `blocked`, plus `attempts` and `last_error`), reconciled from `PLAN.md` on each run.
-* `<folder>/.ola/events.jsonl` — a v2 event stream (`started` → `working`* → `complete`/`failed`) written for every attempt; this is the audit trail and the source [ola-top](./docs/ola-top.md) reads per-task progress from. The wire format is documented in [`src/ola/events/SCHEMA.md`](./src/ola/events/SCHEMA.md). Set `OLA_COLLECTOR_URL` to additionally POST events to a remote collector.
+* `<folder>/.ola/events.jsonl` — a v2 event stream (`started` → `working`* → `complete`/`failed`) written for every attempt; this is the audit trail and the source [ola-top](./docs/ola-top.md) and [ola-dashboard](./docs/ola-dashboard.md) read per-task progress from. The wire format is documented in [`src/ola/events/SCHEMA.md`](./src/ola/events/SCHEMA.md).
 
 Monitor a parallel run with [`ola-top`](./docs/ola-top.md), which renders a live per-task view with a `running N / cap M` badge.
 

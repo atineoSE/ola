@@ -21,6 +21,4 @@ def isolated_git_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
     monkeypatch.setenv("HOME", str(tmp_path))
-    # Ensure no stray collector is configured by the developer's environment.
-    monkeypatch.delenv("OLA_COLLECTOR_URL", raising=False)
     yield

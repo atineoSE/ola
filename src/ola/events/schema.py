@@ -1,16 +1,14 @@
 """Ola event envelope.
 
-The envelope is the on-the-wire shape every emitted event takes, whether it
-lands in ``<folder>/.ola/events.jsonl`` or is POSTed to a collector. The
-authoritative field-by-field spec lives in :doc:`SCHEMA.md` (next to this
-module); this dataclass is its executable mirror.
+The envelope is the shape every emitted event takes as one line in
+``<folder>/.ola/events.jsonl``. The authoritative field-by-field spec lives in
+:doc:`SCHEMA.md` (next to this module); this dataclass is its executable mirror.
 
 Lifecycle: ``started → working* → complete | failed``. The ``data`` slot is a
 status-specific payload typed in SCHEMA.md (``working`` carries a progress
 ``message``; ``working``/``complete``/``failed`` may carry a ``metrics`` block
-with cumulative ``output_tokens``/``decode_ms``/``tokens_per_sec``). The
-collector stores it verbatim; visualizing consumers interpret it and ignore
-unknown keys.
+with cumulative ``output_tokens``/``decode_ms``/``tokens_per_sec``). It is
+stored verbatim; visualizing consumers interpret it and ignore unknown keys.
 """
 
 from __future__ import annotations
@@ -45,8 +43,8 @@ def metrics_block(*, output_tokens: int, decode_ms: int) -> dict[str, Any]:
 class Event:
     """One immutable event envelope.
 
-    All fields except ``data`` are scalar metadata that the collector indexes
-    on. ``data`` is the status-specific payload defined in SCHEMA.md. Instances
+    All fields except ``data`` are scalar metadata a consumer can index or
+    group on. ``data`` is the status-specific payload defined in SCHEMA.md. Instances
     are frozen because an event, once assembled by the emitter, is a record of
     something that happened — sinks must not mutate it.
     """

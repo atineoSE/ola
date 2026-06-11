@@ -1,9 +1,9 @@
 # Ola event schema
 
 **Authoritative.** This document is the source of truth for the Ola event
-envelope. Sibling projects (collector, dashboard, fake-agent) pin to this
-document and are updated in lock-step when it changes; when they disagree with
-this file, this file wins. The executable mirror is `schema.py` in this
+envelope. Consumers that read the stream (ola-top and ola-dashboard) pin to
+this document and are updated in lock-step when it changes; when they disagree
+with this file, this file wins. The executable mirror is `schema.py` in this
 directory — keep the two in sync.
 
 ## Envelope
@@ -25,8 +25,8 @@ Every event is a single JSON object with exactly these fields:
 }
 ```
 
-When written to `<folder>/.ola/events.jsonl` each event is one line. When sent
-to a collector it is the JSON body of a `POST /events`.
+Each event is written as one line to `<folder>/.ola/events.jsonl` — the
+folder's audit trail and the stream every consumer reads.
 
 ## Fields
 
@@ -41,7 +41,7 @@ to a collector it is the JSON body of a `POST /events`.
 | `task_text` | string | harness | Free-text task description (the PLAN.md checkbox text). |
 | `agent_backend` | string | harness | The agent's mnemonic, e.g. `"cc"` (Claude Code), `"oh"` (OpenHands), `"cx"` (Codex). |
 | `status` | string | emitter | One of `started`, `working`, `complete`, `failed`. See lifecycle. |
-| `data` | object | emitter | Status-specific payload, typed per status (see below). Defaults to `{}`. The collector stores it verbatim without validating it; visualizing consumers interpret it per the payload tables. |
+| `data` | object | emitter | Status-specific payload, typed per status (see below). Defaults to `{}`. Stored verbatim in the stream; visualizing consumers interpret it per the payload tables. |
 
 ## Lifecycle
 
@@ -84,9 +84,10 @@ agent backend can report usage mid-stream, and consumers must render sensibly
 when the block is absent.
 
 All counters are **cumulative per attempt** (they reset at attempt boundaries,
-the same scoping as `seq`). Cumulative counters are deliberate: the HTTP sink
-may drop events under backpressure, and any two *surviving* events still yield
-a correct windowed rate.
+the same scoping as `seq`). Cumulative counters are deliberate: a consumer that
+samples the stream periodically (e.g. ola-dashboard polling, which only sees
+the latest event per task per tick) skips intermediate events, and any two
+events it *does* observe still yield a correct windowed rate.
 
 | Key | Type | Semantics |
 | --- | --- | --- |
@@ -95,6 +96,6 @@ a correct windowed rate.
 | `tokens_per_sec` | number | Convenience lifetime average: `output_tokens / (decode_ms / 1000)`; `0` when `decode_ms` is `0`. |
 
 To draw a throughput *curve*, consumers should plot
-`Δoutput_tokens / Δdecode_ms` between consecutive received events rather than
+`Δoutput_tokens / Δdecode_ms` between consecutive observed events rather than
 the emitted lifetime average; the deltas stay correct even when intermediate
-events were dropped.
+events were skipped.
