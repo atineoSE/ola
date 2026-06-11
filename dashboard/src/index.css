@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/*
+ * Dark theme tuned for big-screen projection:
+ *   - Deep near-black background so emitted blacks read as black, not grey.
+ *   - High-contrast off-white text (#f5f7fa) instead of pure #fff to avoid
+ *     bloom on bright projectors.
+ *   - Status palette is colour-blind-safe and bright enough to survive
+ *     ambient light: amber (working), emerald (complete), rose (failed).
+ *   - System UI sans-serif so the dashboard inherits the host's installed
+ *     fonts without a webfont network dependency.
+ */
+@theme {
+  --color-bg: #0b0d10;
+  --color-bg-panel: #15181d;
+  --color-border: #262a31;
+  --color-text: #f5f7fa;
+  --color-text-muted: #9aa3ad;
+  --color-accent: #7dd3fc;
+  --color-status-idle: #3a3f47;
+  --color-status-working: #f59e0b;
+  --color-status-complete: #10b981;
+  --color-status-failed: #f43f5e;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
