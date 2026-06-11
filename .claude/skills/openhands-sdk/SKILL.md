@@ -1,6 +1,7 @@
 ---
 name: openhands-sdk
 description: How to configure LLM and Agent classes with the OpenHands SDK
+version: 1.0.0
 ---
 
 

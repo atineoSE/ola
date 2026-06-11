@@ -1,6 +1,7 @@
 ---
 name: ola-top
 description: Design philosophy and scope guardrails for ola-top, the terminal monitor. Load whenever changing ola-top — every change must be checked against this philosophy.
+version: 1.0.0
 ---
 
 # The ola-top design philosophy

@@ -1,6 +1,7 @@
 ---
 name: codex
 description: How to drive the Codex CLI agent headlessly against a replaceable (custom/remote) model provider, and how to parse its JSONL event stream. Use when integrating Codex as an agent backend (e.g. a third ola agent alongside Claude Code and OpenHands).
+version: 1.0.0
 ---
 
 # Codex CLI — Headless Usage with Replaceable Providers
