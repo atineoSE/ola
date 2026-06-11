@@ -75,6 +75,27 @@ _OUTCOME_STAGNANT = "stagnant"
 _OUTCOME_BLOCKED = "blocked"
 
 
+class FolderIncompleteError(RuntimeError):
+    """A folder drained with PLAN.md checkboxes still unticked.
+
+    The harness drives every task in a folder to completion (a ticked
+    checkbox) or relocation (the janitor moves a blocked task into a sibling
+    ``…-leftovers``/``…-blockers`` folder, removing its line). If, after every
+    task has either ticked, been relocated, or exhausted ``--max-attempts``,
+    unticked lines remain, the folder is stuck: it can neither complete nor
+    advance without silently abandoning work. The harness bails out rather
+    than move on. ``remaining`` is the count of still-unticked tasks.
+    """
+
+    def __init__(self, folder_name: str, remaining: int) -> None:
+        self.folder_name = folder_name
+        self.remaining = remaining
+        super().__init__(
+            f"{folder_name}: {remaining} task(s) could not be completed or "
+            f"relocated to leftovers/blockers. Stopping."
+        )
+
+
 @dataclass
 class _Job:
     """Bookkeeping for an in-flight worker future."""
@@ -667,7 +688,7 @@ def run_folder(
             if janitor_future is not None:
                 wait_set.append(janitor_future)
 
-            if not wait_set:
+            if not wait_set and not janitor_queue:
                 if halted:
                     break
                 with state_lock:

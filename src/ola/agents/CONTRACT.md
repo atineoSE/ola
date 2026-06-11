@@ -25,6 +25,15 @@ inspect and edit.
 - **Checkbox is truth.** A ticked `- [x]` in PLAN.md is the only completion
   signal the harness accepts. Work that is not reflected in a tick did not
   happen, no matter what the agent claims.
+- **A folder is finished only when nothing is left undone.** The harness keeps
+  retrying a folder's tasks until every checkbox is ticked or its task has been
+  relocated to a sibling leftovers/blockers folder (the janitor removes the
+  relocated line). Each task is retried up to `--max-attempts`; a task that
+  exhausts its attempts stops being retried. Only then, if PLAN.md still has
+  unticked lines, does the harness **bail out and stop** — it never advances to
+  the next folder leaving unfinished work behind. A crash-interrupted task
+  (left mid-run with no live worker) is requeued on the next run rather than
+  abandoned, and the interrupted attempt does not count against `--max-attempts`.
 
 ## Blocked tasks
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from ola.agents import create_agent
 from ola.loop import run_outer_loop
 from ola.sandbox import is_sandbox
+from ola.scheduler import FolderIncompleteError
 
 logger = logging.getLogger(__name__)
 
@@ -135,13 +136,25 @@ def main() -> None:
         sys.exit(1)
 
     agent = create_agent(args.agent, model=args.model)
-    run_outer_loop(
-        agent,
-        plan_path,
-        limit=args.limit,
-        max_attempts=args.max_attempts,
-        janitor_enabled=not args.no_janitor,
-    )
+    try:
+        run_outer_loop(
+            agent,
+            plan_path,
+            limit=args.limit,
+            max_attempts=args.max_attempts,
+            janitor_enabled=not args.no_janitor,
+        )
+    except FolderIncompleteError as exc:
+        # A folder could not be driven to completion and its stuck tasks were
+        # not relocated to leftovers/blockers. Stop rather than advance past
+        # unfinished work — the only bail-out in the otherwise-autonomous run.
+        logger.error("%s", exc)
+        logger.error(
+            "Folder %s is stuck. Resolve the failing task(s) (or move them to a "
+            "blockers/leftovers folder) and re-run ola.",
+            exc.folder_name,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

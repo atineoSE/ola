@@ -330,26 +330,49 @@ def build_table(
             tr = fs.task_rows[ii]
             base_style = _task_status_style(tr.status)
             row_style = f"reverse {base_style}".strip() if is_cursor else base_style
-            # The task id prefixes the text so the row traces straight back into
-            # .ola/tasks.json and events.jsonl. Status shows through the row
-            # color; a task has no per-task agent/model/turn/count value, so
-            # those columns stay blank rather than borrow another field's value.
-            folder_cell = f"  └ {tr.task_id}  {tr.text}"
+            # Label each task by its PLAN.md position (1-based) and its
+            # tasks.json id (so the row traces straight back into
+            # tasks.json/events.jsonl). Status shows through the row color. The
+            # task text follows so the row stays self-describing.
+            position = ii + 1
+            label = f"  └ Task {position} ({tr.task_id})"
+            folder_cell = f"{label}: {tr.text}" if tr.text else label
+            st = tr.stats
             elapsed_cell = _fmt_time(int(tr.elapsed_s * 1000)) if tr.elapsed_s else ""
 
             if mode == ViewMode.TASK:
                 # #, Folder, Agent, Model, Tasks, Turns, Time
+                turns_str = str(st.num_turns) if st and st.num_turns else ""
                 table.add_row(
                     "",
                     folder_cell,
                     "",
                     "",
                     "",
-                    "",
+                    turns_str,
                     elapsed_cell,
                     style=row_style or None,
                 )
-            else:  # METRICS — task rows carry no token metrics
+            elif st is not None:  # METRICS — fold in the task's STATS aggregate
+                cache_text = Text(
+                    f"{st.cache_hit_rate:.0f}%", style=_cache_style(st.cache_hit_rate)
+                )
+                table.add_row(
+                    "",
+                    folder_cell,
+                    _fmt_tokens(st.input_tokens),
+                    _fmt_tokens(st.output_tokens),
+                    _fmt_tokens(st.avg_input_tokens),
+                    _fmt_tokens(st.max_input_tokens),
+                    cache_text,
+                    _fmt_ratio(st.io_ratio),
+                    _fmt_time_breakdown(st.time_breakdown),
+                    _fmt_ttft(st.ttft_ms, st.streamed),
+                    _fmt_tok_per_sec(st.llm_tok_per_sec),
+                    elapsed_cell,
+                    style=row_style or None,
+                )
+            else:  # METRICS — a never-run task has no token metrics yet
                 cells: list[Any] = ["", folder_cell] + [""] * 9 + [elapsed_cell]
                 table.add_row(*cells, style=row_style or None)
         else:  # iter row

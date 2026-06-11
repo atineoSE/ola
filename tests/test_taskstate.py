@@ -90,7 +90,7 @@ class TestSyncFromPlan:
         _write_plan(tmp_path, "- [ ] Alpha\n- [ ] Beta\n")
         state = TaskState.sync_from_plan(tmp_path)
         beta_id = state.all()[1].task_id
-        state.mark(beta_id, "running")
+        state.mark(beta_id, "failed", last_error="boom")
         state.save()
 
         # Now reorder the file: Beta moves to line 1
@@ -99,9 +99,43 @@ class TestSyncFromPlan:
         beta = resynced.get(beta_id)
         assert beta is not None
         assert beta.line_no == 1
-        assert beta.status == "running"  # status preserved
+        assert beta.status == "failed"  # status preserved
         # Order in `all()` follows PLAN.md after sync
         assert [e.text for e in resynced.all()] == ["Beta", "Alpha"]
+
+    def test_resets_stale_running_to_pending(self, tmp_path):
+        """A `running` read at startup is a crash orphan: requeue it.
+
+        sync_from_plan runs in a fresh process with nothing actually in flight,
+        so a persisted `running` is stale. It is reset to `pending` and its
+        attempt count rolled back by one (the dispatch loop re-increments),
+        so the interrupted attempt doesn't burn a --max-attempts slot.
+        """
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "running", attempts=2)
+        state.save()
+
+        resynced = TaskState.sync_from_plan(tmp_path)
+        alpha = resynced.get(alpha_id)
+        assert alpha is not None
+        assert alpha.status == "pending"
+        assert alpha.attempts == 1  # rolled back from 2
+
+    def test_resets_stale_running_attempts_floor_zero(self, tmp_path):
+        """Rolling back attempts never goes negative."""
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "running", attempts=0)
+        state.save()
+
+        resynced = TaskState.sync_from_plan(tmp_path)
+        alpha = resynced.get(alpha_id)
+        assert alpha is not None
+        assert alpha.status == "pending"
+        assert alpha.attempts == 0
 
     def test_drops_entries_no_longer_in_plan(self, tmp_path):
         _write_plan(tmp_path, "- [ ] Keep me\n- [ ] Drop me\n")
@@ -296,4 +330,15 @@ class TestResync:
         state.mark(alpha_id, "complete", attempts=1)
         state.resync()
         assert state.get(alpha_id).status == "complete"
+        assert state.get(alpha_id).attempts == 1
+
+    def test_preserves_running_unlike_sync_from_plan(self, tmp_path):
+        """resync keeps a live worker's `running` — only the startup
+        sync_from_plan treats `running` as a stale crash orphan."""
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "running", attempts=1)
+        state.resync()
+        assert state.get(alpha_id).status == "running"
         assert state.get(alpha_id).attempts == 1
