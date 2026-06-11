@@ -1,10 +1,24 @@
 FROM docker/sandbox-templates:shell-docker
 
+# jq: ola.sh's _ola_inject_oh_settings patches the rotating LLM endpoint into
+# ~/.openhands/agent_settings.json with jq before each parallel `oh` run; absent
+# jq it silently falls back to a possibly-stale base_url. Install it explicitly
+# so the OpenHands path is robust rather than degraded.
+RUN sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends jq && \
+    sudo rm -rf /var/lib/apt/lists/*
+
 # Install Claude Code CLI (native installer — no Node.js required)
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Claude Code config: bypass onboarding
-RUN echo '{"hasCompletedOnboarding": true}' > ~/.claude.json
+# Claude Code config: bypass onboarding. Written to BOTH the legacy
+# ~/.claude.json and the config-dir form ~/.claude/.claude.json: parallel mode
+# sets CLAUDE_CONFIG_DIR per task and bootstraps each task dir from
+# ~/.claude/.claude.json (see agents/claude_code.py), so the legacy path alone
+# never reaches a parallel worker.
+RUN mkdir -p ~/.claude && \
+    echo '{"hasCompletedOnboarding": true}' > ~/.claude.json && \
+    echo '{"hasCompletedOnboarding": true}' > ~/.claude/.claude.json
 
 # Install Codex CLI (npm package — Node 20 is already in the base image,
 # with NPM_CONFIG_PREFIX=/usr/local/share/npm-global owned by the agent user)
@@ -39,11 +53,17 @@ RUN mkdir -p ~/.openhands && \
     echo 'for f in agent_settings.json cli_config.json; do [ -f ".oh-$f" ] && mv ".oh-$f" ~/.openhands/"$f"; done' >> ~/.bashrc && \
     echo "alias oh='openhands --llm-approve --exit-without-confirmation'" >> ~/.bashrc
 
-# Verify all tools and config are in place
+# Verify all tools and config are in place. Beyond tool presence, smoke-test
+# `git worktree` — the parallel-agents flow runs every task in its own worktree
+# (see src/ola/worktree.py), so an old or broken git here would fail every run.
 RUN set -e && \
     uv --version && \
     claude --version && \
     openhands --version && \
     codex --version && \
     docker --version && \
-    git config --global user.name | grep -q ola
+    jq --version && \
+    git config --global user.name | grep -q ola && \
+    d="$(mktemp -d)" && cd "$d" && git init -q && git config user.email ola@localhost && \
+    git config user.name ola && git commit -q --allow-empty -m init && \
+    git worktree add -q wt HEAD && git worktree remove wt && cd / && rm -rf "$d"
