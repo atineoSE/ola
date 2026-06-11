@@ -8,19 +8,16 @@ Public surface:
   the sink interface and a no-op default.
 - :class:`~ola.events.client.LocalSink` — appends events as JSON lines to
   ``<folder>/.ola/events.jsonl`` via a dedicated writer thread.
-- :class:`~ola.events.client.HttpSink` — POSTs events to a collector on a
-  background thread with a bounded drop-oldest queue.
 
 The authoritative wire spec is ``src/ola/events/SCHEMA.md``.
 """
 
-from ola.events.client import Emitter, HttpSink, LocalSink, NullSink, Sink
+from ola.events.client import Emitter, LocalSink, NullSink, Sink
 from ola.events.schema import VALID_STATUSES, Event, metrics_block
 
 __all__ = [
     "Emitter",
     "Event",
-    "HttpSink",
     "LocalSink",
     "NullSink",
     "Sink",

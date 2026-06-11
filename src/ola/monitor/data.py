@@ -323,24 +323,31 @@ def _parse_ts(ts: str) -> datetime | None:
         return None
 
 
-def _read_events_by_task(folder: Path) -> dict[str, list[dict]]:
-    """Group events.jsonl records by ``task_id`` in file (emission) order.
+def _read_events(folder: Path) -> list[dict]:
+    """Read ``<folder>/.ola/events.jsonl`` as a flat list in file (emission) order.
 
     Malformed lines are skipped so a partially-written events.jsonl never
     breaks the monitor.
     """
     events_file = folder / ".ola" / "events.jsonl"
-    by_task: dict[str, list[dict]] = {}
     if not events_file.exists():
-        return by_task
+        return []
+    records: list[dict] = []
     for line in events_file.read_text().splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            record = json.loads(line)
+            records.append(json.loads(line))
         except json.JSONDecodeError:
             continue
+    return records
+
+
+def _read_events_by_task(folder: Path) -> dict[str, list[dict]]:
+    """Group events.jsonl records by ``task_id`` in file (emission) order."""
+    by_task: dict[str, list[dict]] = {}
+    for record in _read_events(folder):
         task_id = record.get("task_id")
         if not task_id:
             continue
@@ -464,3 +471,161 @@ def read_agent_folder(agent_path: Path) -> list[FolderStatus]:
         p for p in agent_path.iterdir() if p.is_dir() and not p.name.startswith(".")
     )
     return [read_folder_status(f) for f in subfolders]
+
+
+# ---------------------------------------------------------------------------
+# ola-dashboard snapshot
+#
+# The dashboard is a browser view over the same files ola-top reads; the
+# ``ola-dashboard`` server re-parses the agent folder per request and returns
+# ``build_snapshot`` as JSON. The shape mirrors what the old collector emitted
+# (the dashboard's ``snapshot/types.ts`` ``Snapshot``), so the SPA needed no
+# data-shape change — only its transport (SSE → polling) did.
+# ---------------------------------------------------------------------------
+
+# Recently-completed rows retained in the snapshot's activity feed. Matches the
+# SPA's ACTIVITY_FEED_LIMIT — enough to fill a sidebar without unbounded growth.
+_ACTIVITY_LIMIT = 50
+
+# tasks.json spine status → dashboard lifecycle status, used only when a task
+# has emitted no events yet (e.g. a checkbox ticked before any run). Once events
+# exist, the latest event's status wins. The dashboard has no ``blocked`` state,
+# so a blocked spine entry renders as ``failed`` (its checkbox is unticked, so
+# it returns to the pool on the next claim — same as a failed attempt).
+_SPINE_TO_LIFECYCLE: dict[str, str] = {
+    "pending": "pending",
+    "running": "working",
+    "complete": "complete",
+    "failed": "failed",
+    "blocked": "failed",
+}
+
+_TERMINAL_STATUSES: frozenset[str] = frozenset({"complete", "failed"})
+
+
+def build_snapshot(agent_path: Path) -> dict:
+    """Build the dashboard snapshot for ``agent_path`` from the on-disk files.
+
+    Only parallel-mode subfolders (those with ``.ola/tasks.json``) appear —
+    they are the per-task spine the dashboard renders. Each task starts from
+    its spine entry (``task_id``, text, attempts) and is enriched with its
+    latest ``events.jsonl`` event for ``agent_backend``, ``data`` (latest
+    payload, incl. ``metrics``), the finer lifecycle ``status``, and ``attempt``.
+    Stateless: every call re-reads the files, so a killed/restarted server
+    loses nothing.
+    """
+    tasks: dict[str, dict] = {}
+    folders: dict[str, dict] = {}
+    activity: list[dict] = []
+    first_started_ts: str | None = None
+
+    for folder in _parallel_subfolders(agent_path):
+        name = folder.name
+        events_by_task = _read_events_by_task(folder)
+
+        folder_first: str | None = None
+        folder_last_terminal: str | None = None
+
+        for entry in TaskState.load(folder).all():
+            events = events_by_task.get(entry.task_id, [])
+            last = events[-1] if events else None
+
+            if last is not None:
+                status = last.get("status", "pending")
+                agent_backend = last.get("agent_backend", "")
+                attempt = int(last.get("attempt", entry.attempts))
+                data = last.get("data") or {}
+            else:
+                status = _SPINE_TO_LIFECYCLE.get(entry.status, "pending")
+                agent_backend = ""
+                attempt = entry.attempts
+                data = {}
+
+            tasks[entry.task_id] = {
+                "task_id": entry.task_id,
+                "task_text": entry.text,
+                "folder": name,
+                "agent_backend": agent_backend,
+                "status": status,
+                "attempt": attempt,
+                "data": data,
+            }
+
+        # Folder run clock + activity feed, scanned over the flat event stream
+        # so manifest-order (tasks.json) and emission-order (events) stay
+        # independent concerns.
+        for ev in _read_events(folder):
+            ts = ev.get("ts")
+            ev_status = ev.get("status")
+            if not ts:
+                continue
+            if ev_status == "started" and (folder_first is None or ts < folder_first):
+                folder_first = ts
+            if ev_status in _TERMINAL_STATUSES and (
+                folder_last_terminal is None or ts > folder_last_terminal
+            ):
+                folder_last_terminal = ts
+            if ev_status == "complete":
+                activity.append(
+                    {
+                        "task_id": ev.get("task_id", ""),
+                        "task_text": ev.get("task_text", ""),
+                        "folder": name,
+                        "agent_backend": ev.get("agent_backend", ""),
+                        "ts": ts,
+                        "data": ev.get("data") or {},
+                    }
+                )
+
+        folders[name] = {
+            "first_started_ts": folder_first,
+            "last_terminal_ts": folder_last_terminal,
+            "project": name,
+        }
+        if folder_first is not None and (
+            first_started_ts is None or folder_first < first_started_ts
+        ):
+            first_started_ts = folder_first
+
+    # Newest-first, capped. RFC 3339 'Z' timestamps sort correctly as strings.
+    activity.sort(key=lambda e: e["ts"], reverse=True)
+    del activity[_ACTIVITY_LIMIT:]
+
+    return {
+        "first_started_ts": first_started_ts,
+        "counters": _snapshot_counters(tasks),
+        "tasks": tasks,
+        "folders": folders,
+        "activity": activity,
+    }
+
+
+def _parallel_subfolders(agent_path: Path) -> list[Path]:
+    """Sorted subfolders of ``agent_path`` running in parallel mode (``.ola/``)."""
+    if not agent_path.is_dir():
+        return []
+    return sorted(
+        p
+        for p in agent_path.iterdir()
+        if p.is_dir()
+        and not p.name.startswith(".")
+        and (p / ".ola" / "tasks.json").exists()
+    )
+
+
+def _snapshot_counters(tasks: dict[str, dict]) -> dict:
+    """Global task counters for the snapshot (the SPA recomputes per folder)."""
+    completed = failed = active = 0
+    for t in tasks.values():
+        if t["status"] == "complete":
+            completed += 1
+        elif t["status"] == "failed":
+            failed += 1
+        elif t["status"] != "pending":
+            active += 1
+    return {
+        "total_tasks": len(tasks),
+        "completed": completed,
+        "failed": failed,
+        "active": active,
+    }

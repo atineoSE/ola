@@ -456,13 +456,12 @@ def test_process_folder_skips_when_no_plan(tmp_path, caplog):
 # --- Emitter wiring tests ---
 
 
-def test_build_emitter_local_only(tmp_path, monkeypatch):
-    """Without OLA_COLLECTOR_URL the emitter has a single LocalSink."""
+def test_build_emitter_local_only(tmp_path):
+    """The emitter attaches a single LocalSink for the folder's audit trail."""
     from ola.events.client import LocalSink
 
     from ola.loop import _build_emitter
 
-    monkeypatch.delenv("OLA_COLLECTOR_URL", raising=False)
     folder = tmp_path / "phase"
     folder.mkdir()
     emitter = _build_emitter(folder)
@@ -474,29 +473,10 @@ def test_build_emitter_local_only(tmp_path, monkeypatch):
         emitter.close()
 
 
-def test_build_emitter_adds_http_sink(tmp_path, monkeypatch):
-    """OLA_COLLECTOR_URL adds an HttpSink alongside the LocalSink."""
-    from ola.events.client import HttpSink, LocalSink
-
-    from ola.loop import _build_emitter
-
-    monkeypatch.setenv("OLA_COLLECTOR_URL", "http://collector.test")
-    folder = tmp_path / "phase"
-    folder.mkdir()
-    emitter = _build_emitter(folder)
-    try:
-        kinds = {type(s) for s in emitter._sinks}
-        assert LocalSink in kinds
-        assert HttpSink in kinds
-    finally:
-        emitter.close()
-
-
-def test_process_folder_passes_emitter_to_scheduler(tmp_path, monkeypatch):
+def test_process_folder_passes_emitter_to_scheduler(tmp_path):
     """_process_folder builds an emitter and forwards it to run_folder."""
     from ola.events.client import Emitter
 
-    monkeypatch.delenv("OLA_COLLECTOR_URL", raising=False)
     folder = tmp_path / "phase"
     folder.mkdir()
     (folder / "PLAN.md").write_text("- [ ] Task A\n")

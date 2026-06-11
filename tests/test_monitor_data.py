@@ -7,6 +7,7 @@ from ola.monitor.data import (
     FolderStatus,
     IterationStatus,
     TaskRow,
+    build_snapshot,
     parse_stats_jsonl,
     parse_task_counts,
     read_agent_folder,
@@ -890,3 +891,127 @@ def test_read_task_rows_without_iterations_has_no_stats(tmp_path: Path):
         [{"task_id": "t-aaa", "text": "A", "line_no": 1, "status": "pending"}],
     )
     assert read_task_rows(folder)[0].stats is None
+
+
+# --- build_snapshot (ola-dashboard) ------------------------------------------
+
+
+def test_build_snapshot_only_parallel_folders(tmp_path: Path):
+    """Sequential folders (no .ola/tasks.json) are absent from the snapshot."""
+    seq = tmp_path / "01-seq"
+    seq.mkdir()
+    (seq / "PLAN.md").write_text("- [x] done\n- [ ] todo\n")
+    (seq / "STATS.jsonl").write_text("")
+    par = tmp_path / "02-par"
+    par.mkdir()
+    _write_tasks_json(
+        par,
+        [{"task_id": "t-aaa", "text": "Task", "line_no": 1, "status": "pending"}],
+    )
+    snap = build_snapshot(tmp_path)
+    assert set(snap["folders"]) == {"02-par"}
+    assert snap["tasks"]["t-aaa"]["folder"] == "02-par"
+
+
+def test_build_snapshot_pending_from_spine(tmp_path: Path):
+    """A task with no events takes its status from the tasks.json spine."""
+    folder = tmp_path / "01-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [
+            {"task_id": "t-p", "text": "Pending", "line_no": 1, "status": "pending"},
+            {"task_id": "t-c", "text": "Done", "line_no": 2, "status": "complete"},
+            {"task_id": "t-b", "text": "Blocked", "line_no": 3, "status": "blocked"},
+        ],
+    )
+    snap = build_snapshot(tmp_path)
+    assert snap["tasks"]["t-p"]["status"] == "pending"
+    assert snap["tasks"]["t-c"]["status"] == "complete"
+    # No dashboard "blocked" state — a blocked spine entry renders as failed.
+    assert snap["tasks"]["t-b"]["status"] == "failed"
+    assert snap["tasks"]["t-p"]["agent_backend"] == ""
+    assert snap["tasks"]["t-p"]["data"] == {}
+
+
+def test_build_snapshot_latest_event_wins(tmp_path: Path):
+    """Once events exist, the latest event drives status/backend/data/attempt."""
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-aaa", "text": "Task", "line_no": 1, "status": "running"}],
+    )
+    _write_events_jsonl(
+        folder,
+        [
+            {
+                "task_id": "t-aaa",
+                "status": "started",
+                "ts": "2026-05-27T14:00:00.000Z",
+                "agent_backend": "cc",
+                "attempt": 0,
+                "data": {},
+            },
+            {
+                "task_id": "t-aaa",
+                "status": "working",
+                "ts": "2026-05-27T14:00:05.000Z",
+                "agent_backend": "cc",
+                "attempt": 0,
+                "data": {"message": "tests", "metrics": {"tokens_per_sec": 42}},
+            },
+        ],
+    )
+    task = build_snapshot(tmp_path)["tasks"]["t-aaa"]
+    assert task["status"] == "working"
+    assert task["agent_backend"] == "cc"
+    assert task["data"]["metrics"]["tokens_per_sec"] == 42
+
+
+def test_build_snapshot_clock_counters_and_activity(tmp_path: Path):
+    """Folder clock spans first started→last terminal; complete events feed activity."""
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [
+            {"task_id": "t-a", "text": "A", "line_no": 1, "status": "complete"},
+            {"task_id": "t-b", "text": "B", "line_no": 2, "status": "running"},
+        ],
+    )
+    _write_events_jsonl(
+        folder,
+        [
+            {"task_id": "t-a", "status": "started", "ts": "2026-05-27T14:00:00.000Z"},
+            {
+                "task_id": "t-a",
+                "status": "complete",
+                "ts": "2026-05-27T14:00:10.000Z",
+                "agent_backend": "cc",
+                "task_text": "A",
+                "data": {},
+            },
+            {"task_id": "t-b", "status": "started", "ts": "2026-05-27T14:00:02.000Z"},
+        ],
+    )
+    snap = build_snapshot(tmp_path)
+    clock = snap["folders"]["09-par"]
+    assert clock["first_started_ts"] == "2026-05-27T14:00:00.000Z"
+    assert clock["last_terminal_ts"] == "2026-05-27T14:00:10.000Z"
+    assert clock["project"] == "09-par"
+    assert snap["first_started_ts"] == "2026-05-27T14:00:00.000Z"
+    assert snap["counters"] == {
+        "total_tasks": 2,
+        "completed": 1,
+        "failed": 0,
+        "active": 1,
+    }
+    assert [a["task_id"] for a in snap["activity"]] == ["t-a"]
+
+
+def test_build_snapshot_missing_agent_dir(tmp_path: Path):
+    snap = build_snapshot(tmp_path / "nope")
+    assert snap["tasks"] == {}
+    assert snap["folders"] == {}
+    assert snap["activity"] == []

@@ -6,12 +6,11 @@ assembled :class:`~ola.events.schema.Event` out to a set of sinks. Callers only 
 :meth:`Emitter.started`, :meth:`Emitter.working`, :meth:`Emitter.complete`,
 and :meth:`Emitter.failed`.
 
-A :class:`Sink` is anything that can consume an assembled event. Two concrete
-sinks ship here: :class:`LocalSink` mirrors every event as a JSON line in
-``<folder>/.ola/events.jsonl`` via a single dedicated writer thread, and
-:class:`HttpSink` POSTs each event to a collector on a background thread with a
-bounded drop-oldest queue. Both are fire-and-forget: ``emit`` never blocks the
-caller for long and never raises back into the scheduler.
+A :class:`Sink` is anything that can consume an assembled event.
+:class:`LocalSink` mirrors every event as a JSON line in
+``<folder>/.ola/events.jsonl`` via a single dedicated writer thread. It is
+fire-and-forget: ``emit`` never blocks the caller for long and never raises
+back into the scheduler.
 """
 
 from __future__ import annotations
@@ -75,8 +74,7 @@ class LocalSink(Sink):
     to the caller.
 
     The queue is unbounded because local appends are cheap and we prefer not to
-    drop a folder's own audit trail; the HTTP path (:class:`HttpSink`) is where
-    backpressure can drop events.
+    drop a folder's own audit trail.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -132,89 +130,6 @@ class LocalSink(Sink):
         self._thread.join(timeout=5.0)
 
 
-class HttpSink(Sink):
-    """POSTs each event to ``{collector_url}/events`` on a background thread.
-
-    A bounded queue with drop-oldest overflow keeps a slow or unreachable
-    collector from ever stalling or unbounded-growing the harness: when the
-    queue is full the oldest pending event is discarded to make room. :meth:`emit`
-    is non-blocking. Non-2xx responses and transport errors are logged, never
-    raised. Fire-and-forget.
-
-    Enabled by the scheduler only when a collector URL is configured (via
-    ``OLA_COLLECTOR_URL`` or ``--collector-url``); this class itself takes the
-    resolved URL directly.
-    """
-
-    def __init__(
-        self,
-        collector_url: str,
-        *,
-        max_queue: int = 1000,
-        timeout: float = 5.0,
-    ) -> None:
-        # ``httpx`` is imported lazily so the events package has no hard import
-        # dependency on it unless an HTTP sink is actually constructed.
-        import httpx
-
-        self._url = collector_url.rstrip("/") + "/events"
-        self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
-        self._closed = threading.Event()
-        self._client = httpx.Client(timeout=timeout)
-        self._thread = threading.Thread(
-            target=self._run, name="ola-httpsink", daemon=True
-        )
-        self._thread.start()
-
-    def emit(self, event: Event) -> None:
-        if self._closed.is_set():
-            return
-        try:
-            self._queue.put_nowait(event)
-        except queue.Full:
-            # Drop-oldest: make room by discarding the oldest pending event,
-            # then enqueue the new one. Both ops are best-effort under
-            # concurrency; if we still can't enqueue, drop the new event.
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self._queue.put_nowait(event)
-            except queue.Full:
-                logger.warning("HttpSink: queue full, dropping event")
-
-    def _run(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is _SHUTDOWN:
-                return
-            try:
-                resp = self._client.post(self._url, json=item.to_dict())
-                if not (200 <= resp.status_code < 300):
-                    logger.warning(
-                        "HttpSink: collector returned %s for %s",
-                        resp.status_code,
-                        self._url,
-                    )
-            except Exception:  # noqa: BLE001 - fire-and-forget; never propagate
-                logger.exception("HttpSink: failed to POST event to %s", self._url)
-
-    def close(self) -> None:
-        if self._closed.is_set():
-            return
-        self._closed.set()
-        # The writer thread is always consuming, so a blocking put of the
-        # sentinel unblocks as soon as space frees; guard with a timeout so a
-        # wedged thread can't hang shutdown.
-        try:
-            self._queue.put(_SHUTDOWN, timeout=5.0)
-        except queue.Full:
-            pass
-        self._thread.join(timeout=5.0)
-        self._client.close()
-
-
 class Emitter:
     """Assembles event envelopes and dispatches them to its sinks.
 
@@ -223,7 +138,7 @@ class Emitter:
     - ``ts`` is stamped at emit time in UTC millisecond ISO-8601.
     - ``seq`` is a monotonic counter scoped to each ``(agent_id, attempt)``
       pair, starting at ``0`` for the first event of that pair and
-      incrementing by one per subsequent event. This lets a collector order
+      incrementing by one per subsequent event. This lets a consumer order
       and gap-detect a single attempt's stream even if events arrive out of
       order.
 

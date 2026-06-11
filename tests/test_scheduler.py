@@ -18,6 +18,7 @@ from ola.scheduler import (
     _substitute,
     read_concurrency,
     run_folder,
+    write_concurrency,
 )
 from ola.stats import IterationStats
 from ola.taskstate import TaskState
@@ -1052,6 +1053,40 @@ def test_read_concurrency_negative_logs_warning(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="ola.scheduler"):
         read_concurrency(tmp_path)
     assert any("Negative concurrency cap" in r.message for r in caplog.records)
+
+
+# --- write_concurrency tests ---
+
+
+def test_write_concurrency_round_trips(tmp_path):
+    write_concurrency(tmp_path, 5)
+    assert (tmp_path / ".ola" / "concurrency").exists()
+    assert read_concurrency(tmp_path) == 5
+
+
+def test_write_concurrency_creates_ola_dir(tmp_path):
+    """The .ola/ sidecar is created on demand (dashboard may write first)."""
+    assert not (tmp_path / ".ola").exists()
+    write_concurrency(tmp_path, 3)
+    assert read_concurrency(tmp_path) == 3
+
+
+def test_write_concurrency_zero_is_valid_pause(tmp_path):
+    write_concurrency(tmp_path, 0)
+    assert read_concurrency(tmp_path) == 0
+
+
+def test_write_concurrency_overwrites(tmp_path):
+    write_concurrency(tmp_path, 8)
+    write_concurrency(tmp_path, 2)
+    assert read_concurrency(tmp_path) == 2
+
+
+def test_write_concurrency_negative_rejected(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError):
+        write_concurrency(tmp_path, -1)
 
 
 # --- Blocked tasks + janitor ---

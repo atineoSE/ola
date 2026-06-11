@@ -2,13 +2,12 @@
 
 import json
 import logging
-import os
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ola.agents.base import Agent
-from ola.plan import discover_plan_folders
+from ola.plan import count_tasks, discover_plan_folders
 from ola.stats import IterationStats
 
 if TYPE_CHECKING:
@@ -118,23 +117,13 @@ def _initial_concurrency(folder: Path, default: int = 1) -> int:
 def _build_emitter(folder: Path) -> "Emitter":
     """Build the event emitter for a folder's parallel run.
 
-    Always attaches a :class:`~ola.events.client.LocalSink` writing to
-    ``<folder>/.ola/events.jsonl`` (the folder's audit trail, also the source
-    ola-top reads per-task progress from). When ``OLA_COLLECTOR_URL`` is set in
-    the environment, an :class:`~ola.events.client.HttpSink` is added so events
-    are also POSTed to a remote collector. Both sinks are fire-and-forget.
+    Attaches a :class:`~ola.events.client.LocalSink` writing to
+    ``<folder>/.ola/events.jsonl`` — the folder's audit trail, and the source
+    both ola-top and ola-dashboard read per-task progress from. Fire-and-forget.
     """
-    from ola.events import Emitter, HttpSink, LocalSink, Sink
+    from ola.events import Emitter, LocalSink
 
-    sinks: list[Sink] = [LocalSink(folder / ".ola" / "events.jsonl")]
-    collector_url = os.environ.get("OLA_COLLECTOR_URL")
-    if collector_url:
-        try:
-            sinks.append(HttpSink(collector_url))
-            logger.info("Emitting events to collector at %s", collector_url)
-        except Exception:  # noqa: BLE001 - never let event setup break a run
-            logger.exception("Failed to set up HTTP event sink; continuing local-only")
-    return Emitter(sinks)
+    return Emitter([LocalSink(folder / ".ola" / "events.jsonl")])
 
 
 def _append_stats(

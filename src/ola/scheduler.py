@@ -248,6 +248,24 @@ def read_concurrency(folder: Path, default: int = 1) -> int:
     return value
 
 
+def write_concurrency(folder: Path, value: int) -> None:
+    """Atomically set the live concurrency cap in ``<folder>/.ola/concurrency``.
+
+    The mirror of :func:`read_concurrency` and the dashboard's only write: the
+    parallel-agents slider calls this to retarget a live run. The scheduler
+    re-reads the file every tick, so the new cap takes effect on the next tick.
+    ``0`` is a valid value ("pause new starts; let in-flight workers finish").
+    Negative values are rejected, matching ``read_concurrency``'s contract.
+    """
+    if value < 0:
+        raise ValueError(f"concurrency cap must be >= 0, got {value}")
+    cap_file = folder / ".ola" / "concurrency"
+    cap_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cap_file.with_name(cap_file.name + ".tmp")
+    tmp.write_text(f"{value}\n")
+    tmp.replace(cap_file)
+
+
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     result = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True)
     if result.returncode != 0:
