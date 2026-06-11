@@ -280,9 +280,9 @@ def build_table(
             if sub_rows:
                 prefix = "\u25bc " if fs.name in expanded else "\u25b6 "
 
-            # Active folder gets a marker
-            active_marker = "\u25cf " if is_active else ""
-            folder_cell = f"{active_marker}{prefix}{fs.name}"
+            # Active folder is distinguished by its colour (bold yellow vs
+            # plain yellow for other in-progress folders), not a marker.
+            folder_cell = f"{prefix}{fs.name}"
 
             if mode == ViewMode.TASK:
                 # Color tasks per-cell
@@ -302,7 +302,7 @@ def build_table(
                     fs.model_display,
                     tasks_text,
                     turns_str,
-                    _fmt_time(fs.total_wall_ms),
+                    _fmt_time(fs.display_wall_ms),
                     style=style,
                 )
             else:  # METRICS
@@ -323,7 +323,7 @@ def build_table(
                     _fmt_time_breakdown(fs.time_breakdown),
                     _fmt_ttft(fs.median_ttft_ms, fs.all_streamed),
                     _fmt_tok_per_sec(fs.llm_tok_per_sec),
-                    _fmt_time(fs.total_wall_ms),
+                    _fmt_time(fs.display_wall_ms),
                     style=style,
                 )
         elif kind == "task":  # parallel-mode per-task row

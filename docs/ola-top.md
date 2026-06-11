@@ -41,6 +41,8 @@ ola-top adapts what it shows when you expand a folder, based on whether the fold
 
 > Elapsed time comes from the `events.jsonl` stream and populates as the run emits events; a folder that has only just started shows its tasks from `tasks.json` with an empty Time column until the first events land.
 
+> For a parallel folder, the **Folder row's Time** is the wall-clock span across *all* its events (earliest→latest timestamp), recomputed on every refresh. It is derived from `events.jsonl` rather than summed from `STATS.jsonl`, so an interrupted-then-resumed run reports its true elapsed time instead of a stale number that can read shorter than a single task. Sequential folders keep summing per-iteration wall time from `STATS.jsonl`.
+
 ## Example output
 
 ```
@@ -54,5 +56,7 @@ ola-top adapts what it shows when you expand a folder, based on whether the fold
 
  q: quit  ↑↓: navigate  Enter: expand/collapse  m: toggle view
 ```
+
+Folder rows also read off colour: **green** = all tasks done, **bold yellow** = the active folder (the first one with work remaining), **plain yellow** = other in-progress folders, **dim** = no tasks yet. The active folder is shown by its colour alone — there is no separate marker.
 
 Task sub-rows colour the whole row by status (here `running` and `complete`), so the status reads off the colour rather than a column.

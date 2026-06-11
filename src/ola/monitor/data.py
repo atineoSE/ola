@@ -107,11 +107,28 @@ class FolderStatus:
     # present; ``task_rows`` is the per-task spine for the expanded view.
     concurrency_cap: int | None = None
     task_rows: list[TaskRow] = field(default_factory=list)
+    # Parallel-mode wall-clock span across all events (earliest→latest ts),
+    # recomputed each read. 0.0 for sequential folders or before two events
+    # land. See :attr:`display_wall_ms`.
+    events_elapsed_s: float = 0.0
 
     @property
     def is_parallel(self) -> bool:
         """True when this folder runs in parallel mode (``.ola/`` present)."""
         return self.concurrency_cap is not None
+
+    @property
+    def display_wall_ms(self) -> int:
+        """Wall time for the folder row's Time column.
+
+        Parallel folders use the live events span (``events_elapsed_s``), so an
+        interrupt/resume can't leave a stale ``STATS.jsonl``-summed number that
+        reads shorter than a single task. Sequential folders fall back to the
+        summed per-iteration wall time.
+        """
+        if self.is_parallel and self.events_elapsed_s > 0:
+            return int(self.events_elapsed_s * 1000)
+        return self.total_wall_ms
 
     @property
     def running_count(self) -> int:
@@ -280,6 +297,7 @@ def read_folder_status(folder: Path) -> FolderStatus:
 
         status.concurrency_cap = read_concurrency(folder)
         status.task_rows = read_task_rows(folder, status.iterations)
+        status.events_elapsed_s = _events_elapsed_s(folder)
 
     return status
 
@@ -342,6 +360,22 @@ def _read_events(folder: Path) -> list[dict]:
         except json.JSONDecodeError:
             continue
     return records
+
+
+def _events_elapsed_s(folder: Path) -> float:
+    """Wall-clock span of ``<folder>/.ola/events.jsonl`` (earliest→latest ts).
+
+    Recomputed on every read so an interrupted-then-resumed run reports its
+    true elapsed time, rather than a stale ``STATS.jsonl``-derived number that
+    can read shorter than a single task. Returns 0.0 with fewer than two
+    parsable timestamps.
+    """
+    timestamps = [
+        t for t in (_parse_ts(e.get("ts", "")) for e in _read_events(folder)) if t
+    ]
+    if len(timestamps) < 2:
+        return 0.0
+    return (max(timestamps) - min(timestamps)).total_seconds()
 
 
 def _read_events_by_task(folder: Path) -> dict[str, list[dict]]:

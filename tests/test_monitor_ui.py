@@ -310,23 +310,32 @@ class TestFindActiveIndex:
         assert _find_active_index(folders) is None
 
 
-class TestActiveMarker:
-    def test_active_folder_has_marker(self):
-        """Active folder should show ● marker in rendered output."""
+class TestActiveColour:
+    def test_active_folder_is_bold_yellow(self):
+        """The active folder reads off colour (bold yellow), not a marker."""
         folders = [
             FolderStatus(name="done", tasks_completed=3, tasks_total=3),
             FolderStatus(name="active", tasks_completed=1, tasks_total=3),
         ]
         table = build_table(folders)
         text = _render_table_text(table)
-        assert "\u25cf" in text  # ● marker
-        # The completed folder should not have the marker
-        # Check the active folder is bold yellow
+        # No marker is rendered any more — status reads off colour alone.
+        assert "\u25cf" not in text
         assert table.rows[1].style == "bold yellow"
         assert table.rows[0].style == "green"
 
-    def test_no_active_when_all_complete(self):
-        """No ● marker when all folders are complete."""
+    def test_inactive_in_progress_is_plain_yellow(self):
+        """A later in-progress folder is plain yellow, distinct from active."""
+        folders = [
+            FolderStatus(name="active", tasks_completed=1, tasks_total=3),
+            FolderStatus(name="later", tasks_completed=0, tasks_total=2),
+        ]
+        table = build_table(folders)
+        assert table.rows[0].style == "bold yellow"
+        assert table.rows[1].style == "yellow"
+
+    def test_no_marker_when_all_complete(self):
+        """No marker when all folders are complete."""
         folders = [
             FolderStatus(name="a", tasks_completed=3, tasks_total=3),
             FolderStatus(name="b", tasks_completed=2, tasks_total=2),
