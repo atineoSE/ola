@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   describeMetrics,
   formatElapsed,
+  formatMillions,
   formatTokensPerSec,
   metricEntries,
   readMetrics,
@@ -53,6 +54,22 @@ describe("formatTokensPerSec", () => {
   it("renders to one decimal", () => {
     expect(formatTokensPerSec(0)).toBe("0.0");
     expect(formatTokensPerSec(46.04)).toBe("46.0");
+  });
+});
+
+describe("formatMillions", () => {
+  it("renders 0.00 for absent/non-finite/negative (a running total floor)", () => {
+    expect(formatMillions(null)).toBe("0.00");
+    expect(formatMillions(undefined)).toBe("0.00");
+    expect(formatMillions(NaN)).toBe("0.00");
+    expect(formatMillions(-5)).toBe("0.00");
+  });
+
+  it("renders a token count as millions to two decimals", () => {
+    expect(formatMillions(0)).toBe("0.00");
+    expect(formatMillions(10_000)).toBe("0.01");
+    expect(formatMillions(1_234_567)).toBe("1.23");
+    expect(formatMillions(48_900_000)).toBe("48.90");
   });
 });
 

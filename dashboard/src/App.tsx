@@ -4,7 +4,8 @@ import { ActivityFeed } from "./components/ActivityFeed";
 import { HeroMetrics } from "./components/HeroMetrics";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { TaskGrid } from "./components/TaskGrid";
-import { recomputeCounters, useSnapshot } from "./snapshot";
+import { recomputeCounters, sumOutputTokens, useSnapshot } from "./snapshot";
+import { agentColor, agentName } from "./agent";
 import { useConcurrency } from "./hooks/useConcurrency";
 import { useOutputTokensPerSec } from "./hooks/useOutputTokensPerSec";
 
@@ -69,20 +70,32 @@ function App() {
   // gaps and reset on a project switch, so the tile shows a continuously
   // updated number instead of the slowly-moving lifetime average.
   const outputTokPerSec = useOutputTokensPerSec(tasks, project);
+  const totalOutputTokens = useMemo(() => sumOutputTokens(tasks), [tasks]);
   const activity = useMemo(
     () => snapshot.activity.filter((e) => e.folder === project),
     [snapshot.activity, project],
   );
   const clock = project !== null ? snapshot.folders[project] : undefined;
 
+  // The run is themed by its agent backend: the accent recolors to the agent's
+  // signature color, and the header names the agent and its model(s).
+  const backend = clock?.agent_backend ?? "";
+  const accent = agentColor(backend);
+
   return (
-    <main className="flex h-screen flex-col gap-4 overflow-hidden p-4 md:p-6">
+    <main
+      className="flex h-screen flex-col gap-4 overflow-hidden p-4 md:p-6"
+      style={{ "--color-accent": accent } as React.CSSProperties}
+    >
       <header className="flex flex-wrap items-center justify-between gap-4">
-        <ProjectTitle
-          projects={projects}
-          project={project}
-          onPick={setPicked}
-        />
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <ProjectTitle
+            projects={projects}
+            project={project}
+            onPick={setPicked}
+          />
+          <AgentIdentity backend={backend} models={clock?.models ?? []} />
+        </div>
         <ConnectionBadge status={status} />
       </header>
 
@@ -93,6 +106,7 @@ function App() {
         agentsTarget={agentsTarget}
         onAgentsTargetChange={concurrencyAvailable ? setAgentsTarget : undefined}
         outputTokensPerSec={outputTokPerSec}
+        totalOutputTokens={totalOutputTokens}
       />
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1fr_340px]">
         <TaskGrid tasks={tasks} />
@@ -143,6 +157,45 @@ function ProjectTitle({ projects, project, onPick }: ProjectTitleProps) {
         ))}
       </select>
     </h1>
+  );
+}
+
+interface AgentIdentityProps {
+  backend: string;
+  models: string[];
+}
+
+/**
+ * The agent driving the picked run and the model(s) it is using. The agent
+ * name sits in the run's theme color (a swatch + label); the models trail it
+ * in muted mono. Both come from the folder's snapshot clock — `agent_backend`
+ * from the event stream, `models` from STATS.jsonl. Renders nothing until a
+ * backend is known, so an empty/just-started run shows only the title.
+ */
+function AgentIdentity({ backend, models }: AgentIdentityProps) {
+  if (!backend) return null;
+  return (
+    <div
+      data-testid="agent-identity"
+      className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm"
+    >
+      <span className="inline-flex items-center gap-1.5 font-medium text-accent">
+        <span
+          aria-hidden
+          className="inline-block h-2.5 w-2.5 rounded-full bg-accent"
+        />
+        <span data-testid="agent-name">{agentName(backend)}</span>
+      </span>
+      {models.length > 0 && (
+        <span
+          data-testid="agent-model"
+          className="font-mono text-text-muted"
+          title={models.join(", ")}
+        >
+          {models.join(", ")}
+        </span>
+      )}
+    </div>
   );
 }
 

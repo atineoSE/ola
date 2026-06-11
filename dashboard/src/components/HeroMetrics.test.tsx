@@ -172,15 +172,17 @@ describe("<HeroMetrics /> agents stepper", () => {
 });
 
 describe("<HeroMetrics /> output tok/sec tile", () => {
-  it("renders the total to one decimal", () => {
+  it("renders the current rate to one decimal, with avg and max below", () => {
     render(
       <HeroMetrics
         counters={counters({ active: 3 })}
         firstStartedTs={null}
-        outputTokensPerSec={146.04}
+        outputTokensPerSec={{ current: 146.04, avg: 120, max: 210.5 }}
       />,
     );
     expect(screen.getByTestId("output-tokens-value").textContent).toBe("146.0");
+    expect(screen.getByTestId("output-tokens-avg").textContent).toBe("avg 120.0");
+    expect(screen.getByTestId("output-tokens-max").textContent).toBe("max 210.5");
   });
 
   it("renders the not-yet-available placeholder when null", () => {
@@ -192,5 +194,29 @@ describe("<HeroMetrics /> output tok/sec tile", () => {
       />,
     );
     expect(screen.getByTestId("output-tokens-value").textContent).toBe("—");
+    expect(screen.getByTestId("output-tokens-avg").textContent).toBe("avg —");
+    expect(screen.getByTestId("output-tokens-max").textContent).toBe("max —");
+  });
+});
+
+describe("<HeroMetrics /> total output tokens tile", () => {
+  it("renders the running total in millions to two decimals", () => {
+    render(
+      <HeroMetrics
+        counters={counters()}
+        firstStartedTs={null}
+        totalOutputTokens={1_234_567}
+      />,
+    );
+    expect(screen.getByTestId("total-output-tokens-value").textContent).toBe(
+      "1.23",
+    );
+  });
+
+  it("defaults to 0.00 before any tokens are generated", () => {
+    render(<HeroMetrics counters={counters()} firstStartedTs={null} />);
+    expect(screen.getByTestId("total-output-tokens-value").textContent).toBe(
+      "0.00",
+    );
   });
 });

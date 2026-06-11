@@ -12,7 +12,8 @@
  */
 
 import type { Counters } from "../snapshot";
-import { formatElapsed, formatTokensPerSec } from "../format";
+import type { OutputTokensPerSec } from "../hooks/useOutputTokensPerSec";
+import { formatElapsed, formatMillions, formatTokensPerSec } from "../format";
 import { useElapsedSeconds } from "../hooks/useElapsedSeconds";
 
 export interface HeroMetricsProps {
@@ -26,9 +27,12 @@ export interface HeroMetricsProps {
   /** Step the target; absent when the collector has no path registered —
    * the agents tile then shows the actual count only. */
   onAgentsTargetChange?: (next: number) => void;
-  /** Total output-token throughput across active agents (`null` = no
-   * reading yet). The caller holds the last reading across reporting gaps. */
-  outputTokensPerSec?: number | null;
+  /** Live fleet output throughput: current rate (held across gaps) plus the
+   * run's average and peak. `null` fields before the first reading lands. */
+  outputTokensPerSec?: OutputTokensPerSec | null;
+  /** Total output tokens generated across the run so far, displayed in
+   * millions so the running total can be watched climbing. */
+  totalOutputTokens?: number;
 }
 
 export function HeroMetrics({
@@ -38,6 +42,7 @@ export function HeroMetrics({
   agentsTarget = null,
   onAgentsTargetChange,
   outputTokensPerSec = null,
+  totalOutputTokens = 0,
 }: HeroMetricsProps) {
   const { total_tasks, completed, failed, active } = counters;
   // A failed attempt returns its task to the pool (checkbox stays
@@ -55,7 +60,7 @@ export function HeroMetrics({
   return (
     <section
       aria-label="hero metrics"
-      className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5"
+      className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6"
     >
       <MetricTile
         label="Tasks completed"
@@ -106,7 +111,31 @@ export function HeroMetrics({
             className="font-mono tabular-nums tracking-tight"
             data-testid="output-tokens-value"
           >
-            {formatTokensPerSec(outputTokensPerSec)}
+            {formatTokensPerSec(outputTokensPerSec?.current ?? null)}
+          </span>
+        }
+        footer={
+          // Half the main value's font size (text-5xl → text-2xl), so avg/peak
+          // read as a clearly secondary readout beneath the live rate.
+          <div className="flex justify-between font-mono text-2xl tabular-nums text-text-muted">
+            <span data-testid="output-tokens-avg">
+              avg {formatTokensPerSec(outputTokensPerSec?.avg ?? null)}
+            </span>
+            <span data-testid="output-tokens-max">
+              max {formatTokensPerSec(outputTokensPerSec?.max ?? null)}
+            </span>
+          </div>
+        }
+      />
+
+      <MetricTile
+        label="Elapsed"
+        value={
+          <span
+            className="font-mono tabular-nums tracking-tight"
+            data-testid="elapsed-value"
+          >
+            {formatElapsed(elapsedSeconds)}
           </span>
         }
       />
@@ -124,13 +153,13 @@ export function HeroMetrics({
       />
 
       <MetricTile
-        label="Elapsed"
+        label="Output tokens (M)"
         value={
           <span
-            className="font-mono tabular-nums tracking-tight"
-            data-testid="elapsed-value"
+            className="font-mono tabular-nums tracking-tight text-accent"
+            data-testid="total-output-tokens-value"
           >
-            {formatElapsed(elapsedSeconds)}
+            {formatMillions(totalOutputTokens)}
           </span>
         }
       />

@@ -559,6 +559,9 @@ def build_snapshot(agent_path: Path) -> dict:
 
         folder_first: str | None = None
         folder_last_terminal: str | None = None
+        # Dominant backend for the folder — the latest event carrying one wins,
+        # so the header reflects whatever agent is actually running this run.
+        folder_backend: str = ""
 
         for entry in TaskState.load(folder).all():
             events = events_by_task.get(entry.task_id, [])
@@ -591,6 +594,8 @@ def build_snapshot(agent_path: Path) -> dict:
         for ev in _read_events(folder):
             ts = ev.get("ts")
             ev_status = ev.get("status")
+            if ev.get("agent_backend"):
+                folder_backend = ev["agent_backend"]
             if not ts:
                 continue
             if ev_status == "started" and (folder_first is None or ts < folder_first):
@@ -615,6 +620,10 @@ def build_snapshot(agent_path: Path) -> dict:
             "first_started_ts": folder_first,
             "last_terminal_ts": folder_last_terminal,
             "project": name,
+            "agent_backend": folder_backend,
+            # Model names come from STATS.jsonl (events don't carry them); the
+            # header shows what the agent is actually driving.
+            "models": _folder_models(folder),
         }
         if folder_first is not None and (
             first_started_ts is None or folder_first < first_started_ts
@@ -632,6 +641,28 @@ def build_snapshot(agent_path: Path) -> dict:
         "folders": folders,
         "activity": activity,
     }
+
+
+def _folder_models(folder: Path) -> list[str]:
+    """Unique model names a folder's STATS.jsonl reports, in first-seen order.
+
+    Events never carry the model name, so the snapshot surfaces it from
+    STATS.jsonl (the same file ola-top reads). A malformed/partially-written
+    STATS.jsonl yields an empty list rather than breaking the snapshot.
+    """
+    stats_file = folder / "STATS.jsonl"
+    if not stats_file.exists():
+        return []
+    try:
+        iterations = parse_stats_jsonl(stats_file.read_text())
+    except (json.JSONDecodeError, ValueError, KeyError):
+        return []
+    models: list[str] = []
+    for it in iterations:
+        for m in it.models:
+            if m and m not in models:
+                models.append(m)
+    return models
 
 
 def _parallel_subfolders(agent_path: Path) -> list[Path]:

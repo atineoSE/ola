@@ -14,6 +14,7 @@ export {
   EMPTY_COUNTERS,
   EMPTY_SNAPSHOT,
   recomputeCounters,
+  sumOutputTokens,
   windowedTokensPerSec,
 } from "./store";
 export {

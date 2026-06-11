@@ -86,6 +86,26 @@ export function windowedTokensPerSec(
   return { value: advanced ? sum : null, samples };
 }
 
+/**
+ * Total output tokens generated across a project's tasks — the sum of each
+ * task's latest `data.metrics.output_tokens`. Counters are cumulative per
+ * attempt (SCHEMA.md), so this climbs as agents generate; a retry briefly
+ * resets one task's contribution, but the fleet total reads as a steadily
+ * growing number. Tasks with no metrics (pending, or a backend that can't
+ * report usage) contribute zero.
+ */
+export function sumOutputTokens(
+  tasks: Record<string, TaskState> | TaskState[],
+): number {
+  const list = Array.isArray(tasks) ? tasks : Object.values(tasks);
+  let total = 0;
+  for (const t of list) {
+    const m = readMetrics(t.data);
+    if (m != null) total += m.output_tokens;
+  }
+  return total;
+}
+
 export function recomputeCounters(tasks: Record<string, TaskState>): Counters {
   let completed = 0;
   let failed = 0;

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { recomputeCounters, windowedTokensPerSec } from "./store";
+import {
+  recomputeCounters,
+  sumOutputTokens,
+  windowedTokensPerSec,
+} from "./store";
 import type { MetricSample } from "./store";
 import type { TaskState, TaskStatus } from "./types";
 
@@ -61,6 +65,33 @@ describe("recomputeCounters", () => {
       failed: 0,
       active: 0,
     });
+  });
+});
+
+describe("sumOutputTokens", () => {
+  it("sums output_tokens across every task carrying metrics", () => {
+    const total = sumOutputTokens(
+      record([
+        task("complete", { output_tokens: 500, decode_ms: 1000 }),
+        task("working", { output_tokens: 250, decode_ms: 800 }),
+        task("started", { output_tokens: 50, decode_ms: 100 }),
+      ]),
+    );
+    expect(total).toBe(800);
+  });
+
+  it("ignores tasks with no metrics block (pending / no usage reported)", () => {
+    const total = sumOutputTokens(
+      record([
+        task("complete", { output_tokens: 1000, decode_ms: 2000 }),
+        task("pending"),
+      ]),
+    );
+    expect(total).toBe(1000);
+  });
+
+  it("is 0 for an empty run", () => {
+    expect(sumOutputTokens([])).toBe(0);
   });
 });
 

@@ -114,6 +114,41 @@ describe("<App /> project selection", () => {
   });
 });
 
+describe("<App /> agent identity and theme", () => {
+  it("names the agent and model and themes the accent to the backend color", () => {
+    const snapshot = snapshotWith([task("t-1", "09-par", { agent_backend: "cc" })]);
+    snapshot.folders["09-par"] = {
+      first_started_ts: null,
+      last_terminal_ts: null,
+      project: "09-par",
+      agent_backend: "cc",
+      models: ["claude-opus-4-8", "claude-haiku-4-5"],
+    };
+    mockedSnapshot.mockReturnValue({ snapshot, status: "open" });
+    const { container } = render(<App />);
+
+    expect(screen.getByTestId("agent-name").textContent).toBe("Claude Code");
+    expect(screen.getByTestId("agent-model").textContent).toBe(
+      "claude-opus-4-8, claude-haiku-4-5",
+    );
+    // The agent's signature color is wired onto the accent CSS variable.
+    const main = container.querySelector("main") as HTMLElement;
+    expect(main.style.getPropertyValue("--color-accent")).toBe("#CB7153");
+  });
+
+  it("omits the agent identity until a backend is known", () => {
+    const snapshot = snapshotWith([task("t-1", "09-par")]);
+    snapshot.folders["09-par"] = {
+      first_started_ts: null,
+      last_terminal_ts: null,
+      project: "09-par",
+    };
+    mockedSnapshot.mockReturnValue({ snapshot, status: "open" });
+    render(<App />);
+    expect(screen.queryByTestId("agent-identity")).toBeNull();
+  });
+});
+
 describe("<App /> project display names", () => {
   it("titles with the folder's display name", () => {
     const snapshot = snapshotWith([task("t-1", "01-unit-tests")]);
