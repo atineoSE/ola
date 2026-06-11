@@ -36,7 +36,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-dashboard` | 1.0.0 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 1.0.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
-| `openhands-sdk` | 1.0.0 | Configure the OpenHands SDK `LLM` and `Agent` classes. |
+| `openhands-sdk` | 1.1.0 | Configure the OpenHands SDK `LLM` and `Agent` classes. |
 
 ## Treat skills as code
 

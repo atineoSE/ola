@@ -602,6 +602,12 @@ def run_folder(
     # go through run_outer_loop's _ensure_git.
     _exclude_ola_artifacts(agent_root)
 
+    # One-time, thread-unsafe agent setup (e.g. the OpenHands backend's
+    # in-process ``import litellm``) must happen here, on the main thread,
+    # before any worker is dispatched: a concurrent first import from several
+    # workers trips CPython's import-lock deadlock detector. Default is a no-op.
+    agent.warm_up()
+
     state = TaskState.sync_from_plan(folder)
     state.save()
 

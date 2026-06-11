@@ -202,6 +202,38 @@ class OpenHandsAgent(Agent):
         except Exception:
             return ""
 
+    def warm_up(self) -> None:
+        """Import the SDK and configure litellm once, on the main thread.
+
+        ``import litellm`` (pulled in transitively by ``openhands.sdk``) is not
+        safe to run for the first time from several worker threads at once: the
+        concurrent first import trips CPython's import-lock deadlock detector
+        and leaves ``litellm`` half-initialised, so every task that imports it
+        afterwards dies with a ``partially initialized module`` error. Importing
+        it here, serially, before any worker starts makes the per-task imports
+        in :meth:`run` cheap cache hits. Laminar must be initialised before the
+        SDK import (see :func:`_init_laminar`), so that ordering is preserved.
+        """
+        _init_laminar()
+        try:
+            import litellm  # noqa: F401
+            import openhands.sdk  # noqa: F401
+            import openhands.tools  # noqa: F401
+        except ImportError:
+            # Missing deps are surfaced with a friendly message when run()
+            # hits the same import; nothing to do here.
+            return
+
+        # litellm's get_ssl_verify() reads $SSL_VERIFY before its own default,
+        # so translating LLM_SKIP_TLS_VERIFY here disables cert checks for
+        # self-hosted endpoints with self-signed certs — symmetric with the cc
+        # path's NODE_TLS_REJECT_UNAUTHORIZED. Done once here rather than per
+        # worker so the process-global env/module writes don't race.
+        if os.getenv("LLM_SKIP_TLS_VERIFY", "").lower() == "true":
+            os.environ["SSL_VERIFY"] = "False"
+            litellm.ssl_verify = False
+            logger.debug("LLM_SKIP_TLS_VERIFY=true → SSL_VERIFY=False")
+
     def run(
         self,
         prompt: str,
@@ -257,16 +289,9 @@ class OpenHandsAgent(Agent):
         if base_url:
             base_url = _resolve_localhost(base_url)
 
-        # litellm's get_ssl_verify() reads $SSL_VERIFY before its own
-        # default, so translating LLM_SKIP_TLS_VERIFY here disables cert
-        # checks for self-hosted endpoints with self-signed certs —
-        # symmetric with the cc path's NODE_TLS_REJECT_UNAUTHORIZED.
-        if os.getenv("LLM_SKIP_TLS_VERIFY", "").lower() == "true":
-            os.environ["SSL_VERIFY"] = "False"
-            import litellm
-
-            litellm.ssl_verify = False
-            logger.debug("LLM_SKIP_TLS_VERIFY=true → SSL_VERIFY=False")
+        # SSL/TLS verification is configured once in warm_up() on the main
+        # thread (LLM_SKIP_TLS_VERIFY → SSL_VERIFY), not here, so the
+        # process-global env/litellm writes don't race across workers.
 
         logger.debug("OpenHands agent using model=%s", model_name)
 

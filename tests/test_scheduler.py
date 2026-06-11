@@ -230,6 +230,39 @@ def test_run_folder_single_task_success(tmp_path):
     }
 
 
+def test_run_folder_warms_up_agent_before_dispatch(tmp_path):
+    """warm_up() runs exactly once, on the main thread, before any task runs.
+
+    Guards the litellm import-deadlock fix: the OpenHands backend's in-process
+    imports must happen serially before workers spawn.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] One\n- [ ] Two\n- [ ] Three\n")
+
+    class _WarmUpAgent(_TickingAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.warm_calls = 0
+            self.warm_thread: str | None = None
+            self.ran_before_warmup = False
+
+        def warm_up(self) -> None:
+            self.warm_calls += 1
+            self.warm_thread = threading.current_thread().name
+            # No task may have run before warm_up completes.
+            if self.invocations:
+                self.ran_before_warmup = True
+
+    agent = _WarmUpAgent()
+    run_folder(agent, folder, repo, initial_cap=3)
+
+    assert agent.warm_calls == 1
+    assert agent.warm_thread == threading.main_thread().name
+    assert agent.ran_before_warmup is False
+    assert len(agent.invocations) == 3
+
+
 def test_run_folder_three_tasks_all_complete(tmp_path):
     """Three independent tasks all complete; each ticked, three propagation commits."""
     repo = tmp_path / "repo"
