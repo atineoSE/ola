@@ -71,6 +71,12 @@ export interface FolderClock {
   /** Model names reported in the folder's STATS.jsonl, first-seen order.
    * Events don't carry the model, so the snapshot surfaces it from there. */
   models?: string[];
+  /** Accumulated wall seconds during which ≥1 agent was active — a stopwatch
+   * that excludes idle gaps. Pairs with `active_anchor_ts`. */
+  active_elapsed_s?: number;
+  /** Ts to extrapolate the still-running tail from while an agent is active;
+   * `null`/absent means the run is idle and the elapsed readout is frozen. */
+  active_anchor_ts?: string | null;
 }
 
 /**

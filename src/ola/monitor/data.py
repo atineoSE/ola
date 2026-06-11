@@ -591,7 +591,8 @@ def build_snapshot(agent_path: Path) -> dict:
         # Folder run clock + activity feed, scanned over the flat event stream
         # so manifest-order (tasks.json) and emission-order (events) stay
         # independent concerns.
-        for ev in _read_events(folder):
+        folder_events = _read_events(folder)
+        for ev in folder_events:
             ts = ev.get("ts")
             ev_status = ev.get("status")
             if ev.get("agent_backend"):
@@ -616,6 +617,7 @@ def build_snapshot(agent_path: Path) -> dict:
                     }
                 )
 
+        active_elapsed_s, active_anchor_ts = _active_elapsed(folder_events)
         folders[name] = {
             "first_started_ts": folder_first,
             "last_terminal_ts": folder_last_terminal,
@@ -624,6 +626,11 @@ def build_snapshot(agent_path: Path) -> dict:
             # Model names come from STATS.jsonl (events don't carry them); the
             # header shows what the agent is actually driving.
             "models": _folder_models(folder),
+            # Stopwatch that only runs while ≥1 agent is active: accumulated
+            # active wall seconds, plus the ts to extrapolate the open tail from
+            # (``None`` when currently idle, so the readout freezes).
+            "active_elapsed_s": active_elapsed_s,
+            "active_anchor_ts": active_anchor_ts,
         }
         if folder_first is not None and (
             first_started_ts is None or folder_first < first_started_ts
@@ -663,6 +670,43 @@ def _folder_models(folder: Path) -> list[str]:
             if m and m not in models:
                 models.append(m)
     return models
+
+
+def _active_elapsed(events: list[dict]) -> tuple[float, str | None]:
+    """Wall seconds with ≥1 agent active, plus the live-tail anchor ts.
+
+    An attempt is active between its ``started`` and its terminal
+    (``complete``/``failed``) event; ``working`` events leave the count
+    unchanged. Walking the ts-sorted stream and tracking how many agents are
+    concurrently active, this sums the time the count was >0 — idle gaps
+    (count 0) are excluded, so the dashboard's elapsed readout is a stopwatch
+    that runs only while work is happening.
+
+    The second return value is the ts of the last event when an agent is still
+    running, so the consumer can tick the open interval out to "now"; it is
+    ``None`` when the run is currently idle and the elapsed value is frozen.
+    """
+    timed = sorted(
+        (
+            (dt, e.get("status"), e.get("ts"))
+            for e in events
+            if (dt := _parse_ts(e.get("ts", ""))) is not None
+        ),
+        key=lambda it: it[0],
+    )
+    active_s = 0.0
+    count = 0
+    prev: datetime | None = None
+    for dt, status, _ts in timed:
+        if prev is not None and count > 0:
+            active_s += (dt - prev).total_seconds()
+        if status == "started":
+            count += 1
+        elif status in _TERMINAL_STATUSES:
+            count = max(0, count - 1)
+        prev = dt
+    anchor = timed[-1][2] if (count > 0 and timed) else None
+    return active_s, anchor
 
 
 def _parallel_subfolders(agent_path: Path) -> list[Path]:

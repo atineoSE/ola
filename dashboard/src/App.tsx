@@ -113,8 +113,8 @@ function App() {
 
       <HeroMetrics
         counters={counters}
-        firstStartedTs={clock?.first_started_ts ?? null}
-        lastTerminalTs={clock?.last_terminal_ts ?? null}
+        activeElapsedSeconds={clock?.active_elapsed_s ?? null}
+        activeAnchorTs={clock?.active_anchor_ts ?? null}
         agentsTarget={agentsTarget}
         onAgentsTargetChange={concurrencyAvailable ? setAgentsTarget : undefined}
         outputTokensPerSec={outputTokPerSec}

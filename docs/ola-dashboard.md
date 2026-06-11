@@ -46,8 +46,9 @@ they are the per-task spine the dashboard renders.
 * **Project picker** — the title is a dropdown over the agent subfolders found
   on disk; every panel is scoped to the picked one.
 * **Hero metrics** — task counters (total / completed / failed / active), the
-  run clock (frozen at the last terminal event), live fleet output tokens/sec,
-  and the **parallel-agents slider** (writes `.ola/concurrency`).
+  elapsed clock (an active-time stopwatch: it advances only while ≥1 agent is
+  running and freezes during idle gaps), live fleet output tokens/sec, and the
+  **parallel-agents slider** (writes `.ola/concurrency`).
 * **Work-item heatmap** — one cell per task, every task visible from the start,
   coloured by status in dispatch order so the wave sweeps across the grid.
 * **Activity feed** — recently completed tasks, newest first.

@@ -1125,6 +1125,56 @@ def test_build_snapshot_models_empty_without_stats(tmp_path: Path):
     assert clock["agent_backend"] == ""
 
 
+def test_build_snapshot_active_elapsed_excludes_idle_gaps(tmp_path: Path):
+    """The stopwatch sums only time ≥1 agent is active; idle gaps are dropped."""
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [
+            {"task_id": "t-a", "text": "A", "line_no": 1, "status": "complete"},
+            {"task_id": "t-b", "text": "B", "line_no": 2, "status": "complete"},
+        ],
+    )
+    _write_events_jsonl(
+        folder,
+        [
+            # First attempt: active 14:00:00 → 14:00:10 (10s).
+            {"task_id": "t-a", "status": "started", "ts": "2026-05-27T14:00:00.000Z"},
+            {"task_id": "t-a", "status": "complete", "ts": "2026-05-27T14:00:10.000Z"},
+            # Idle 14:00:10 → 14:01:10 (excluded), then active for another 10s.
+            {"task_id": "t-b", "status": "started", "ts": "2026-05-27T14:01:10.000Z"},
+            {"task_id": "t-b", "status": "complete", "ts": "2026-05-27T14:01:20.000Z"},
+        ],
+    )
+    clock = build_snapshot(tmp_path)["folders"]["09-par"]
+    assert clock["active_elapsed_s"] == 20.0  # 10 + 10, not the 80s wall span
+    assert clock["active_anchor_ts"] is None  # idle now → frozen
+
+
+def test_build_snapshot_active_elapsed_counts_overlap_once(tmp_path: Path):
+    """Concurrent agents are the union of their intervals, not a double count."""
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-a", "text": "A", "line_no": 1, "status": "running"}],
+    )
+    _write_events_jsonl(
+        folder,
+        [
+            {"task_id": "t-a", "status": "started", "ts": "2026-05-27T14:00:00.000Z"},
+            {"task_id": "t-b", "status": "started", "ts": "2026-05-27T14:00:05.000Z"},
+            {"task_id": "t-a", "status": "complete", "ts": "2026-05-27T14:00:10.000Z"},
+            # t-b is still running → tail anchored at the last event.
+            {"task_id": "t-b", "status": "working", "ts": "2026-05-27T14:00:12.000Z"},
+        ],
+    )
+    clock = build_snapshot(tmp_path)["folders"]["09-par"]
+    assert clock["active_elapsed_s"] == 12.0  # union [00:00, 00:12], counted once
+    assert clock["active_anchor_ts"] == "2026-05-27T14:00:12.000Z"
+
+
 def test_build_snapshot_missing_agent_dir(tmp_path: Path):
     snap = build_snapshot(tmp_path / "nope")
     assert snap["tasks"] == {}

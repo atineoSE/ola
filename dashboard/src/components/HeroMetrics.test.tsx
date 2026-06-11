@@ -33,9 +33,7 @@ describe("<HeroMetrics />", () => {
           completed: 12,
           failed: 1,
           active: 4,
-        })}
-        firstStartedTs={null}
-      />,
+        })}      />,
     );
     // Failed attempts return their task to the pool — not finished work.
     expect(screen.getByTestId("tasks-completed-value").textContent).toBe(
@@ -45,29 +43,40 @@ describe("<HeroMetrics />", () => {
     expect(screen.getByTestId("failed-value").textContent).toBe("1");
   });
 
-  it("shows --:-- for elapsed time before the first started event", () => {
-    render(
-      <HeroMetrics counters={counters({ total_tasks: 5 })} firstStartedTs={null} />,
-    );
+  it("shows --:-- for elapsed time before any agent has run", () => {
+    render(<HeroMetrics counters={counters({ total_tasks: 5 })} />);
     expect(screen.getByTestId("elapsed-value").textContent).toBe("--:--");
   });
 
-  it("renders elapsed time anchored to first_started_ts", () => {
+  it("freezes elapsed at the accumulated active seconds when idle", () => {
+    // No anchor → run is idle; the readout holds the accumulated base and
+    // ignores wall-clock time passing.
     render(
       <HeroMetrics
         counters={counters({ total_tasks: 5 })}
-        firstStartedTs="2026-05-27T14:03:15.000Z"
+        activeElapsedSeconds={75}
+        activeAnchorTs={null}
       />,
     );
-    expect(screen.getByTestId("elapsed-value").textContent).toBe("00:10");
+    expect(screen.getByTestId("elapsed-value").textContent).toBe("01:15");
+  });
+
+  it("ticks the active tail from the anchor on top of the base", () => {
+    // Base 5s accumulated, last event (anchor) 10s ago → 00:15 and counting.
+    render(
+      <HeroMetrics
+        counters={counters({ total_tasks: 5, active: 1 })}
+        activeElapsedSeconds={5}
+        activeAnchorTs="2026-05-27T14:03:15.000Z"
+      />,
+    );
+    expect(screen.getByTestId("elapsed-value").textContent).toBe("00:15");
   });
 
   it("sets progress-bar width to the completed fraction of total_tasks", () => {
     render(
       <HeroMetrics
-        counters={counters({ total_tasks: 1000, completed: 240, failed: 10 })}
-        firstStartedTs={null}
-      />,
+        counters={counters({ total_tasks: 1000, completed: 240, failed: 10 })}      />,
     );
     // failed: 10 is excluded — those tasks went back to the pool.
     const fill = screen.getByTestId("progress-bar-fill") as HTMLElement;
@@ -77,7 +86,7 @@ describe("<HeroMetrics />", () => {
   });
 
   it("does not divide by zero when total_tasks is 0", () => {
-    render(<HeroMetrics counters={counters()} firstStartedTs={null} />);
+    render(<HeroMetrics counters={counters()} />);
     const fill = screen.getByTestId("progress-bar-fill") as HTMLElement;
     expect(fill.style.width).toBe("0%");
   });
@@ -85,9 +94,7 @@ describe("<HeroMetrics />", () => {
   it("clamps a runaway progress fraction at 100%", () => {
     render(
       <HeroMetrics
-        counters={counters({ total_tasks: 10, completed: 12, failed: 0 })}
-        firstStartedTs={null}
-      />,
+        counters={counters({ total_tasks: 10, completed: 12, failed: 0 })}      />,
     );
     const fill = screen.getByTestId("progress-bar-fill") as HTMLElement;
     expect(fill.style.width).toBe("100%");
@@ -106,9 +113,7 @@ describe("<HeroMetrics /> agents stepper", () => {
     const onChange = vi.fn();
     render(
       <HeroMetrics
-        counters={counters}
-        firstStartedTs={null}
-        agentsTarget={20}
+        counters={counters}        agentsTarget={20}
         onAgentsTargetChange={onChange}
       />,
     );
@@ -122,9 +127,7 @@ describe("<HeroMetrics /> agents stepper", () => {
     const onChange = vi.fn();
     render(
       <HeroMetrics
-        counters={counters}
-        firstStartedTs={null}
-        agentsTarget={20}
+        counters={counters}        agentsTarget={20}
         onAgentsTargetChange={onChange}
       />,
     );
@@ -138,9 +141,7 @@ describe("<HeroMetrics /> agents stepper", () => {
     const onChange = vi.fn();
     render(
       <HeroMetrics
-        counters={counters}
-        firstStartedTs={null}
-        agentsTarget={null}
+        counters={counters}        agentsTarget={null}
         onAgentsTargetChange={onChange}
       />,
     );
@@ -153,9 +154,7 @@ describe("<HeroMetrics /> agents stepper", () => {
     const onChange = vi.fn();
     render(
       <HeroMetrics
-        counters={counters}
-        firstStartedTs={null}
-        agentsTarget={0}
+        counters={counters}        agentsTarget={0}
         onAgentsTargetChange={onChange}
       />,
     );
@@ -165,7 +164,7 @@ describe("<HeroMetrics /> agents stepper", () => {
   });
 
   it("falls back to the plain active-agents tile without the control", () => {
-    render(<HeroMetrics counters={counters} firstStartedTs={null} />);
+    render(<HeroMetrics counters={counters} />);
     expect(screen.getByTestId("active-agents-value").textContent).toBe("4");
     expect(screen.queryByTestId("agents-target-up")).toBeNull();
   });
@@ -175,9 +174,7 @@ describe("<HeroMetrics /> output tok/sec tile", () => {
   it("renders the current rate to one decimal, with avg and max below", () => {
     render(
       <HeroMetrics
-        counters={counters({ active: 3 })}
-        firstStartedTs={null}
-        outputTokensPerSec={{ current: 146.04, avg: 120, max: 210.5 }}
+        counters={counters({ active: 3 })}        outputTokensPerSec={{ current: 146.04, avg: 120, max: 210.5 }}
       />,
     );
     expect(screen.getByTestId("output-tokens-value").textContent).toBe("146.0");
@@ -188,9 +185,7 @@ describe("<HeroMetrics /> output tok/sec tile", () => {
   it("renders the not-yet-available placeholder when null", () => {
     render(
       <HeroMetrics
-        counters={counters()}
-        firstStartedTs={null}
-        outputTokensPerSec={null}
+        counters={counters()}        outputTokensPerSec={null}
       />,
     );
     expect(screen.getByTestId("output-tokens-value").textContent).toBe("—");
@@ -203,9 +198,7 @@ describe("<HeroMetrics /> total output tokens tile", () => {
   it("renders the running total in millions to two decimals", () => {
     render(
       <HeroMetrics
-        counters={counters()}
-        firstStartedTs={null}
-        totalOutputTokens={1_234_567}
+        counters={counters()}        totalOutputTokens={1_234_567}
       />,
     );
     expect(screen.getByTestId("total-output-tokens-value").textContent).toBe(
@@ -214,7 +207,7 @@ describe("<HeroMetrics /> total output tokens tile", () => {
   });
 
   it("defaults to 0.00 before any tokens are generated", () => {
-    render(<HeroMetrics counters={counters()} firstStartedTs={null} />);
+    render(<HeroMetrics counters={counters()} />);
     expect(screen.getByTestId("total-output-tokens-value").textContent).toBe(
       "0.00",
     );

@@ -1,7 +1,7 @@
 ---
 name: ola-dashboard
 description: Design philosophy and scope guardrails for ola-dashboard, the browser monitor. Load whenever changing ola-dashboard — every change must be checked against this philosophy.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # The ola-dashboard design philosophy
@@ -56,8 +56,11 @@ The shape worth keeping from the prototype:
   tells you which agent is running. The model name is **not** in the event
   envelope — it is surfaced from `STATS.jsonl` through the snapshot, a view of
   existing file data, not a new harness emission.
-- **Hero metrics** — counters (total / completed / failed / active), the run
-  clock (elapsed, frozen at the last terminal event), live fleet output
+- **Hero metrics** — counters (total / completed / failed / active), the
+  elapsed clock (an **active-time stopwatch**: it advances only while ≥1 agent
+  is running and freezes during idle gaps, so it reads as time-worked, not
+  wall-clock — `build_snapshot` accumulates the active seconds from the event
+  stream and hands back an anchor ts to tick the open tail), live fleet output
   tokens/sec (with the run's avg and peak beneath it), total output tokens in
   millions (a running total to watch climb), and the **parallel-agents slider**
   (writes `.ola/concurrency`).

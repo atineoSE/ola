@@ -14,14 +14,16 @@
 import type { Counters } from "../snapshot";
 import type { OutputTokensPerSec } from "../hooks/useOutputTokensPerSec";
 import { formatElapsed, formatMillions, formatTokensPerSec } from "../format";
-import { useElapsedSeconds } from "../hooks/useElapsedSeconds";
+import { useActiveElapsed } from "../hooks/useActiveElapsed";
 
 export interface HeroMetricsProps {
   counters: Counters;
-  firstStartedTs: string | null;
-  /** Timestamp of the latest terminal event — freezes the elapsed clock
-   * once every task is complete/failed. */
-  lastTerminalTs?: string | null;
+  /** Accumulated active wall seconds (the stopwatch base); `null`/absent until
+   * any agent has run. Idle gaps are already excluded server-side. */
+  activeElapsedSeconds?: number | null;
+  /** Ts to tick the still-running tail from; `null`/absent = idle, freeze the
+   * elapsed readout. */
+  activeAnchorTs?: string | null;
   /** Concurrency target (`null` = no file yet, orchestrator default). */
   agentsTarget?: number | null;
   /** Step the target; absent when the collector has no path registered —
@@ -37,21 +39,22 @@ export interface HeroMetricsProps {
 
 export function HeroMetrics({
   counters,
-  firstStartedTs,
-  lastTerminalTs = null,
+  activeElapsedSeconds = null,
+  activeAnchorTs = null,
   agentsTarget = null,
   onAgentsTargetChange,
   outputTokensPerSec = null,
   totalOutputTokens = 0,
 }: HeroMetricsProps) {
   const { total_tasks, completed, failed, active } = counters;
-  // A failed attempt returns its task to the pool (checkbox stays
-  // unticked), so only completions count as finished work; the run clock
-  // stops at the last terminal event once every task is crossed off.
-  const runDone = total_tasks > 0 && completed === total_tasks;
-  const elapsedSeconds = useElapsedSeconds(
-    firstStartedTs,
-    runDone ? lastTerminalTs : null,
+  // The elapsed tile is a stopwatch that only advances while ≥1 agent is
+  // active: the server hands back the accumulated active seconds, and the hook
+  // ticks the open tail (anchor set) or freezes it (anchor null) when idle.
+  // `null` base before any agent has run renders as the --:-- not-started mark.
+  const started = activeAnchorTs != null || (activeElapsedSeconds ?? 0) > 0;
+  const elapsedSeconds = useActiveElapsed(
+    started ? (activeElapsedSeconds ?? 0) : null,
+    activeAnchorTs,
   );
   // Avoid a divide-by-zero blip before the snapshot lands.
   const completionPct =
