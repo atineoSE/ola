@@ -1,46 +1,36 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { ActivityFeed } from "./components/ActivityFeed";
-import { CollectorUrlConfig } from "./components/CollectorUrlConfig";
 import { HeroMetrics } from "./components/HeroMetrics";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { TaskGrid } from "./components/TaskGrid";
-import {
-  outputTokensPerSec,
-  recomputeCounters,
-  useCollectorStream,
-} from "./collector";
-import { useCollectorUrl } from "./hooks/useCollectorUrl";
+import { outputTokensPerSec, recomputeCounters, useSnapshot } from "./snapshot";
 import { useConcurrency } from "./hooks/useConcurrency";
 
 /** One dropdown entry: the folder is the event-grouping key; the label is
- * the project's display name (the source folder the harness runs from,
- * e.g. "yt-dlp"), falling back to the folder name. */
+ * the folder's display name (its plan subfolder name). */
 interface ProjectOption {
   folder: string;
   label: string;
 }
 
 function App() {
-  const { url: collectorUrl, setUrl: setCollectorUrl } = useCollectorUrl();
-  const { store, status } = useCollectorStream(collectorUrl);
+  const { snapshot, status } = useSnapshot();
 
   // The dashboard is project-agnostic: it offers whatever folders the
-  // collector currently knows about (from manifests and/or events) and
-  // scopes every panel to the picked one.
+  // snapshot currently contains and scopes every panel to the picked one.
   const projects = useMemo<ProjectOption[]>(() => {
     const labels = new Map<string, string>();
-    for (const [folder, clock] of Object.entries(store.folders)) {
+    for (const [folder, clock] of Object.entries(snapshot.folders)) {
       labels.set(folder, clock.project || folder);
     }
-    for (const t of Object.values(store.tasks)) {
+    for (const t of Object.values(snapshot.tasks)) {
       if (!labels.has(t.folder)) labels.set(t.folder, t.folder);
     }
     const options = [...labels.entries()]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([folder, label]) => ({ folder, label }));
-    // Two plan subfolders of the same project would collide on the display
-    // name — disambiguate with the folder.
+    // Two folders sharing a display name — disambiguate with the folder key.
     const counts = new Map<string, number>();
     for (const o of options) counts.set(o.label, (counts.get(o.label) ?? 0) + 1);
     return options.map((o) =>
@@ -48,7 +38,7 @@ function App() {
         ? { ...o, label: `${o.label} · ${o.folder}` }
         : o,
     );
-  }, [store.folders, store.tasks]);
+  }, [snapshot.folders, snapshot.tasks]);
 
   const [picked, setPicked] = useState<string | null>(null);
   const project =
@@ -60,13 +50,13 @@ function App() {
     target: agentsTarget,
     available: concurrencyAvailable,
     setTarget: setAgentsTarget,
-  } = useConcurrency(collectorUrl, project);
+  } = useConcurrency(project);
 
-  // Tasks keep store insertion order (manifest = files.txt order), so the
-  // grid colors up in dispatch order without reshuffling.
+  // Tasks keep snapshot insertion order (PLAN.md order), so the grid colors
+  // up in dispatch order without reshuffling.
   const tasks = useMemo(
-    () => Object.values(store.tasks).filter((t) => t.folder === project),
-    [store.tasks, project],
+    () => Object.values(snapshot.tasks).filter((t) => t.folder === project),
+    [snapshot.tasks, project],
   );
   const counters = useMemo(
     () =>
@@ -79,22 +69,28 @@ function App() {
   // Keyed by project so a switch starts fresh instead of showing the
   // previous project's frozen rate.
   const liveTokPerSec = useMemo(() => outputTokensPerSec(tasks), [tasks]);
-  const lastTokPerSec = useRef<{ project: string | null; value: number } | null>(
-    null,
-  );
-  if (liveTokPerSec !== null) {
-    lastTokPerSec.current = { project, value: liveTokPerSec };
+  const [heldTokPerSec, setHeldTokPerSec] = useState<{
+    project: string | null;
+    value: number;
+  } | null>(null);
+  // Adjust-state-during-render (React's documented pattern): when a live
+  // reading lands, remember it so the tile freezes on the last value across
+  // reporting gaps instead of flipping back to a placeholder.
+  if (
+    liveTokPerSec !== null &&
+    (heldTokPerSec?.value !== liveTokPerSec ||
+      heldTokPerSec?.project !== project)
+  ) {
+    setHeldTokPerSec({ project, value: liveTokPerSec });
   }
   const outputTokPerSec =
     liveTokPerSec ??
-    (lastTokPerSec.current?.project === project
-      ? lastTokPerSec.current.value
-      : null);
+    (heldTokPerSec?.project === project ? heldTokPerSec.value : null);
   const activity = useMemo(
-    () => store.activity.filter((e) => e.folder === project),
-    [store.activity, project],
+    () => snapshot.activity.filter((e) => e.folder === project),
+    [snapshot.activity, project],
   );
-  const clock = project !== null ? store.folders[project] : undefined;
+  const clock = project !== null ? snapshot.folders[project] : undefined;
 
   return (
     <main className="flex h-screen flex-col gap-4 overflow-hidden p-4 md:p-6">
@@ -104,10 +100,7 @@ function App() {
           project={project}
           onPick={setPicked}
         />
-        <div className="flex flex-wrap items-center gap-6">
-          <CollectorUrlConfig url={collectorUrl} onChange={setCollectorUrl} />
-          <ConnectionBadge status={status} />
-        </div>
+        <ConnectionBadge status={status} />
       </header>
 
       <HeroMetrics
@@ -137,10 +130,8 @@ interface ProjectTitleProps {
 
 /**
  * The page title doubles as the project picker: each dashboard instance
- * monitors one project, chosen from whatever the collector knows about.
- * Options are keyed by folder but display the project's name (the source
- * folder the harness runs from, e.g. "yt-dlp"). With nothing announced
- * yet there is no project to monitor.
+ * monitors one folder, chosen from whatever the snapshot contains. With
+ * nothing on disk yet there is no folder to monitor.
  */
 function ProjectTitle({ projects, project, onPick }: ProjectTitleProps) {
   if (project === null) {
@@ -178,9 +169,7 @@ function ConnectionBadge({ status }: { status: string }) {
       ? "bg-status-complete"
       : status === "connecting"
         ? "bg-status-working"
-        : status === "closed"
-          ? "bg-status-failed"
-          : "bg-status-idle";
+        : "bg-status-failed";
   return (
     <div className="flex items-center gap-2 text-sm text-text-muted">
       <span className={`inline-block h-2 w-2 rounded-full ${dotColor}`} />

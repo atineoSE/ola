@@ -3,7 +3,7 @@
  * pure so they can be unit-tested in isolation.
  */
 
-import type { Metrics } from "./collector/types";
+import type { Metrics } from "./snapshot/types";
 
 /**
  * Format an elapsed duration as `mm:ss`. Durations over 60 minutes overflow

@@ -11,7 +11,7 @@
 
 import { memo } from "react";
 
-import type { TaskState } from "../collector";
+import type { TaskState } from "../snapshot";
 import { metricEntries, type MetricEntry } from "../format";
 
 export interface MetricsPanelProps {

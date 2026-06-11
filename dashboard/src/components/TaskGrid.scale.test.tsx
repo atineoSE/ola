@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { TaskGrid } from "./TaskGrid";
 import { __cellRenderCount } from "./TaskGrid.instrumentation";
-import type { TaskState } from "../collector";
+import type { TaskState } from "../snapshot";
 
 afterEach(cleanup);
 

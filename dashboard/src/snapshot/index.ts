@@ -2,8 +2,6 @@ export type {
   ActivityEntry,
   Counters,
   FolderClock,
-  LifecycleEvent,
-  ManifestMessage,
   Metrics,
   Snapshot,
   Status,
@@ -13,17 +11,14 @@ export type {
 export {
   ACTIVITY_FEED_LIMIT,
   EMPTY_COUNTERS,
-  EMPTY_STORE,
-  applyEvent,
-  applyManifest,
+  EMPTY_SNAPSHOT,
   outputTokensPerSec,
-  fromSnapshot,
   recomputeCounters,
-  type CollectorStore,
 } from "./store";
 export {
-  useCollectorStream,
+  DEFAULT_REFRESH_MS,
+  useSnapshot,
   type ConnectionStatus,
-  type UseCollectorStreamOptions,
-  type UseCollectorStreamResult,
-} from "./useCollectorStream";
+  type UseSnapshotOptions,
+  type UseSnapshotResult,
+} from "./useSnapshot";

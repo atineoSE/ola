@@ -11,7 +11,7 @@
  * with task-published metrics surfaced separately in the Metrics panel.
  */
 
-import type { Counters } from "../collector";
+import type { Counters } from "../snapshot";
 import { formatElapsed, formatTokensPerSec } from "../format";
 import { useElapsedSeconds } from "../hooks/useElapsedSeconds";
 

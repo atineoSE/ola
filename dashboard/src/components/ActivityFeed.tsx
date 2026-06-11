@@ -11,7 +11,7 @@
  * (tokens/sec) as a badge, and its total `output_tokens`.
  */
 
-import type { ActivityEntry } from "../collector";
+import type { ActivityEntry } from "../snapshot";
 import { readMetrics } from "../format";
 
 export interface ActivityFeedProps {

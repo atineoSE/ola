@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HeroMetrics } from "./HeroMetrics";
-import type { Counters } from "../collector";
+import type { Counters } from "../snapshot";
 
 function counters(overrides: Partial<Counters> = {}): Counters {
   return {

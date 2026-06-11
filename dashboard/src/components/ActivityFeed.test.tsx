@@ -2,7 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ActivityFeed } from "./ActivityFeed";
-import type { ActivityEntry } from "../collector";
+import type { ActivityEntry } from "../snapshot";
 
 function entry(
   task_id: string,

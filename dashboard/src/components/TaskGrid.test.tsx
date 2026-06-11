@@ -2,7 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { TaskGrid } from "./TaskGrid";
-import type { Status, TaskState, TaskStatus } from "../collector";
+import type { Status, TaskState, TaskStatus } from "../snapshot";
 
 function task(
   task_id: string,

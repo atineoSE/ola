@@ -23,7 +23,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 
-import type { TaskState, TaskStatus } from "../collector";
+import type { TaskState, TaskStatus } from "../snapshot";
 import { describeMetrics } from "../format";
 import { recordCellRender } from "./TaskGrid.instrumentation";
 
@@ -175,6 +175,7 @@ function statusClasses(status: TaskStatus): string {
     case "failed":
       // A failed attempt returns the task to the pool (its checkbox stays
       // unticked), so it renders as unclaimed until the next claim.
+      // falls through
     case "pending":
     default:
       return "bg-status-idle";

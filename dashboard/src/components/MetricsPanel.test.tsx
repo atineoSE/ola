@@ -2,7 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { MetricsPanel } from "./MetricsPanel";
-import type { TaskState } from "../collector";
+import type { TaskState } from "../snapshot";
 
 function task(
   task_id: string,
