@@ -131,9 +131,28 @@ describe("<App /> agent identity and theme", () => {
     expect(screen.getByTestId("agent-model").textContent).toBe(
       "claude-opus-4-8, claude-haiku-4-5",
     );
-    // The agent's signature color is wired onto the accent CSS variable.
+    // The agent's signature color fills the page background and stays the
+    // in-panel accent; the header switches to a contrasting ink.
     const main = container.querySelector("main") as HTMLElement;
     expect(main.style.getPropertyValue("--color-accent")).toBe("#CB7153");
+    expect(main.style.background).toBe("rgb(203, 113, 83)"); // #CB7153
+    const header = container.querySelector("header") as HTMLElement;
+    expect(header.style.color).toBe("rgb(245, 247, 250)"); // light ink on terracotta
+  });
+
+  it("keeps the default dark page (no themed background) before a backend lands", () => {
+    const snapshot = snapshotWith([task("t-1", "09-par", { agent_backend: "" })]);
+    snapshot.folders["09-par"] = {
+      first_started_ts: null,
+      last_terminal_ts: null,
+      project: "09-par",
+    };
+    mockedSnapshot.mockReturnValue({ snapshot, status: "open" });
+    const { container } = render(<App />);
+    const main = container.querySelector("main") as HTMLElement;
+    expect(main.style.background).toBe("");
+    const header = container.querySelector("header") as HTMLElement;
+    expect(header.style.color).toBe("");
   });
 
   it("omits the agent identity until a backend is known", () => {

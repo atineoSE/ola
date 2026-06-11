@@ -46,9 +46,10 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to the built SPA (default: <repo>/dashboard/dist)",
     )
     parser.add_argument(
-        "--no-browser",
+        "--open",
+        dest="open_browser",
         action="store_true",
-        help="Do not open a browser window on startup",
+        help="Open a browser window on startup (default: just print the URL)",
     )
     args = parser.parse_args(argv)
 
@@ -65,8 +66,9 @@ def main(argv: list[str] | None = None) -> None:
         agent_folder, host=args.host, port=args.port, dist_dir=dist_dir, quiet=False
     )
     url = f"http://{args.host}:{args.port}/"
-    print(f"ola-dashboard serving {agent_folder} at {url}", file=sys.stderr)
-    if not args.no_browser:
+    print(f"ola-dashboard serving {agent_folder}", file=sys.stderr)
+    print(f"  → open {url}", file=sys.stderr)
+    if args.open_browser:
         # Defer so the server is accepting connections before the tab opens.
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
