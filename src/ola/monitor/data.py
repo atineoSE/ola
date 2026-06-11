@@ -25,7 +25,7 @@ _AGENT_FULL_NAMES: dict[str, str] = {
 
 @dataclass
 class IterationStatus:
-    """Stats for a single iteration (seed or loop-N)."""
+    """Stats for a single iteration (a ``task-<id>-<attempt>`` row)."""
 
     phase: str
     wall_ms: int = 0

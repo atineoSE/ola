@@ -32,7 +32,7 @@ ola-top has two column layouts, toggled with `m`:
 
 ola-top adapts what it shows when you expand a folder, based on whether the folder runs in [parallel mode](./parallel.md) (i.e. it has a `.ola/` sidecar):
 
-* **Sequential folder** — expanding shows one **iteration** row per loop pass (`task-…`/`seed` phases from `STATS.jsonl`).
+* **Sequential folder** — expanding shows one **iteration** row per loop pass (`task-…` phases from `STATS.jsonl`).
 * **Parallel folder** — expanding shows one **task** row per task in `PLAN.md`, sourced from `.ola/tasks.json` and `.ola/events.jsonl`. Each sub-row sticks to the same columns as everything else — it only fills the ones a single task has a value for, and leaves the rest blank:
   * **Folder** — the task id followed by the task text. The task id (e.g. `t-1a2b3c4d`) is the same key used in `PLAN.md`, `.ola/tasks.json`, and `.ola/events.jsonl`, so you can grep it straight back into those files.
   * **Time** — elapsed wall time for the task (first→last event), blank until the first events land.

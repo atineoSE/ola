@@ -94,41 +94,34 @@ def test_parallel_plan_all_land_on_branch(tmp_path):
     assert {r.status for r in fs.task_rows} == {"complete"}
 
 
-# --- 3. Seed phase generates the plan, then it executes -----------------------
+# --- 3. A folder's tasks each emit a task-phase STATS row ---------------------
 
 
-def test_seed_then_execute(tmp_path):
+def test_plan_run_writes_task_stats(tmp_path):
     agent_path = build_example_repo(tmp_path, "01-find-date")
     folder = agent_path / "01-find-date"
-    assert not (folder / "PLAN.md").exists()
 
-    agent = ScriptedAgent(seed_plan="- [ ] Seeded task A\n- [ ] Seeded task B\n")
+    agent = ScriptedAgent()
     run_pipeline(agent, agent_path)
 
-    # Seed wrote PLAN.md and both tasks completed.
+    # Every task completed, and each emitted a ``task-…`` STATS row.
     tasks = enumerate_tasks(folder)
-    assert len(tasks) == 2
-    assert all(t.checked for t in tasks)
-
-    # A seed commit and a seed STATS row exist.
-    subjects = git_log_subjects(agent_path)
-    assert any(s == "ola: 01-find-date seed" for s in subjects)
+    assert tasks and all(t.checked for t in tasks)
     phases = [r["phase"] for r in read_stats(folder)]
-    assert "seed" in phases
-    assert sum(p.startswith("task-") for p in phases) == 2
+    assert sum(p.startswith("task-") for p in phases) == len(tasks)
 
 
 # --- 4. Multiple folders processed in order -----------------------------------
 
 
 def test_multi_folder_ordering(tmp_path):
-    # The full example: a seed folder, then a sequential and a parallel plan.
+    # The full example: three plan folders run in index order.
     agent_path = build_example_repo(tmp_path)
 
     agent = ScriptedAgent()
     run_pipeline(agent, agent_path)
 
-    # All folders fully complete (01-find-date's plan comes from the seed).
+    # All folders fully complete.
     names = ("01-find-date", "02-utils", "03-parallel")
     for name in names:
         tasks = enumerate_tasks(agent_path / name)

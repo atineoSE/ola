@@ -4,17 +4,12 @@ import json
 import logging
 import os
 import subprocess
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ola.agents.base import Agent, AgentResponse
-from ola.plan import (
-    count_tasks,
-    discover_plan_folders,
-    read_file_if_exists,
-)
-from ola.stats import IterationStats, cache_hit_rate
+from ola.agents.base import Agent
+from ola.plan import discover_plan_folders
+from ola.stats import IterationStats
 
 if TYPE_CHECKING:
     from ola.events import Emitter
@@ -89,44 +84,6 @@ def _git_commit(cwd: Path, message: str) -> None:
     else:
         logger.error("git commit failed: %s", result.stderr.decode(errors="replace"))
         result.check_returncode()
-
-
-def _format_tokens(n: int) -> str:
-    """Format token count as human-readable string."""
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}k"
-    return str(n)
-
-
-def _format_duration(ms: int) -> str:
-    """Format milliseconds as human-readable duration."""
-    secs = ms // 1000
-    if secs < 60:
-        return f"{secs}s"
-    mins, secs = divmod(secs, 60)
-    if mins < 60:
-        return f"{mins}m{secs:02d}s"
-    hours, mins = divmod(mins, 60)
-    return f"{hours}h{mins:02d}m{secs:02d}s"
-
-
-def _log_stats(label: str, stats: IterationStats, wall_ms: int) -> None:
-    """Log a one-liner with token usage and timing."""
-    if not (stats.input_tokens or stats.output_tokens):
-        return
-    parts = []
-    parts.append(f"in={_format_tokens(stats.input_tokens)}")
-    parts.append(f"out={_format_tokens(stats.output_tokens)}")
-    if stats.cache_read_tokens and stats.input_tokens:
-        parts.append(
-            f"cache={cache_hit_rate(stats.input_tokens, stats.cache_read_tokens):.0f}%"
-        )
-    if stats.ttft_ms:
-        parts.append(f"ttft={stats.ttft_ms}ms")
-    parts.append(_format_duration(wall_ms))
-    logger.info("[%s] %s", label, " · ".join(parts))
 
 
 def per_task_state_dir(folder: Path, agent: Agent, task_id: str) -> str | None:
@@ -304,59 +261,21 @@ def _process_folder(
 ) -> None:
     """Process a single plan folder.
 
-    Runs the optional seed phase, then hands every unchecked task in PLAN.md
-    to the parallel scheduler. The old per-iteration inner loop is gone: task
-    lifecycle, the stagnation backstop, and rate-limit sleep-and-resume now
-    live in :mod:`ola.scheduler`.
+    Hands every unchecked task in the folder's PLAN.md to the parallel
+    scheduler. The old per-iteration inner loop is gone: task lifecycle, the
+    stagnation backstop, and rate-limit sleep-and-resume now live in
+    :mod:`ola.scheduler`.
     """
     # Imported here to avoid a circular import — scheduler imports loop for
     # per_task_state_dir.
     from ola.scheduler import run_folder
 
-    workdir = str(Path.cwd())
-
-    # Create the folder-level agent state directory. The seed phase uses it
-    # directly; the scheduler clones per-task state dirs alongside it.
-    state_dir: str | None = None
+    # Create the folder-level agent state directory. The scheduler clones
+    # per-task state dirs alongside it.
     if agent.state_dir_name:
-        agent_state_path = folder / agent.state_dir_name
-        agent_state_path.mkdir(parents=True, exist_ok=True)
-        state_dir = str(agent_state_path)
+        (folder / agent.state_dir_name).mkdir(parents=True, exist_ok=True)
 
     plan_file = folder / "PLAN.md"
-
-    # Seed phase: run SEED-PROMPT.md if it exists and PLAN.md doesn't yet
-    seed_prompt = read_file_if_exists(folder / "SEED-PROMPT.md")
-    if seed_prompt is not None:
-        if not plan_file.exists():
-            logger.info("Running seed prompt...")
-            seed_prompt += (
-                f"\n\nWrite your plan at {plan_file}"
-                " using markdown tasks, i.e. `- [ ] `"
-            )
-            tasks_before = count_tasks(folder)
-            t0 = time.monotonic()
-            labels = {"folder": folder.name, "phase": "seed"}
-            response = agent.run(
-                seed_prompt, workdir, state_dir=state_dir, labels=labels
-            )
-            wall_ms = int((time.monotonic() - t0) * 1000)
-            tasks_after = count_tasks(folder)
-            _log_response("SEED", response)
-            _log_stats("SEED", response.stats, wall_ms)
-            _append_stats(
-                folder,
-                "seed",
-                response.stats,
-                wall_ms,
-                agent,
-                tasks_before,
-                tasks_after,
-            )
-            if not response.success:
-                logger.error("Seed prompt failed. Skipping folder.")
-                return
-            _git_commit(agent_root, f"ola: {folder.name} seed")
 
     if not plan_file.exists():
         if (folder / "BLOCKERS.md").exists():
@@ -389,19 +308,3 @@ def _process_folder(
         )
     finally:
         emitter.close()
-
-
-def _log_response(label: str, response: AgentResponse) -> None:
-    """Log a truncated agent response."""
-    status = "OK" if response.success else "FAIL"
-    logger.info("[%s] %s", label, status)
-    lines = response.output.strip().splitlines()
-    if len(lines) <= 20:
-        for line in lines:
-            logger.debug("  %s", line)
-    else:
-        for line in lines[:10]:
-            logger.debug("  %s", line)
-        logger.debug("  ... (%d lines omitted) ...", len(lines) - 20)
-        for line in lines[-10:]:
-            logger.debug("  %s", line)

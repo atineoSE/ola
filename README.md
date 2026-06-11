@@ -39,9 +39,8 @@ project/                # workspace root (the example ships this as dummy-projec
     .env                # LLM_BASE_URL, LMNR_BASE_URL, etc. (gitignored)
     allowlist.txt       # Optional: Domain list to allow inside the sandbox
     01-setup/           # Plan subfolder
-      SEED-PROMPT.md    # Optional: runs once to generate PLAN.md
+      PLAN.md           # Required: markdown todo list of independent tasks
       TASK-PROMPT.md    # Optional: per-task prompt template
-      PLAN.md           # Optional: markdown todo list
       .claude/          # Claude Code config dir (auto-created by ola)
         projects/...    # conversation history auto-created by claude
       .openhands/       # OpenHands state dir (auto-created by ola)
@@ -73,17 +72,42 @@ The plan structure carries an implicit contract with two levels:
 
 To express dependent work, split it into indexed `NN-description/` folders — one folder per dependency stage — each with its own `PLAN.md` of mutually independent tasks.
 
-A plan subfolder must contain only ONE of these two files:
-* `SEED-PROMPT.md`: this will create the `PLAN.md` file, which will drive the loop, or
-* `PLAN.md`: it already contains the plan and thus no seed is needed.
+Each plan subfolder must contain a `PLAN.md` — the authored plan that drives the loop. (A folder with no `PLAN.md` is skipped: that is how the janitor parks human-only work behind a `BLOCKERS.md`.) You can write these folders by hand, but the intended workflow is to settle a plan with an agent in an ordinary planning session and then run the **`ola-plan` skill** (`.claude/skills/ola-plan/`), which decomposes that plan into the folder tree — sequential stages as numbered folders, parallel-safe work as tasks within one `PLAN.md`. See [Authoring a plan with the `ola-plan` skill](#authoring-a-plan-with-the-ola-plan-skill).
 
 While `PLAN.md` has unchecked tasks (`- [ ]`), ola dispatches each one to the agent using `TASK-PROMPT.md` — a per-task template with `{{task_text}}` and `{{task_id}}` placeholders. A task is done once its checkbox is ticked; the folder completes when every box is checked. See [Parallel execution](#parallel-execution) for how tasks are scheduled and isolated.
 
 `TASK-PROMPT.md` is optional and falls back to a sensible default if missing. However, it is recommended to write one, since it's key to driving the agent reliably through each task.
 
-The agent folder must be its own git repository (ola initialises one if missing). ola commits to this repo after each seed phase and each completed task, tracking plan progress independently from your source code.
+The agent folder must be its own git repository (ola initialises one if missing). ola commits to this repo after each completed task, tracking plan progress independently from your source code.
 
 Each agent gets a per-phase state directory (`.claude/` or `.openhands/`) inside each plan subfolder. For Claude Code, `CLAUDE_CONFIG_DIR` is set to `.claude/`, giving each phase its own conversation history that persists across sandbox sessions. For OpenHands, logs and trajectories are written to `.openhands/logs/` and `.openhands/trajectories/`.
+
+## Authoring a plan with the `ola-plan` skill
+
+ola does not generate its own plan. You bring a plan you have already settled
+with an agent in an ordinary planning session — outside the ola harness, going
+back and forth until the plan is solid — and turn it into the folder tree above.
+
+The `ola-plan` skill automates that final translation step. At the end of a
+planning session, tell the agent **"create the ola plan for this"**; the skill
+reads the agreed plan and writes the `NN-description/` folders, deciding what
+must run in sequence (separate numbered folders) and what is independent and may
+run in parallel (tasks within one `PLAN.md`). The result is an agent folder you
+can hand straight to `ola`.
+
+The skill is **owned by this repository** at
+[`.claude/skills/ola-plan/`](.claude/skills/ola-plan/SKILL.md). So it is
+available from any planning session — Claude Code or OpenHands — it is symlinked
+into the global skill directories. The same skill body backs every entry point:
+
+```bash
+# from the ola repo root — symlinks the repo-owned skill into both harnesses
+make install-skill        # or run helper-scripts/install-ola-plan-skill.sh
+```
+
+This links `~/.claude/skills/ola-plan` (Claude Code) and
+`~/.openhands/skills/ola-plan` (OpenHands) at the repo's copy, so editing the
+skill here updates it everywhere.
 
 ## Setting up your agents
 For OpenHands:

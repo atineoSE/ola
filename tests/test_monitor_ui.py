@@ -76,7 +76,7 @@ class TestBuildTable:
                 tasks_total=5,
                 iterations=[
                     IterationStatus(
-                        phase="seed",
+                        phase="task-t1-1",
                         input_tokens=10_000,
                         output_tokens=5_000,
                         cache_read_tokens=8_000,
@@ -90,7 +90,7 @@ class TestBuildTable:
                 tasks_total=4,
                 iterations=[
                     IterationStatus(
-                        phase="seed",
+                        phase="task-t1-1",
                         input_tokens=20_000,
                         output_tokens=10_000,
                         cache_read_tokens=0,
@@ -138,7 +138,7 @@ class TestBuildTable:
                 name="t1",
                 tasks_completed=1,
                 tasks_total=2,
-                iterations=[IterationStatus(phase="seed", input_tokens=100)],
+                iterations=[IterationStatus(phase="task-t1-1", input_tokens=100)],
             )
         ]
         table = build_table(folders, expanded=set())
@@ -152,7 +152,7 @@ class TestBuildTable:
         """Expanded folders render iteration sub-rows."""
         iters = [
             IterationStatus(
-                phase="seed",
+                phase="task-t1-1",
                 input_tokens=10_000,
                 output_tokens=5_000,
                 cache_read_tokens=8_000,
@@ -179,7 +179,7 @@ class TestBuildTable:
         assert table.row_count == 3
         text = _render_table_text(table)
         assert "▼" in text
-        assert "seed" in text
+        assert "task-t1-1" in text
         assert "loop-1" in text
 
     def test_expanded_no_iterations(self):
@@ -193,12 +193,12 @@ class TestBuildTable:
         folders = [
             FolderStatus(
                 name="a",
-                iterations=[IterationStatus(phase="seed")],
+                iterations=[IterationStatus(phase="task-t1-1")],
             ),
             FolderStatus(
                 name="b",
                 iterations=[
-                    IterationStatus(phase="seed"),
+                    IterationStatus(phase="task-t1-1"),
                     IterationStatus(phase="loop-1"),
                 ],
             ),
@@ -433,8 +433,8 @@ class TestFmtTimeBreakdown:
 class TestBuildDisplayRows:
     def test_no_expanded(self):
         folders = [
-            FolderStatus(name="a", iterations=[IterationStatus(phase="seed")]),
-            FolderStatus(name="b", iterations=[IterationStatus(phase="seed")]),
+            FolderStatus(name="a", iterations=[IterationStatus(phase="task-t1-1")]),
+            FolderStatus(name="b", iterations=[IterationStatus(phase="task-t1-1")]),
         ]
         rows = _build_display_rows(folders, set())
         assert rows == [("folder", 0, -1), ("folder", 1, -1)]
@@ -444,11 +444,11 @@ class TestBuildDisplayRows:
             FolderStatus(
                 name="a",
                 iterations=[
-                    IterationStatus(phase="seed"),
+                    IterationStatus(phase="task-t1-1"),
                     IterationStatus(phase="loop-1"),
                 ],
             ),
-            FolderStatus(name="b", iterations=[IterationStatus(phase="seed")]),
+            FolderStatus(name="b", iterations=[IterationStatus(phase="task-t1-1")]),
         ]
         rows = _build_display_rows(folders, {"a"})
         assert rows == [
@@ -556,7 +556,7 @@ class TestMetricsMode:
                 tasks_total=3,
                 iterations=[
                     IterationStatus(
-                        phase="seed",
+                        phase="task-t1-1",
                         input_tokens=10_000,
                         output_tokens=2_000,
                         cache_read_tokens=8_000,
@@ -576,7 +576,7 @@ class TestMetricsMode:
         """Expanded rows in metrics mode show per-iteration metrics."""
         iters = [
             IterationStatus(
-                phase="seed",
+                phase="task-t1-1",
                 input_tokens=10_000,
                 output_tokens=5_000,
                 cache_read_tokens=8_000,
@@ -590,7 +590,7 @@ class TestMetricsMode:
         table = build_table(folders, expanded={"t1"}, mode=ViewMode.METRICS)
         assert table.row_count == 2
         text = _render_table_text(table)
-        assert "seed" in text
+        assert "task-t1-1" in text
 
     def test_task_mode_no_token_columns(self):
         """Task mode should not show Input/Output/Cache% columns."""
@@ -601,7 +601,7 @@ class TestMetricsMode:
                 tasks_total=3,
                 iterations=[
                     IterationStatus(
-                        phase="seed",
+                        phase="task-t1-1",
                         input_tokens=10_000,
                         output_tokens=5_000,
                         wall_ms=60_000,
@@ -621,7 +621,7 @@ class TestMetricsMode:
         """Expanded rows in task mode show tasks_completed_delta."""
         iters = [
             IterationStatus(
-                phase="seed",
+                phase="task-t1-1",
                 wall_ms=60_000,
                 tasks_completed_delta=2,
             ),
@@ -782,13 +782,13 @@ class TestParallelTaskView:
                 name="01-legacy",
                 tasks_completed=1,
                 tasks_total=2,
-                iterations=[IterationStatus(phase="seed", wall_ms=1000)],
+                iterations=[IterationStatus(phase="task-t1-1", wall_ms=1000)],
             )
         ]
         text = _render_table_text(build_table(folders, expanded={"01-legacy"}))
         assert "cap" not in text
         # Legacy folders still expand to iteration rows.
-        assert "seed" in text
+        assert "task-t1-1" in text
 
     def test_metrics_mode_renders_task_rows(self):
         """Task rows render in METRICS mode too (with empty metric cells)."""

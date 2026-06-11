@@ -80,13 +80,6 @@ def count_tasks(folder: Path) -> tuple[int, int]:
     return parse_task_counts(content)
 
 
-def read_file_if_exists(path: Path) -> str | None:
-    """Read a file and return its content, or None if it doesn't exist."""
-    if path.exists():
-        return path.read_text()
-    return None
-
-
 def _enumerate_tasks_from_text(text: str) -> list[Task]:
     """Walk *text* line-by-line, skipping fenced code blocks, yielding Tasks.
 

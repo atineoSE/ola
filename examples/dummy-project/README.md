@@ -1,8 +1,8 @@
 # Dummy project — a runnable ola example
 
 A minimal, **safe-to-run** example project that exercises the main ola features:
-a seed phase, a plan run at the default cap (one task at a time), and a plan run
-in parallel. The tasks are trivial (find the date, write small files) so you can
+three indexed plan folders run in order, with the last one running its tasks in
+parallel. The tasks are trivial (record the date, write small files) so you can
 watch the harness work without a large bill or a real codebase.
 
 > These folders double as the happy-path e2e scenarios: the hermetic,
@@ -18,7 +18,7 @@ dummy-project/             # workspace root
   dummy-project/           # the project repo — your "source code" (empty placeholder here)
   agent/
     .env.example           # copy to .env and fill in your provider
-    01-find-date/          # SEED-PROMPT.md → agent generates PLAN.md, then runs it
+    01-find-date/          # a ready-made PLAN.md, run at the default cap of 1
     02-utils/              # a ready-made PLAN.md, run at the default cap of 1
     03-parallel/           # a PLAN.md + .ola/concurrency=2 → runs tasks in parallel
 ```

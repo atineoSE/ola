@@ -58,10 +58,10 @@ def test_append_stats_basic_record(tmp_path):
         ttft_ms=150,
         streamed=True,
     )
-    _append_stats(tmp_path, "seed", stats, wall_ms=5000)
+    _append_stats(tmp_path, "task-t1-1", stats, wall_ms=5000)
     rec = _read_record(tmp_path)
 
-    assert rec["phase"] == "seed"
+    assert rec["phase"] == "task-t1-1"
     assert rec["wall_ms"] == 5000
     assert rec["input_tokens"] == 500
     assert rec["output_tokens"] == 200
@@ -86,7 +86,7 @@ def test_append_stats_basic_record(tmp_path):
 def test_append_stats_tool_ms_derived(tmp_path):
     """tool_ms is derived from wall_ms - llm_ms when tool_ms is 0."""
     stats = IterationStats(llm_ms=3000, tool_ms=0)
-    _append_stats(tmp_path, "seed", stats, wall_ms=5000)
+    _append_stats(tmp_path, "task-t1-1", stats, wall_ms=5000)
     rec = _read_record(tmp_path)
     assert rec["tool_ms"] == 2000
 
@@ -94,7 +94,7 @@ def test_append_stats_tool_ms_derived(tmp_path):
 def test_append_stats_tool_ms_not_overridden(tmp_path):
     """tool_ms is NOT overridden when already set."""
     stats = IterationStats(llm_ms=3000, tool_ms=1500)
-    _append_stats(tmp_path, "seed", stats, wall_ms=5000)
+    _append_stats(tmp_path, "task-t1-1", stats, wall_ms=5000)
     rec = _read_record(tmp_path)
     assert rec["tool_ms"] == 1500
 
@@ -102,7 +102,7 @@ def test_append_stats_tool_ms_not_overridden(tmp_path):
 def test_append_stats_tool_ms_clamped(tmp_path):
     """tool_ms is clamped to 0 when llm_ms > wall_ms."""
     stats = IterationStats(llm_ms=6000, tool_ms=0)
-    _append_stats(tmp_path, "seed", stats, wall_ms=5000)
+    _append_stats(tmp_path, "task-t1-1", stats, wall_ms=5000)
     rec = _read_record(tmp_path)
     assert rec["tool_ms"] == 0
 
@@ -111,7 +111,7 @@ def test_append_stats_with_agent(tmp_path):
     """Agent mnemonic and version are written when agent is provided."""
     stats = IterationStats()
     agent = _FakeAgent()
-    _append_stats(tmp_path, "seed", stats, wall_ms=1000, agent=agent)
+    _append_stats(tmp_path, "task-t1-1", stats, wall_ms=1000, agent=agent)
     rec = _read_record(tmp_path)
     assert rec["agent"] == "cc"
     assert rec["agent_version"] == "1.5.0"
@@ -120,7 +120,7 @@ def test_append_stats_with_agent(tmp_path):
 def test_append_stats_no_agent(tmp_path):
     """Agent fields are absent when no agent is provided."""
     stats = IterationStats()
-    _append_stats(tmp_path, "seed", stats, wall_ms=1000)
+    _append_stats(tmp_path, "task-t1-1", stats, wall_ms=1000)
     rec = _read_record(tmp_path)
     assert "agent" not in rec
     assert "agent_version" not in rec
@@ -145,11 +145,11 @@ def test_append_stats_task_tracking(tmp_path):
 
 def test_append_stats_appends_multiple(tmp_path):
     """Multiple calls append separate JSON lines."""
-    _append_stats(tmp_path, "seed", IterationStats(), wall_ms=1000)
+    _append_stats(tmp_path, "task-t1-1", IterationStats(), wall_ms=1000)
     _append_stats(tmp_path, "loop-1", IterationStats(), wall_ms=2000)
     recs = _read_records(tmp_path)
     assert len(recs) == 2
-    assert recs[0]["phase"] == "seed"
+    assert recs[0]["phase"] == "task-t1-1"
     assert recs[1]["phase"] == "loop-1"
 
 
@@ -397,36 +397,9 @@ def test_cc_stream_to_stats_jsonl_roundtrip(tmp_path):
 
 # --- _process_folder dispatch tests ---
 #
-# The per-iteration inner loop is gone: _process_folder now runs the optional
-# seed phase and hands the folder to scheduler.run_folder. Task lifecycle,
-# the stagnation backstop, and rate-limit sleep-and-resume are exercised in
-# tests/test_scheduler.py.
-
-
-class _SeedAgent(Agent):
-    """Agent that writes a PLAN.md when run (simulating the seed phase)."""
-
-    mnemonic = "cc"
-
-    def __init__(self, plan_text="- [ ] Seeded task\n", success=True):
-        super().__init__()
-        self.plan_text = plan_text
-        self.success = success
-        self.call_count = 0
-
-    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
-        self.call_count += 1
-        # The seed prompt tells the agent where to write PLAN.md; honour it.
-        for token in prompt.split():
-            if token.endswith("PLAN.md"):
-                Path(token).write_text(self.plan_text)
-                break
-        return AgentResponse(
-            output="seeded", success=self.success, stats=IterationStats()
-        )
-
-    def version(self):
-        return "1.0.0"
+# The per-iteration inner loop is gone: _process_folder hands the folder to
+# scheduler.run_folder. Task lifecycle, the stagnation backstop, and
+# rate-limit sleep-and-resume are exercised in tests/test_scheduler.py.
 
 
 def test_process_folder_dispatches_to_scheduler(tmp_path):
@@ -463,7 +436,7 @@ def test_process_folder_passes_concurrency_cap(tmp_path):
 
 
 def test_process_folder_skips_when_no_plan(tmp_path, caplog):
-    """No PLAN.md and no seed prompt → warn and don't dispatch."""
+    """No PLAN.md → warn and don't dispatch."""
     folder = tmp_path / "phase"
     folder.mkdir()
 
@@ -476,46 +449,6 @@ def test_process_folder_skips_when_no_plan(tmp_path, caplog):
 
     mock_run.assert_not_called()
     assert any("no PLAN.md" in rec.message for rec in caplog.records)
-
-
-def test_process_folder_runs_seed_then_dispatches(tmp_path):
-    """Seed phase runs first (writing PLAN.md), then the scheduler is invoked."""
-    folder = tmp_path / "phase"
-    folder.mkdir()
-    (folder / "SEED-PROMPT.md").write_text("Make a plan.")
-
-    agent = _SeedAgent()
-    with (
-        patch("ola.loop._git_commit"),
-        patch("ola.scheduler.run_folder") as mock_run,
-    ):
-        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
-
-    # Seed agent ran once and wrote PLAN.md.
-    assert agent.call_count == 1
-    assert (folder / "PLAN.md").read_text() == "- [ ] Seeded task\n"
-    # A "seed" stats row was written.
-    recs = _read_records(folder)
-    assert len(recs) == 1
-    assert recs[0]["phase"] == "seed"
-    # Scheduler was then dispatched against the seeded folder.
-    mock_run.assert_called_once()
-
-
-def test_process_folder_seed_failure_skips_dispatch(tmp_path):
-    """A failed seed phase aborts the folder before dispatching."""
-    folder = tmp_path / "phase"
-    folder.mkdir()
-    (folder / "SEED-PROMPT.md").write_text("Make a plan.")
-
-    agent = _SeedAgent(success=False)
-    with (
-        patch("ola.loop._git_commit"),
-        patch("ola.scheduler.run_folder") as mock_run,
-    ):
-        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
-
-    mock_run.assert_not_called()
 
 
 # --- Emitter wiring tests ---

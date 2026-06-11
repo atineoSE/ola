@@ -428,9 +428,8 @@ def _run_one_task(
             return _OUTCOME_FAILED
 
         # Record a STATS.jsonl row for this attempt. The phase is the
-        # parallel-mode shape ``task-<task_id>-<attempt>`` (replacing the old
-        # ``loop-N``); the monitor parser treats phase as an opaque string, so
-        # legacy ``seed``/``loop-N`` rows keep parsing alongside these.
+        # parallel-mode shape ``task-<task_id>-<attempt>``; the monitor parser
+        # treats phase as an opaque string.
         tasks_after = count_tasks(worktree_folder)
         with stats_lock:
             _append_stats(
