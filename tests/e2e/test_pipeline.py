@@ -20,7 +20,12 @@ import pytest
 
 from ola.monitor.data import read_folder_status, read_task_rows
 from ola.plan import enumerate_tasks
-from ola.scheduler import _MAX_STAGNANT_LOOPS, FolderIncompleteError
+from ola.scheduler import (
+    DEFAULT_CONCURRENCY,
+    _MAX_STAGNANT_LOOPS,
+    FolderIncompleteError,
+    write_concurrency,
+)
 
 from .harness import (
     ScriptedAgent,
@@ -60,10 +65,11 @@ def test_sequential_plan_all_complete(tmp_path):
     subjects = git_log_subjects(agent_path)
     assert sum(s.startswith("ola: 02-utils ") for s in subjects) == 3
 
-    # No .ola/concurrency file → sequential (cap 1).
+    # No .ola/concurrency file → ola materializes the default cap on the first
+    # tick, so the file is present and auditable afterward.
     fs = read_folder_status(folder)
     assert fs.is_parallel  # .ola/ exists once the run starts
-    assert fs.concurrency_cap == 1
+    assert fs.concurrency_cap == DEFAULT_CONCURRENCY
 
 
 # --- 2. Parallel plan ---------------------------------------------------------
@@ -281,6 +287,11 @@ def test_crash_orphan_running_is_retried(tmp_path):
 def test_source_edit_merges_back(tmp_path):
     agent_path = build_example_repo(tmp_path, "02-utils")
     folder = agent_path / "02-utils"
+
+    # Every task in this scenario writes the *same* file (widget.py), so they
+    # are not parallel-safe; pin the cap to 1 to serialize the edits and make
+    # the last-writer-wins merge-back deterministic.
+    write_concurrency(folder, 1)
 
     agent = ScriptedAgent(source_file="widget.py")
     run_pipeline(agent, agent_path)

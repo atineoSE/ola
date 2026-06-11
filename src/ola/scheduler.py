@@ -64,6 +64,12 @@ _MAX_STAGNANT_LOOPS = 5
 # out than this is treated as a failure rather than slept through.
 _MAX_RATE_LIMIT_WAIT_SEC = 8 * 3600  # 8 hours
 
+# Default in-flight worker bound when ``.ola/concurrency`` is missing/malformed.
+# ``run_folder`` also materializes the file at this value on the first tick, so
+# the cap is always present on disk and auditable from the start of a run — and
+# the monitors always have a number to show rather than a placeholder.
+DEFAULT_CONCURRENCY = 2
+
 # Worker outcomes reported back to the main loop, which folds them into the
 # folder-wide stagnation counter. ``STAGNANT`` (agent reported success but did
 # not tick its checkbox) advances the counter; anything else resets it.
@@ -208,7 +214,7 @@ def _final_metrics(stats: Any | None) -> dict[str, Any] | None:
     return metrics_block(output_tokens=output_tokens, decode_ms=decode_ms)
 
 
-def read_concurrency(folder: Path, default: int = 1) -> int:
+def read_concurrency(folder: Path, default: int = DEFAULT_CONCURRENCY) -> int:
     """Read the live concurrency cap from ``<folder>/.ola/concurrency``.
 
     Re-read by the scheduler on every tick so the cap can be adjusted at
@@ -607,6 +613,13 @@ def run_folder(
     # Default cap when the concurrency file is missing/malformed. The live
     # value (including 0 to pause) is re-read on every tick below.
     live_default = max(initial_cap, 1)
+
+    # Materialize the cap on disk when absent so it is auditable from the first
+    # tick and the monitors always have a value to show (never a "-"). Only when
+    # missing — never clobber a value the user or the dashboard slider has set.
+    if not (folder / ".ola" / "concurrency").exists():
+        write_concurrency(folder, live_default)
+
     in_flight: dict[Future, _Job] = {}
 
     # The pool's max_workers can't shrink, so we size it to the largest cap

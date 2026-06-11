@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse, ProgressCallback
+from ola.events.schema import metrics_block
 from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
@@ -62,17 +63,49 @@ def _init_laminar():
 _POLICY_FILE = Path(__file__).resolve().parent / "NETWORK-POLICY.md"
 
 
+def _live_metrics(conversation: object, tracker: "_TTFTTracker | None") -> dict | None:
+    """Cumulative throughput so far, for a mid-run ``working`` event.
+
+    Reads the same ``conversation.state.stats`` source as :meth:`_extract_stats`,
+    so the live numbers and the terminal totals come from one place. Returns
+    ``None`` until the first turn has produced tokens — the ``metrics`` block is
+    optional in the schema, so absence beats a row of zeros. ``decode_ms`` is
+    only available when streaming (the tracker is wired); a non-streaming run
+    reports ``output_tokens`` with ``decode_ms == 0`` and ``metrics_block``
+    yields ``tokens_per_sec == 0`` rather than dividing by zero.
+    """
+    try:
+        usage_to_metrics = conversation.state.stats.usage_to_metrics  # type: ignore[attr-defined]
+        output_tokens = sum(
+            m.accumulated_token_usage.completion_tokens
+            for m in usage_to_metrics.values()
+        )
+        decode_ms = tracker.total_decode_ms() if tracker is not None else 0
+    except Exception:
+        return None
+    if not output_tokens and not decode_ms:
+        return None
+    return metrics_block(output_tokens=output_tokens, decode_ms=decode_ms)
+
+
 def _make_event_progress_callback(
     on_progress: ProgressCallback,
+    metrics_provider: Callable[[], dict | None] | None = None,
 ) -> Callable[[object], None]:
     """Build a Conversation `callbacks` entry that funnels OpenHands events
-    into a string-only ``on_progress`` callback, rate-limited to one call per
+    into the harness ``on_progress`` callback, rate-limited to one call per
     second per worker.
 
     Recognised events:
       * ``MessageEvent`` with ``source == "agent"`` — text from the agent.
       * ``ActionEvent`` — ``[<tool_name>] <summary>`` for tool invocations.
     All other event types are ignored.
+
+    *metrics_provider*, when supplied, is called on each emitted progress event
+    to attach a cumulative ``Metrics`` block (so the dashboard's live throughput
+    tile updates mid-run instead of only at task completion). It is provided
+    separately from the event because the cumulative usage lives in the
+    conversation's running stats, not on the individual event.
     """
     from openhands.sdk.event import ActionEvent, MessageEvent
     from openhands.sdk.llm import content_to_str
@@ -102,8 +135,9 @@ def _make_event_progress_callback(
         if now - last_progress_ts[0] < 1.0:
             return
         last_progress_ts[0] = now
+        metrics = metrics_provider() if metrics_provider is not None else None
         try:
-            on_progress(text)
+            on_progress(text, metrics)
         except Exception:
             logger.exception("on_progress callback raised; continuing")
 
@@ -276,8 +310,22 @@ class OpenHandsAgent(Agent):
         tools = get_default_tools(enable_browser=False)
         persistence_dir = str(base / "trajectories")
 
+        # The cumulative usage the live ``metrics`` block needs lives on the
+        # conversation, which doesn't exist until the loop below. Hand the
+        # callback a provider that reads through this mutable cell, populated
+        # once the conversation/tracker for the active attempt are created.
+        live: dict[str, object | None] = {"conversation": None, "tracker": None}
         progress_callbacks = (
-            [_make_event_progress_callback(on_progress)]
+            [
+                _make_event_progress_callback(
+                    on_progress,
+                    lambda: (
+                        _live_metrics(live["conversation"], live["tracker"])  # type: ignore[arg-type]
+                        if live["conversation"] is not None
+                        else None
+                    ),
+                )
+            ]
             if on_progress is not None
             else []
         )
@@ -303,6 +351,10 @@ class OpenHandsAgent(Agent):
                 token_callbacks=[tracker.on_token] if tracker else [],
                 callbacks=progress_callbacks,
             )
+            # Expose this attempt's conversation/tracker to the live-metrics
+            # provider closed over by the progress callback above.
+            live["conversation"] = conversation
+            live["tracker"] = tracker
 
             conversation.send_message(prompt)
             try:

@@ -9,8 +9,8 @@
  * /api/concurrency` when `setTarget` is called.
  *
  * A `null` target means "no file yet": the scheduler runs at Ola's default cap
- * of 1 until the first `setTarget` creates the file. `0` pauses new agent
- * starts (in-flight agents finish).
+ * (2) until either the first scheduler tick materializes the file or the first
+ * `setTarget` creates it. `0` pauses new agent starts (in-flight agents finish).
  */
 
 import { useEffect, useRef, useState } from "react";

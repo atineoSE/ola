@@ -1,23 +1,33 @@
 import { describe, expect, it } from "vitest";
 
-import { outputTokensPerSec, recomputeCounters } from "./store";
-import type { TaskState } from "./types";
+import { recomputeCounters, windowedTokensPerSec } from "./store";
+import type { MetricSample } from "./store";
+import type { TaskState, TaskStatus } from "./types";
 
 function task(
-  status: TaskState["status"],
-  tokens_per_sec: number | null = null,
+  status: TaskStatus,
+  sample?: MetricSample,
+  id = `t-${status}`,
 ): TaskState {
   return {
-    task_id: `t-${status}-${tokens_per_sec}`,
+    task_id: id,
     task_text: "x",
     folder: "f",
     agent_backend: "cc",
     status,
     attempt: 0,
     data:
-      tokens_per_sec == null
+      sample == null
         ? {}
-        : { metrics: { output_tokens: 100, decode_ms: 2000, tokens_per_sec } },
+        : {
+            metrics: {
+              output_tokens: sample.output_tokens,
+              decode_ms: sample.decode_ms,
+              // tokens_per_sec must be a finite number for readMetrics to
+              // accept the block, but the windowed rate ignores its value.
+              tokens_per_sec: 0,
+            },
+          },
   };
 }
 
@@ -54,33 +64,75 @@ describe("recomputeCounters", () => {
   });
 });
 
-describe("outputTokensPerSec — total fleet throughput across active agents", () => {
-  it("returns null when no active agent is reporting metrics", () => {
-    expect(outputTokensPerSec([])).toBeNull();
-    expect(
-      outputTokensPerSec([task("started", null), task("pending", null)]),
-    ).toBeNull();
-    // Terminal agents are not generating: their lifetime rate is excluded
-    // (the App holds the last live reading for display continuity).
-    expect(
-      outputTokensPerSec([task("complete", 50), task("failed", 40)]),
-    ).toBeNull();
+describe("windowedTokensPerSec — fleet throughput as a Δ window", () => {
+  it("returns null and empty samples when no active agent reports metrics", () => {
+    expect(windowedTokensPerSec({}, [])).toEqual({ value: null, samples: {} });
+    const r = windowedTokensPerSec({}, [
+      task("started"),
+      task("pending"),
+      task("complete", { output_tokens: 100, decode_ms: 2000 }),
+    ]);
+    // Terminal/pending/no-metrics agents are not generating now.
+    expect(r.value).toBeNull();
+    expect(r.samples).toEqual({});
   });
 
-  it("sums tokens_per_sec over started/working agents", () => {
-    const total = outputTokensPerSec([
-      task("working", 40),
-      task("started", 60),
-      task("complete", 1000), // excluded — terminal, not generating
-      task("pending", null), // excluded — no agent
-      task("working", null), // excluded — no metrics yet
+  it("returns null on first sighting but carries the sample forward", () => {
+    const r = windowedTokensPerSec({}, [
+      task("working", { output_tokens: 100, decode_ms: 2000 }, "t-a"),
     ]);
-    expect(total).toBe(100); // sum of 40 and 60
+    expect(r.value).toBeNull(); // need two points for a rate
+    expect(r.samples).toEqual({ "t-a": { output_tokens: 100, decode_ms: 2000 } });
+  });
+
+  it("computes Δtokens / Δdecode_ms once a prior sample exists", () => {
+    // +100 tokens over +1000ms decode → 100 tok/s.
+    const r = windowedTokensPerSec(
+      { "t-a": { output_tokens: 100, decode_ms: 2000 } },
+      [task("working", { output_tokens: 200, decode_ms: 3000 }, "t-a")],
+    );
+    expect(r.value).toBe(100);
+  });
+
+  it("sums per-agent windowed rates across the fleet", () => {
+    const r = windowedTokensPerSec(
+      {
+        "t-a": { output_tokens: 100, decode_ms: 2000 },
+        "t-b": { output_tokens: 0, decode_ms: 0 },
+      },
+      [
+        task("working", { output_tokens: 200, decode_ms: 3000 }, "t-a"), // +100/1s = 100
+        task("started", { output_tokens: 50, decode_ms: 1000 }, "t-b"), // +50/1s = 50
+      ],
+    );
+    expect(r.value).toBe(150);
+  });
+
+  it("ignores no-progress (Δdecode 0) and counter resets (negative Δ)", () => {
+    const noProgress = windowedTokensPerSec(
+      { "t-a": { output_tokens: 100, decode_ms: 2000 } },
+      [task("working", { output_tokens: 100, decode_ms: 2000 }, "t-a")],
+    );
+    expect(noProgress.value).toBeNull();
+    // sample still refreshed for the next window
+    expect(noProgress.samples["t-a"]).toEqual({
+      output_tokens: 100,
+      decode_ms: 2000,
+    });
+
+    const reset = windowedTokensPerSec(
+      { "t-a": { output_tokens: 500, decode_ms: 9000 } },
+      [task("working", { output_tokens: 20, decode_ms: 400 }, "t-a")],
+    );
+    expect(reset.value).toBeNull();
   });
 
   it("accepts a task record as well as an array", () => {
-    expect(
-      outputTokensPerSec(record([task("working", 30), task("working", 70)])),
-    ).toBe(100);
+    const r = windowedTokensPerSec(
+      { "t-a": { output_tokens: 100, decode_ms: 2000 } },
+      record([task("working", { output_tokens: 300, decode_ms: 4000 }, "t-a")]),
+    );
+    // +200 tokens / +2000ms = 100 tok/s
+    expect(r.value).toBe(100);
   });
 });

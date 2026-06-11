@@ -67,7 +67,7 @@ project/                # workspace root (the example ships this as dummy-projec
 
 The plan structure carries an implicit contract with two levels:
 
-* **Tasks within one `PLAN.md` are independent and parallel-safe.** ola may run them concurrently (see [Parallel execution](#parallel-execution)) and gives no guarantee about their relative order. Never write a task that relies on a sibling task in the same plan having run first — even at the default concurrency cap of 1, order is not part of the contract.
+* **Tasks within one `PLAN.md` are independent and parallel-safe.** ola may run them concurrently (see [Parallel execution](#parallel-execution)) and gives no guarantee about their relative order. Never write a task that relies on a sibling task in the same plan having run first — even at a concurrency cap of 1, order is not part of the contract.
 * **Ordering comes from folders.** Plan subfolders are processed strictly in name order (`01-…`, `02-…`, …), and a folder must fully complete before the next one starts.
 
 To express dependent work, split it into indexed `NN-description/` folders — one folder per dependency stage — each with its own `PLAN.md` of mutually independent tasks.
@@ -134,11 +134,11 @@ echo 3 > agent/02-implement/.ola/concurrency   # run up to 3 tasks at once
 
 | Value | Meaning |
 |-------|---------|
-| missing / malformed | sequential (cap 1) — the default |
+| missing / malformed | default cap of 2 — written to the file on the first tick |
 | `N` (≥ 1) | run up to `N` tasks concurrently |
 | `0` | pause new starts (in-flight tasks finish) |
 
-The file is **re-read on every scheduler tick**, so you can raise or lower the cap (or pause with `0`) while a run is in progress — no restart needed. There is no CLI flag for concurrency; the file is the knob.
+When the file is absent, ola materializes it at the default (2) on the first scheduler tick, so the cap is always present on disk and the monitors always have a value to show. The file is **re-read on every scheduler tick**, so you can raise or lower the cap (or pause with `0`) while a run is in progress — no restart needed. There is no CLI flag for concurrency; the file is the knob.
 
 ### How a task runs
 

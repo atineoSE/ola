@@ -11,6 +11,7 @@ import pytest
 from ola.agents.openhands import (
     OpenHandsAgent,
     _TTFTTracker,
+    _live_metrics,
     _make_event_progress_callback,
 )
 from ola.sandbox import is_sandbox
@@ -44,6 +45,11 @@ class TestRunSignature:
 # ---------------------------------------------------------------------------
 
 
+def _msg_only(seen: list):
+    """on_progress recorder that records the message, ignoring the metrics arg."""
+    return lambda msg, metrics=None: seen.append(msg)
+
+
 def _fake_message_event(text: str, source: str = "agent"):
     """Return a MagicMock that satisfies isinstance(.., MessageEvent)."""
     from openhands.sdk.event import MessageEvent
@@ -68,7 +74,7 @@ def _fake_action_event(tool_name: str, summary: str | None = None):
 class TestEventProgressCallback:
     def test_agent_message_invokes_on_progress_with_text(self):
         seen: list[str] = []
-        cb = _make_event_progress_callback(seen.append)
+        cb = _make_event_progress_callback(_msg_only(seen))
         # last_progress_ts initialises at 0.0 and now=1000.0 ⇒ diff > 1s, emit.
         with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
             cb(_fake_message_event("Hello world"))
@@ -76,28 +82,28 @@ class TestEventProgressCallback:
 
     def test_user_message_is_ignored(self):
         seen: list[str] = []
-        cb = _make_event_progress_callback(seen.append)
+        cb = _make_event_progress_callback(_msg_only(seen))
         with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
             cb(_fake_message_event("user text", source="user"))
         assert seen == []
 
     def test_action_event_invokes_on_progress_with_tool_marker(self):
         seen: list[str] = []
-        cb = _make_event_progress_callback(seen.append)
+        cb = _make_event_progress_callback(_msg_only(seen))
         with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
             cb(_fake_action_event(tool_name="terminal", summary="run ls"))
         assert seen == ["[terminal] run ls"]
 
     def test_action_event_no_summary_still_shows_tool(self):
         seen: list[str] = []
-        cb = _make_event_progress_callback(seen.append)
+        cb = _make_event_progress_callback(_msg_only(seen))
         with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
             cb(_fake_action_event(tool_name="file_editor", summary=None))
         assert seen == ["[file_editor]"]
 
     def test_unknown_event_is_ignored(self):
         seen: list[str] = []
-        cb = _make_event_progress_callback(seen.append)
+        cb = _make_event_progress_callback(_msg_only(seen))
         with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
             cb(SimpleNamespace(source="agent"))  # not a MessageEvent/ActionEvent
         assert seen == []
@@ -105,7 +111,7 @@ class TestEventProgressCallback:
     def test_rate_limited_to_one_per_second(self):
         """Multiple events within 1s collapse to a single on_progress call."""
         seen: list[str] = []
-        cb = _make_event_progress_callback(seen.append)
+        cb = _make_event_progress_callback(_msg_only(seen))
         # All three fire at t=1000.0 → only the first should pass.
         with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
             cb(_fake_message_event("A"))
@@ -115,7 +121,7 @@ class TestEventProgressCallback:
 
     def test_fires_again_after_one_second(self):
         seen: list[str] = []
-        cb = _make_event_progress_callback(seen.append)
+        cb = _make_event_progress_callback(_msg_only(seen))
         # First at t=1000, second at t=1002 (>1s later).
         with patch("ola.agents.openhands.time.monotonic", side_effect=[1000.0, 1002.0]):
             cb(_fake_message_event("first"))
@@ -123,7 +129,7 @@ class TestEventProgressCallback:
         assert seen == ["first", "second"]
 
     def test_callback_exception_is_swallowed(self, caplog):
-        def bad(_msg: str) -> None:
+        def bad(_msg: str, _metrics=None) -> None:
             raise RuntimeError("nope")
 
         cb = _make_event_progress_callback(bad)
@@ -131,6 +137,64 @@ class TestEventProgressCallback:
             with caplog.at_level(logging.ERROR, logger="ola.agents.openhands"):
                 cb(_fake_message_event("boom"))
         assert any("on_progress" in r.message for r in caplog.records)
+
+    def test_metrics_provider_attaches_metrics(self):
+        """The provider's metrics block rides along to on_progress."""
+        seen: list[tuple[str, dict | None]] = []
+        block = {"output_tokens": 42, "decode_ms": 1000, "tokens_per_sec": 42.0}
+        cb = _make_event_progress_callback(
+            lambda msg, metrics=None: seen.append((msg, metrics)),
+            metrics_provider=lambda: block,
+        )
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            cb(_fake_message_event("working"))
+        assert seen == [("working", block)]
+
+    def test_no_metrics_provider_passes_none(self):
+        """With no provider, the metrics arg is None (string-only backends)."""
+        seen: list[tuple[str, dict | None]] = []
+        cb = _make_event_progress_callback(
+            lambda msg, metrics=None: seen.append((msg, metrics))
+        )
+        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
+            cb(_fake_message_event("working"))
+        assert seen == [("working", None)]
+
+
+class TestLiveMetrics:
+    """Tests for the mid-run cumulative metrics block (_live_metrics)."""
+
+    def test_sums_output_tokens_and_reads_decode_ms(self):
+        conv = _make_conversation(
+            {
+                "a": _make_metrics(_make_accumulated(completion_tokens=300)),
+                "b": _make_metrics(_make_accumulated(completion_tokens=150)),
+            }
+        )
+        tracker = SimpleNamespace(total_decode_ms=lambda: 10000)
+        block = _live_metrics(conv, tracker)
+        assert block == {
+            "output_tokens": 450,
+            "decode_ms": 10000,
+            "tokens_per_sec": 45.0,
+        }
+
+    def test_none_until_first_tokens(self):
+        conv = _make_conversation(
+            {"a": _make_metrics(_make_accumulated(completion_tokens=0))}
+        )
+        assert _live_metrics(conv, SimpleNamespace(total_decode_ms=lambda: 0)) is None
+
+    def test_non_streaming_reports_zero_rate(self):
+        """No tracker (non-streaming) → decode_ms 0, tokens_per_sec 0, no crash."""
+        conv = _make_conversation(
+            {"a": _make_metrics(_make_accumulated(completion_tokens=99))}
+        )
+        block = _live_metrics(conv, None)
+        assert block == {"output_tokens": 99, "decode_ms": 0, "tokens_per_sec": 0}
+
+    def test_bad_conversation_returns_none(self):
+        assert _live_metrics(object(), None) is None
 
 
 class TestIsSandbox:

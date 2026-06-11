@@ -4,8 +4,9 @@ import { ActivityFeed } from "./components/ActivityFeed";
 import { HeroMetrics } from "./components/HeroMetrics";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { TaskGrid } from "./components/TaskGrid";
-import { outputTokensPerSec, recomputeCounters, useSnapshot } from "./snapshot";
+import { recomputeCounters, useSnapshot } from "./snapshot";
 import { useConcurrency } from "./hooks/useConcurrency";
+import { useOutputTokensPerSec } from "./hooks/useOutputTokensPerSec";
 
 /** One dropdown entry: the folder is the event-grouping key; the label is
  * the folder's display name (its plan subfolder name). */
@@ -63,29 +64,11 @@ function App() {
       recomputeCounters(Object.fromEntries(tasks.map((t) => [t.task_id, t]))),
     [tasks],
   );
-  // Live fleet output rate, held at the last reading when no active agent
-  // is reporting (between waves / run drained) so the tile shows a
-  // continuously updated number instead of flipping back to a placeholder.
-  // Keyed by project so a switch starts fresh instead of showing the
-  // previous project's frozen rate.
-  const liveTokPerSec = useMemo(() => outputTokensPerSec(tasks), [tasks]);
-  const [heldTokPerSec, setHeldTokPerSec] = useState<{
-    project: string | null;
-    value: number;
-  } | null>(null);
-  // Adjust-state-during-render (React's documented pattern): when a live
-  // reading lands, remember it so the tile freezes on the last value across
-  // reporting gaps instead of flipping back to a placeholder.
-  if (
-    liveTokPerSec !== null &&
-    (heldTokPerSec?.value !== liveTokPerSec ||
-      heldTokPerSec?.project !== project)
-  ) {
-    setHeldTokPerSec({ project, value: liveTokPerSec });
-  }
-  const outputTokPerSec =
-    liveTokPerSec ??
-    (heldTokPerSec?.project === project ? heldTokPerSec.value : null);
+  // Live fleet output rate: a windowed Δtokens/Δdecode across active agents
+  // (see useOutputTokensPerSec). Held at the last reading across reporting
+  // gaps and reset on a project switch, so the tile shows a continuously
+  // updated number instead of the slowly-moving lifetime average.
+  const outputTokPerSec = useOutputTokensPerSec(tasks, project);
   const activity = useMemo(
     () => snapshot.activity.filter((e) => e.folder === project),
     [snapshot.activity, project],

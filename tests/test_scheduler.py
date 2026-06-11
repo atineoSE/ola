@@ -13,6 +13,7 @@ from ola.agents.base import Agent, AgentResponse
 from ola.events.client import Emitter, LocalSink
 from ola.plan import enumerate_tasks, set_task_checked, task_is_checked
 from ola.scheduler import (
+    DEFAULT_CONCURRENCY,
     _DEFAULT_TASK_PROMPT,
     _load_task_prompt,
     _substitute,
@@ -560,6 +561,30 @@ def test_run_folder_exhausts_max_attempts_then_fails(tmp_path):
     assert len(log) == 2  # initial + folder-add, no propagation
 
 
+def test_run_folder_materializes_default_concurrency(tmp_path):
+    """A run with no .ola/concurrency writes the default so it is auditable."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Task A\n")
+    assert not (folder / ".ola" / "concurrency").exists()
+
+    run_folder(_TickingAgent(), folder, repo, initial_cap=DEFAULT_CONCURRENCY)
+
+    assert read_concurrency(folder) == DEFAULT_CONCURRENCY
+
+
+def test_run_folder_does_not_clobber_existing_concurrency(tmp_path):
+    """A pre-existing cap (e.g. set by the dashboard slider) is left untouched."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    folder = _setup_folder(repo, "agent-folder", "- [ ] Task A\n")
+    write_concurrency(folder, 5)
+
+    run_folder(_TickingAgent(), folder, repo, initial_cap=DEFAULT_CONCURRENCY)
+
+    assert read_concurrency(folder) == 5
+
+
 def test_run_folder_default_no_retries(tmp_path):
     """Default max_attempts=0 → a failing task is tried exactly once."""
     repo = tmp_path / "repo"
@@ -1006,7 +1031,7 @@ def test_run_folder_emits_all_event_types(tmp_path):
 
 def test_read_concurrency_missing_file_defaults(tmp_path):
     """No .ola/concurrency file → default, silently."""
-    assert read_concurrency(tmp_path) == 1
+    assert read_concurrency(tmp_path) == DEFAULT_CONCURRENCY
     assert read_concurrency(tmp_path, default=4) == 4
 
 

@@ -17,6 +17,7 @@ from ola.loop import (
     per_task_state_dir,
 )
 from ola.monitor.data import parse_stats_jsonl
+from ola.scheduler import DEFAULT_CONCURRENCY
 from ola.stats import IterationStats
 
 
@@ -223,8 +224,8 @@ def test_stats_roundtrip_contract(tmp_path):
 # --- _initial_concurrency tests ---
 
 
-def test_initial_concurrency_missing_file_defaults_to_one(tmp_path):
-    assert _initial_concurrency(tmp_path) == 1
+def test_initial_concurrency_missing_file_defaults(tmp_path):
+    assert _initial_concurrency(tmp_path) == DEFAULT_CONCURRENCY
 
 
 def test_initial_concurrency_reads_integer(tmp_path):
@@ -236,13 +237,13 @@ def test_initial_concurrency_reads_integer(tmp_path):
 def test_initial_concurrency_malformed_defaults(tmp_path):
     (tmp_path / ".ola").mkdir()
     (tmp_path / ".ola" / "concurrency").write_text("not a number")
-    assert _initial_concurrency(tmp_path) == 1
+    assert _initial_concurrency(tmp_path) == DEFAULT_CONCURRENCY
 
 
 def test_initial_concurrency_rejects_non_positive(tmp_path):
     (tmp_path / ".ola").mkdir()
     (tmp_path / ".ola" / "concurrency").write_text("0")
-    assert _initial_concurrency(tmp_path) == 1
+    assert _initial_concurrency(tmp_path) == DEFAULT_CONCURRENCY
 
 
 # --- End-to-end roundtrip sentinel ---
@@ -419,7 +420,7 @@ def test_process_folder_dispatches_to_scheduler(tmp_path):
     assert args[0] is agent
     assert args[1] == folder
     assert args[2] == tmp_path
-    assert args[3] == 1  # default cap
+    assert args[3] == DEFAULT_CONCURRENCY  # default cap
 
 
 def test_process_folder_passes_concurrency_cap(tmp_path):

@@ -99,13 +99,18 @@ def per_task_state_dir(folder: Path, agent: Agent, task_id: str) -> str | None:
     return str(path)
 
 
-def _initial_concurrency(folder: Path, default: int = 1) -> int:
+def _initial_concurrency(folder: Path, default: int | None = None) -> int:
     """Read the starting concurrency cap from ``<folder>/.ola/concurrency``.
 
-    Returns *default* when the file is missing or malformed. This supplies the
-    scheduler's ``initial_cap``; Phase 5 adds live re-reading of the same file
-    on every scheduler tick.
+    Returns *default* (the shared :data:`~ola.scheduler.DEFAULT_CONCURRENCY`
+    when not overridden) if the file is missing or malformed. This supplies the
+    scheduler's ``initial_cap``, which ``run_folder`` then materializes into the
+    file on the first tick so the cap is always present on disk.
     """
+    if default is None:
+        from ola.scheduler import DEFAULT_CONCURRENCY
+
+        default = DEFAULT_CONCURRENCY
     cap_file = folder / ".ola" / "concurrency"
     try:
         value = int(cap_file.read_text().strip())

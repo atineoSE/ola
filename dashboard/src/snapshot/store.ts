@@ -32,29 +32,58 @@ export const EMPTY_SNAPSHOT: Snapshot = {
 };
 
 /**
- * Total output-token throughput (tokens/sec) across the fleet right now:
- * the **sum** of each currently active agent's `tokens_per_sec` — those in
- * `started`/`working` whose latest payload carried a `metrics` block.
- *
- * Returns `null` when no active agent is reporting (pre-run, between waves,
- * or after the run drains). Display continuity is the caller's concern: the
- * App holds the last non-null reading so the tile freezes rather than
- * flipping back to a placeholder (same pattern as the elapsed clock).
+ * A per-task throughput sample carried between polls so the fleet rate can be
+ * computed as a *window* rather than a lifetime average. Keyed by `task_id`.
  */
-export function outputTokensPerSec(
+export interface MetricSample {
+  output_tokens: number;
+  decode_ms: number;
+}
+
+/**
+ * Windowed fleet output throughput (tokens/sec): the **sum** over currently
+ * active agents of each one's `Δoutput_tokens / Δdecode_ms` since the previous
+ * poll. This tracks *current* throughput, unlike the emitted lifetime-average
+ * `tokens_per_sec`, which barely moves once an attempt has run a while — so the
+ * hero tile actually responds to the run. SCHEMA.md explicitly recommends
+ * plotting the delta between consecutive observed events rather than the
+ * lifetime average.
+ *
+ * Pure and stateless: it takes the previous poll's samples (`prev`) and the
+ * current tasks, and returns the new rate plus the samples to carry forward.
+ * `value` is `null` when no active agent *advanced* this window (pre-run, all
+ * agents between turns, or the run drained); the caller decides whether to hold
+ * the last reading. `samples` only ever contains the current active tasks, so
+ * stale task ids never accumulate across a long run.
+ */
+export function windowedTokensPerSec(
+  prev: Record<string, MetricSample>,
   tasks: Record<string, TaskState> | TaskState[],
-): number | null {
+): { value: number | null; samples: Record<string, MetricSample> } {
   const list = Array.isArray(tasks) ? tasks : Object.values(tasks);
+  const samples: Record<string, MetricSample> = {};
   let sum = 0;
-  let n = 0;
+  let advanced = false;
   for (const t of list) {
     if (t.status !== "started" && t.status !== "working") continue;
     const m = readMetrics(t.data);
     if (m == null) continue;
-    sum += m.tokens_per_sec;
-    n += 1;
+    samples[t.task_id] = {
+      output_tokens: m.output_tokens,
+      decode_ms: m.decode_ms,
+    };
+    const p = prev[t.task_id];
+    if (p == null) continue; // first sighting — need two points for a rate
+    const dTokens = m.output_tokens - p.output_tokens;
+    const dDecodeMs = m.decode_ms - p.decode_ms;
+    // Guard against a fresh attempt (counters reset → negative delta) and the
+    // no-progress case (dDecodeMs === 0) that would divide by zero.
+    if (dDecodeMs > 0 && dTokens >= 0) {
+      sum += dTokens / (dDecodeMs / 1000);
+      advanced = true;
+    }
   }
-  return n === 0 ? null : sum;
+  return { value: advanced ? sum : null, samples };
 }
 
 export function recomputeCounters(tasks: Record<string, TaskState>): Counters {
