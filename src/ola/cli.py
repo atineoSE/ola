@@ -87,8 +87,8 @@ def main() -> None:
     parser.add_argument(
         "--max-attempts",
         type=int,
-        default=0,
-        help="Retry a failed task up to K times (default: 0 = no retries)",
+        default=3,
+        help="Run a failed/stagnant task up to K times total (default: 3)",
     )
     parser.add_argument(
         "-q",

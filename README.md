@@ -27,7 +27,7 @@ ola [-f <agent-folder>] [-a cc|oh|codex] [-m MODEL] [-l LIMIT] [--max-attempts N
 | `-a, --agent` | Agent: `cc`/`claude-code`, `oh`/`openhands`, or `cx`/`codex` | `cc` |
 | `-m, --model` | Model name | Agent default |
 | `-l, --limit` | Max iterations per subfolder (ignored in parallel mode) | No limit |
-| `--max-attempts` | Retry ceiling for failed/stagnant tasks | `0` (no retries) |
+| `--max-attempts` | Total-attempts ceiling for failed/stagnant tasks | `3` |
 | `-v, --verbose` | Debug logging | Off |
 
 ## Folder structure

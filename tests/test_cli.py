@@ -64,9 +64,9 @@ class TestSandboxGate:
 
 
 class TestMaxAttempts:
-    """Verify --max-attempts routes into run_outer_loop (default 0)."""
+    """Verify --max-attempts routes into run_outer_loop (default 3)."""
 
-    def test_default_is_zero(self, tmp_path):
+    def test_default_is_three(self, tmp_path):
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         with (
@@ -76,19 +76,19 @@ class TestMaxAttempts:
             patch("ola.cli.run_outer_loop") as mock_loop,
         ):
             main()
-            assert mock_loop.call_args.kwargs["max_attempts"] == 0
+            assert mock_loop.call_args.kwargs["max_attempts"] == 3
 
     def test_flag_reaches_run_outer_loop(self, tmp_path):
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         with (
             patch.dict(os.environ, {"SANDBOX": "1"}),
-            patch("sys.argv", ["ola", "-f", str(agent_dir), "--max-attempts", "3"]),
+            patch("sys.argv", ["ola", "-f", str(agent_dir), "--max-attempts", "5"]),
             patch("ola.cli.create_agent"),
             patch("ola.cli.run_outer_loop") as mock_loop,
         ):
             main()
-            assert mock_loop.call_args.kwargs["max_attempts"] == 3
+            assert mock_loop.call_args.kwargs["max_attempts"] == 5
 
 
 class TestAgentSelection:
