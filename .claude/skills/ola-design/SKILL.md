@@ -1,6 +1,7 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
+version: 1.0.0
 ---
 
 # The ola design philosophy

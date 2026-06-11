@@ -1,6 +1,7 @@
 ---
 name: ola-dashboard
 description: Design philosophy and scope guardrails for ola-dashboard, the browser monitor. Load whenever changing ola-dashboard — every change must be checked against this philosophy.
+version: 1.0.0
 ---
 
 # The ola-dashboard design philosophy
