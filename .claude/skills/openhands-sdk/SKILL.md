@@ -1,7 +1,7 @@
 ---
 name: openhands-sdk
 description: How to configure LLM and Agent classes with the OpenHands SDK
-version: 1.0.0
+version: 1.1.0
 ---
 
 
@@ -444,3 +444,33 @@ tool = Tool(
     callable=my_function,                # Callable implementation
 )
 ```
+
+---
+
+## Thread safety: warm up the import before fanning out
+
+`import openhands.sdk` transitively does `import litellm`. That **first**
+import is not safe to run from several threads at once: a concurrent first
+import trips CPython's import-lock deadlock detector
+(`deadlock detected by _ModuleLock('litellm…')`) and leaves `litellm`
+half-initialised, so every later importer dies with
+`partially initialized module 'litellm' … has no attribute
+'litellm_core_utils' (most likely due to a circular import)`.
+
+If you import the SDK lazily inside worker threads (as ola's `oh` backend
+does, to keep `import ola` cheap for the other backends), force the import
+once on the main thread **before** dispatching the pool:
+
+```python
+def warm_up() -> None:
+    # Run once, serially, before any worker thread starts.
+    import litellm            # noqa: F401
+    import openhands.sdk      # noqa: F401  (pulls litellm in too)
+    import openhands.tools    # noqa: F401
+```
+
+The same applies to any process-global setup the SDK path performs
+(`os.environ` writes, `litellm.ssl_verify`, telemetry init such as Laminar):
+do it once here rather than per worker. Telemetry that must initialise
+*before* the SDK import (e.g. Laminar's HTTP exporter) goes at the top of the
+warm-up, ahead of the `import openhands.sdk` line.

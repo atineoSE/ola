@@ -64,3 +64,14 @@ class Agent(ABC):
     def version(self) -> str:
         """Return the agent's version string. Override in subclasses."""
         return ""
+
+    def warm_up(self) -> None:
+        """Perform one-time, thread-unsafe setup before parallel dispatch.
+
+        Called once on the main thread by the scheduler before any worker
+        starts, so that imports or global state that are unsafe to initialise
+        concurrently happen exactly once, serially. The default is a no-op;
+        backends that import heavy modules in-process (rather than shelling
+        out to a subprocess) override this. Must be idempotent — the scheduler
+        may call it once per folder against a shared agent instance.
+        """
