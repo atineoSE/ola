@@ -14,9 +14,13 @@ example keeps parsing and scheduling correctly. Failure-mode scenarios
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from ola.monitor.data import read_folder_status, read_task_rows
 from ola.plan import enumerate_tasks
-from ola.scheduler import _MAX_STAGNANT_LOOPS
+from ola.scheduler import _MAX_STAGNANT_LOOPS, FolderIncompleteError
 
 from .harness import (
     ScriptedAgent,
@@ -177,7 +181,10 @@ def test_terminal_failure_keeps_worktree(tmp_path):
     folder = agent_path / "01-retry"
 
     agent = ScriptedAgent(action="fail")
-    run_pipeline(agent, agent_path, max_attempts=0)
+    # A task that exhausts its attempts and is not relocated leaves PLAN.md
+    # unfinished — the harness bails out rather than advancing.
+    with pytest.raises(FolderIncompleteError):
+        run_pipeline(agent, agent_path, max_attempts=0)
 
     (task,) = enumerate_tasks(folder)
     assert not task.checked
@@ -199,7 +206,9 @@ def test_stagnant_task_marked_failed(tmp_path):
     folder = agent_path / "01-stuck"
 
     agent = ScriptedAgent(action="stagnant")
-    run_pipeline(agent, agent_path, max_attempts=0)
+    # Stagnant-then-terminal leaves the box unticked → bail out.
+    with pytest.raises(FolderIncompleteError):
+        run_pipeline(agent, agent_path, max_attempts=0)
 
     (task,) = enumerate_tasks(folder)
     assert not task.checked
@@ -215,13 +224,62 @@ def test_stagnation_backstop_bounds_retries(tmp_path):
 
     # Plenty of retries available; the folder-wide backstop must halt first.
     agent = ScriptedAgent(action="stagnant")
-    run_pipeline(agent, agent_path, max_attempts=1000)
+    # The backstop halts the spin; the folder is then left unfinished → bail.
+    with pytest.raises(FolderIncompleteError):
+        run_pipeline(agent, agent_path, max_attempts=1000)
 
     (task,) = enumerate_tasks(folder)
     assert not task.checked
     # The circuit breaker halts after _MAX_STAGNANT_LOOPS consecutive stalls;
     # dispatch is bounded by that, not by max_attempts.
     assert len(agent.calls) <= _MAX_STAGNANT_LOOPS + 1
+
+
+# --- 7b. Crash-orphan recovery ------------------------------------------------
+
+
+def test_crash_orphan_running_is_retried(tmp_path):
+    """A task left `running` by a crashed prior run is requeued, not stuck.
+
+    Reproduces the real bug: an interrupted run leaves tasks.json with a
+    `running` status whose checkbox is unticked and no worker alive. The next
+    run must re-dispatch it (not skip it as already-in-flight) and drive the
+    folder to completion without bailing.
+    """
+    agent_path = build_example_repo(tmp_path, "02-utils")
+    folder = agent_path / "02-utils"
+    tasks = enumerate_tasks(folder)
+    orphan = tasks[0]
+
+    ola_dir = folder / ".ola"
+    ola_dir.mkdir(parents=True, exist_ok=True)
+    (ola_dir / "tasks.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_id": t.task_id,
+                        "text": t.text,
+                        "line_no": t.line_no,
+                        "status": "running" if t is orphan else "pending",
+                        "attempts": 1 if t is orphan else 0,
+                        "last_error": None,
+                    }
+                    for t in tasks
+                ]
+            }
+        )
+    )
+
+    # Completes everything; the orphan is recovered, so no bail-out.
+    agent = ScriptedAgent()
+    run_pipeline(agent, agent_path)
+
+    assert all(t.checked for t in enumerate_tasks(folder))
+    entry = next(e for e in read_tasks(folder) if e["task_id"] == orphan.task_id)
+    assert entry["status"] == "complete"
+    # The orphan was actually re-dispatched (the agent ran for it).
+    assert any(t == orphan.task_id for (_f, t, _a) in agent.calls)
 
 
 # --- 8. Source edits merge back to the agent branch ---------------------------
@@ -370,7 +428,10 @@ def test_blocked_task_never_retried(tmp_path):
     agent = ScriptedAgent(
         block_tasks={"Call the FOO API": "missing key"},
     )
-    run_pipeline(agent, agent_path, max_attempts=3, janitor_enabled=False)
+    # With the janitor off, the blocked task is never relocated, so its line
+    # stays in PLAN.md and the folder is left unfinished → bail out.
+    with pytest.raises(FolderIncompleteError):
+        run_pipeline(agent, agent_path, max_attempts=3, janitor_enabled=False)
 
     # With the janitor off, the blocked entry stays in tasks.json, terminal.
     (blocked_entry,) = [

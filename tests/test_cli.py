@@ -6,6 +6,27 @@ from unittest.mock import patch
 import pytest
 
 from ola.cli import main
+from ola.scheduler import FolderIncompleteError
+
+
+class TestBailOut:
+    """A stuck folder (FolderIncompleteError) stops ola with a non-zero exit."""
+
+    def test_folder_incomplete_exits_nonzero(self, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch(
+                "ola.cli.run_outer_loop",
+                side_effect=FolderIncompleteError("02-utils", 1),
+            ),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
 
 
 class TestSandboxGate:

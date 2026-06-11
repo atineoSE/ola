@@ -255,6 +255,10 @@ def run_outer_loop(
     # sibling (e.g. 01a-init-leftovers) while 01-init is running, and it must
     # be picked up before 02-… — re-discovering after every folder makes the
     # lexicographic sort do the interleaving.
+    # Imported here to avoid a module-level circular import (scheduler imports
+    # loop). Raised below to stop the run when a folder can't be completed.
+    from ola.scheduler import FolderIncompleteError
+
     processed: set[Path] = set()
     while True:
         folders = discover_plan_folders(plan_path)
@@ -265,6 +269,17 @@ def run_outer_loop(
             break
         logger.info("Processing: %s", folder.name)
         _process_folder(agent, folder, limit, plan_path, max_attempts, janitor_enabled)
+
+        # Completeness gate. _process_folder has drained the folder (its tasks
+        # all ticked, relocated to a leftovers/blockers sibling, or exhausted
+        # --max-attempts). "Checkbox is truth", so any checkbox still unticked
+        # here is a task that could not be completed and was not relocated — the
+        # folder is stuck. Bail out rather than advance past unfinished work.
+        # (count_tasks returns (0, 0) for a PLAN-less folder, e.g. a blockers
+        # folder, so those pass the gate and the loop skips them as before.)
+        completed, total = count_tasks(folder)
+        if completed < total:
+            raise FolderIncompleteError(folder.name, total - completed)
         processed.add(folder)
 
     _log_attention_summary(plan_path)

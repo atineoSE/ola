@@ -719,10 +719,10 @@ class TestParallelTaskView:
     def test_expanded_renders_task_rows(self):
         """Expanding a parallel folder renders one sub-row per task.
 
-        Each sub-row carries the task id (for tracing back into tasks.json /
-        events.jsonl) and the task text in the Folder column, plus elapsed time
-        in the Time column. Status is conveyed by row color, not text; the
-        Agent/Model columns stay blank because a task has no per-task value.
+        Each sub-row is labelled ``Task <pos> (<task_id>)`` (position is the
+        1-based PLAN.md order, the id traces back into tasks.json /
+        events.jsonl), with the task text following and elapsed time in the
+        Time column. Status is conveyed by row color, not text.
         """
         folders = [_parallel_folder()]
         table = build_table(folders, expanded={"09-parallel"})
@@ -736,10 +736,38 @@ class TestParallelTaskView:
         # Task ids surface for file traceability.
         assert "t-aaa" in text
         assert "t-bbb" in text
+        # The Task #/id label is present.
+        assert "Task 1 (t-aaa)" in text
+        assert "Task 2 (t-bbb)" in text
         # Elapsed time surfaces in the Time column.
         assert "42s" in text
         # The live progress message is no longer crammed into the Model column.
         assert "running tests" not in text
+
+    def test_task_row_shows_turns_in_task_view(self):
+        """A task's STATS aggregate surfaces its turn count in TASK view."""
+        folder = _parallel_folder()
+        folder.task_rows[0].stats = IterationStatus(phase="", num_turns=7)
+        table = build_table([folder], expanded={"09-parallel"})
+        assert "7" in _render_table_text(table)
+
+    def test_task_row_shows_metrics_in_metrics_view(self):
+        """A task's STATS aggregate surfaces tokens/turns in METRICS view."""
+        folder = _parallel_folder()
+        folder.task_rows[0].stats = IterationStatus(
+            phase="", input_tokens=12000, output_tokens=3000, num_turns=4
+        )
+        table = build_table([folder], expanded={"09-parallel"}, mode=ViewMode.METRICS)
+        text = _render_table_text(table)
+        assert "12.0k" in text  # input tokens
+        assert "3.0k" in text  # output tokens
+
+    def test_task_row_without_stats_leaves_metrics_blank(self):
+        """A never-run task (stats=None) renders no synthetic zeros."""
+        folder = _parallel_folder()  # task_rows carry no stats
+        table = build_table([folder], expanded={"09-parallel"}, mode=ViewMode.METRICS)
+        # Folder row still renders; task rows show only elapsed, no token cells.
+        assert table.row_count == 4
 
     def test_build_display_rows_uses_tasks_for_parallel(self):
         """A parallel folder's expanded sub-rows are 'task', not 'iter'."""

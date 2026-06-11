@@ -816,3 +816,73 @@ def test_task_row_defaults():
     assert row.attempt == 0
     assert row.elapsed_s == 0.0
     assert row.last_progress_message == ""
+    assert row.stats is None
+
+
+def test_read_task_rows_folds_in_stats_summed_across_attempts(tmp_path: Path):
+    """Per-task STATS rows (task-<id>-<attempt>) are summed into TaskRow.stats."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [
+            {
+                "task_id": "t-aaa",
+                "text": "A",
+                "line_no": 1,
+                "status": "complete",
+                "attempts": 2,
+            },
+            {"task_id": "t-bbb", "text": "B", "line_no": 2, "status": "pending"},
+        ],
+    )
+    iterations = parse_stats_jsonl(
+        json.dumps({"phase": "seed", "input_tokens": 999})
+        + "\n"
+        + json.dumps({"phase": "task-t-aaa-1", "input_tokens": 100, "num_turns": 2})
+        + "\n"
+        + json.dumps({"phase": "task-t-aaa-2", "input_tokens": 50, "num_turns": 3})
+        + "\n"
+    )
+    rows = read_task_rows(folder, iterations)
+    # t-aaa sums both attempts; the unrelated "seed" row never leaks in.
+    assert rows[0].stats is not None
+    assert rows[0].stats.input_tokens == 150
+    assert rows[0].stats.num_turns == 5
+    # A task with no matching STATS row carries no stats.
+    assert rows[1].stats is None
+
+
+def test_read_task_rows_stats_match_is_prefix_plus_digits(tmp_path: Path):
+    """Collision-suffixed ids (t-aaa-2) must not swallow a sibling's rows."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [
+            {"task_id": "t-aaa", "text": "A", "line_no": 1, "status": "complete"},
+            {"task_id": "t-aaa-2", "text": "A2", "line_no": 2, "status": "complete"},
+        ],
+    )
+    iterations = parse_stats_jsonl(
+        json.dumps({"phase": "task-t-aaa-1", "input_tokens": 10})
+        + "\n"
+        + json.dumps({"phase": "task-t-aaa-2-1", "input_tokens": 20})
+        + "\n"
+    )
+    rows = read_task_rows(folder, iterations)
+    by_id = {r.task_id: r for r in rows}
+    # task-t-aaa-2 is t-aaa attempt 2, NOT a row for the id "t-aaa-2".
+    assert by_id["t-aaa"].stats.input_tokens == 10
+    assert by_id["t-aaa-2"].stats.input_tokens == 20
+
+
+def test_read_task_rows_without_iterations_has_no_stats(tmp_path: Path):
+    """Called without iterations (back-compat), rows carry stats=None."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-aaa", "text": "A", "line_no": 1, "status": "pending"}],
+    )
+    assert read_task_rows(folder)[0].stats is None

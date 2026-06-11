@@ -69,6 +69,14 @@ class TaskState:
         that are new, a pending entry is created (or complete if the checkbox is
         already ticked). For task ids in tasks.json that no longer appear in
         PLAN.md, entries are dropped.
+
+        Crash recovery: a ``running`` status read from disk is stale — a fresh
+        process has nothing actually in flight — so it is reset to ``pending``
+        and its attempt count is rolled back by one (the dispatch loop
+        re-increments on the next try), so a worker killed mid-attempt is
+        retried without that interrupted attempt counting toward
+        ``--max-attempts``. Unlike :meth:`resync` (mid-run, where ``running``
+        means a live worker and must be preserved), this only runs at startup.
         """
         existing = cls.load(folder)
         synced = cls(folder)
@@ -77,6 +85,9 @@ class TaskState:
             if prior is not None:
                 prior.text = t.text
                 prior.line_no = t.line_no
+                if prior.status == "running":
+                    prior.status = "pending"
+                    prior.attempts = max(0, prior.attempts - 1)
                 synced._entries[t.task_id] = prior
             else:
                 synced._entries[t.task_id] = TaskEntry(

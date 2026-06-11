@@ -279,7 +279,7 @@ def read_folder_status(folder: Path) -> FolderStatus:
         from ola.scheduler import read_concurrency
 
         status.concurrency_cap = read_concurrency(folder)
-        status.task_rows = read_task_rows(folder)
+        status.task_rows = read_task_rows(folder, status.iterations)
 
     return status
 
@@ -291,7 +291,10 @@ class TaskRow:
     Sourced from ``<folder>/.ola/tasks.json`` (the spine: one row per tracked
     task) with the latest event per task folded in from
     ``<folder>/.ola/events.jsonl`` (``elapsed_s`` and ``last_progress_message``).
-    Additive to :class:`FolderStatus` — only used when ``.ola/`` is present.
+    Per-task token/turn metrics are folded in from ``STATS.jsonl`` rows whose
+    phase matches ``task-<task_id>-<attempt>`` (``stats``, summed across the
+    task's attempts). Additive to :class:`FolderStatus` — only used when
+    ``.ola/`` is present.
     """
 
     task_id: str
@@ -300,6 +303,9 @@ class TaskRow:
     attempt: int = 0
     elapsed_s: float = 0.0
     last_progress_message: str = ""
+    # Aggregate of this task's STATS.jsonl rows across all attempts. ``None``
+    # when no matching row exists yet (e.g. a pending task that has not run).
+    stats: IterationStatus | None = None
 
 
 def _truncate(text: str, limit: int = _TASK_TEXT_MAX) -> str:
@@ -342,18 +348,77 @@ def _read_events_by_task(folder: Path) -> dict[str, list[dict]]:
     return by_task
 
 
-def read_task_rows(folder: Path) -> list[TaskRow]:
+def _aggregate_task_stats(iters: list[IterationStatus]) -> IterationStatus | None:
+    """Sum a task's per-attempt STATS rows into one aggregate IterationStatus.
+
+    Counters (tokens, turns, timing) are summed so the row shows the task's
+    total cost across retries; ``max_input_tokens`` takes the max, ``ttft_ms``
+    the median of streamed attempts, ``streamed`` is true only if every attempt
+    streamed, and agent/models come from the latest attempt. Returns ``None``
+    for an empty list so a never-run task carries no synthetic zeros.
+    """
+    if not iters:
+        return None
+    agg = IterationStatus(phase="")
+    for it in iters:
+        agg.input_tokens += it.input_tokens
+        agg.output_tokens += it.output_tokens
+        agg.cache_read_tokens += it.cache_read_tokens
+        agg.cache_creation_tokens += it.cache_creation_tokens
+        agg.num_turns += it.num_turns
+        agg.wall_ms += it.wall_ms
+        agg.tool_ms += it.tool_ms
+        agg.llm_ms += it.llm_ms
+        agg.max_input_tokens = max(agg.max_input_tokens, it.max_input_tokens)
+    last = iters[-1]
+    agg.agent = last.agent
+    agg.agent_version = last.agent_version
+    agg.streamed = all(it.streamed for it in iters)
+    ttfts = [it.ttft_ms for it in iters if it.ttft_ms > 0]
+    agg.ttft_ms = round(statistics.median(ttfts)) if ttfts else 0
+    models: list[str] = []
+    for it in iters:
+        for m in it.models:
+            if m and m not in models:
+                models.append(m)
+    agg.models = models
+    return agg
+
+
+def _task_iterations(
+    iterations: list[IterationStatus], task_id: str
+) -> list[IterationStatus]:
+    """Return the iterations whose phase is ``task-<task_id>-<attempt>``.
+
+    Matched as a literal ``task-<task_id>-`` prefix followed by an all-digit
+    attempt, so collision-suffixed task ids (e.g. ``t-abc1234-2``) don't
+    swallow a sibling's rows. Preserves file (append) order.
+    """
+    prefix = f"task-{task_id}-"
+    return [
+        it
+        for it in iterations
+        if it.phase.startswith(prefix) and it.phase[len(prefix) :].isdigit()
+    ]
+
+
+def read_task_rows(
+    folder: Path, iterations: list[IterationStatus] | None = None
+) -> list[TaskRow]:
     """Read per-task rows for a folder running in parallel mode.
 
     Returns one :class:`TaskRow` per task in ``<folder>/.ola/tasks.json``
     (PLAN.md order), folding in the latest event per task from
-    ``<folder>/.ola/events.jsonl``. Returns an empty list when the folder has
-    no ``.ola/tasks.json`` (i.e. it is not running in parallel mode).
+    ``<folder>/.ola/events.jsonl`` and, when ``iterations`` (the folder's
+    parsed STATS.jsonl rows) are supplied, the per-task token/turn aggregate.
+    Returns an empty list when the folder has no ``.ola/tasks.json`` (i.e. it
+    is not running in parallel mode).
     """
     if not (folder / ".ola" / "tasks.json").exists():
         return []
 
     events_by_task = _read_events_by_task(folder)
+    iterations = iterations or []
 
     rows: list[TaskRow] = []
     for entry in TaskState.load(folder).all():
@@ -380,6 +445,9 @@ def read_task_rows(folder: Path) -> list[TaskRow]:
                 attempt=entry.attempts,
                 elapsed_s=elapsed_s,
                 last_progress_message=last_message,
+                stats=_aggregate_task_stats(
+                    _task_iterations(iterations, entry.task_id)
+                ),
             )
         )
     return rows

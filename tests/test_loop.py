@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ola.agents.base import Agent, AgentResponse
 from ola.agents.claude_code import ClaudeCodeAgent
 from ola.loop import (
@@ -797,6 +799,40 @@ def test_run_outer_loop_picks_up_midrun_sibling_before_later_folders(tmp_path):
         run_outer_loop(agent, tmp_path)
 
     assert order == ["01-init", "01a-init-leftovers", "02-utils"]
+
+
+def test_run_outer_loop_bails_when_folder_left_unfinished(tmp_path):
+    """A folder that drains with unticked checkboxes stops the run; later
+    folders are never reached."""
+    from ola.loop import run_outer_loop
+    from ola.scheduler import FolderIncompleteError
+
+    for name in ("01-init", "02-utils"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "PLAN.md").write_text("- [ ] not done\n")
+
+    order: list[str] = []
+
+    def fake_process(
+        agent, folder, limit, agent_root, max_attempts=0, janitor_enabled=True
+    ):
+        # Simulate a stuck folder: run_folder drained but ticked nothing.
+        order.append(folder.name)
+
+    agent = _FakeAgent()
+    with (
+        patch("ola.loop._process_folder", side_effect=fake_process),
+        patch("ola.loop._load_agent_env"),
+        patch("ola.loop._ensure_git"),
+        pytest.raises(FolderIncompleteError) as excinfo,
+    ):
+        run_outer_loop(agent, tmp_path)
+
+    assert excinfo.value.folder_name == "01-init"
+    assert excinfo.value.remaining == 1
+    # Bailed on the first folder; 02-utils never processed.
+    assert order == ["01-init"]
 
 
 # --- end-of-run attention summary ---
