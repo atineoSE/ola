@@ -157,6 +157,17 @@ See **[docs/sandbox.md](./docs/sandbox.md)** for the full setup: building the te
 
 See **[docs/ola-top.md](./docs/ola-top.md)** for flags, keybindings, views, and the parallel per-task layout.
 
+## ola-dashboard
+
+`ola-dashboard` is the browser-based, visually rich sibling of `ola-top` — a work-item heatmap, hero metrics, an activity feed, and a live parallel-agents slider, aimed at demos as well as monitoring. It is a **view over the same `.ola/` files** (no collector, no background state): a thin stateless server re-reads the agent folder on each request and serves the built SPA.
+
+```bash
+make dashboard            # build the SPA once (npm install + vite build)
+ola-dashboard -f ../agent
+```
+
+See **[docs/ola-dashboard.md](./docs/ola-dashboard.md)** for the routes, panels, and dev setup.
+
 ## Agents
 
 **Claude Code** (`cc`) — calls `claude --dangerously-skip-permissions -p <prompt>` as a subprocess. When run via ola, `CLAUDE_CONFIG_DIR` is set to the phase's `.claude/` directory, giving each phase its own conversation history.

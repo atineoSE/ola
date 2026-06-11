@@ -1,7 +1,15 @@
-.PHONY: install test test-py test-sh test-e2e test-integration sandbox-dev
+.PHONY: install test test-py test-sh test-e2e test-integration sandbox-dev dashboard dashboard-test
 
 install: sandbox-dev ## Install ola CLI globally and build local dev sandbox image
 	uv tool install --editable .
+
+dashboard: ## Build the ola-dashboard SPA (then run it with: ola-dashboard -f <agent-folder>)
+	npm --prefix dashboard install
+	npm --prefix dashboard run build
+
+dashboard-test: ## Run the dashboard SPA's lint + unit tests
+	npm --prefix dashboard run lint
+	npm --prefix dashboard test
 
 test: test-py test-sh ## Run python + shell tests (default; test-py includes e2e)
 
