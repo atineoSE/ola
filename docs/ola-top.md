@@ -33,25 +33,26 @@ ola-top has two column layouts, toggled with `m`:
 ola-top adapts what it shows when you expand a folder, based on whether the folder runs in [parallel mode](./parallel.md) (i.e. it has a `.ola/` sidecar):
 
 * **Sequential folder** — expanding shows one **iteration** row per loop pass (`task-…`/`seed` phases from `STATS.jsonl`).
-* **Parallel folder** — the header carries a `running N / cap M` badge (live workers vs the concurrency cap), and expanding shows one **task** row per task in `PLAN.md`, sourced from `.ola/tasks.json` and `.ola/events.jsonl`:
-  * task text
-  * status (`pending` / `running` / `complete` / `failed`, colour-coded)
-  * the latest `working` progress message
-  * attempt count
-  * elapsed wall time (first→last event for that task)
+* **Parallel folder** — expanding shows one **task** row per task in `PLAN.md`, sourced from `.ola/tasks.json` and `.ola/events.jsonl`. Each sub-row sticks to the same columns as everything else — it only fills the ones a single task has a value for, and leaves the rest blank:
+  * **Folder** — the task id followed by the task text. The task id (e.g. `t-1a2b3c4d`) is the same key used in `PLAN.md`, `.ola/tasks.json`, and `.ola/events.jsonl`, so you can grep it straight back into those files.
+  * **Time** — elapsed wall time for the task (first→last event), blank until the first events land.
+  * **status** is conveyed by the row colour (`pending` / `running` / `complete` / `failed` / `blocked`), not a text column.
+  * Agent, Model, Tasks, and Turns stay blank — a single task carries no per-task value for them.
 
-> Per-task progress messages and elapsed time come from the `events.jsonl` stream. They populate as the run emits events; a folder that has only just started shows status from `tasks.json` with empty progress until the first events land.
+> Elapsed time comes from the `events.jsonl` stream and populates as the run emits events; a folder that has only just started shows its tasks from `tasks.json` with an empty Time column until the first events land.
 
 ## Example output
 
 ```
  ola-top — /Users/you/experiment/agent             03:42:15 PM
 
- # │ Folder              │ Tasks │   Input │  Output │ Cache% │  Time
- 1 │ 01-setup            │   5/5 │  120.4k │   45.2k │  82.3% │  3m12s
- 2 │ 02-implement  running 2 / cap 3
-   │   └ Add retry to client │ running │ editing client.py │     │ 1 │  0m42s
-   │   └ Wire timeout config │ complete│                   │     │ 1 │  1m05s
+ # │ Folder                          │ Agent │ Model         │ Tasks │ Turns │  Time
+ 1 │ 01-setup                        │ cc    │ claude-opus-4 │   5/5 │    18 │  3m12s
+ 2 │ ▼ 02-implement                  │ cc    │ claude-opus-4 │   1/3 │    24 │  4m20s
+   │   └ t-1a2b3c4d Add retry to client                                   │  0m42s
+   │   └ t-9f8e7d6c Wire timeout config                                   │  1m05s
 
  q: quit  ↑↓: navigate  Enter: expand/collapse  m: toggle view
 ```
+
+Task sub-rows colour the whole row by status (here `running` and `complete`), so the status reads off the colour rather than a column.

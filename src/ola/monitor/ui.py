@@ -107,21 +107,10 @@ _TASK_STATUS_STYLES: dict[str, str] = {
     "blocked": "magenta",
 }
 
-# Max characters of a task's last-progress message shown in the expanded view
-# before truncating, so a chatty agent never wraps a sub-row onto a second line.
-_PROGRESS_MSG_MAX = 30
-
 
 def _task_status_style(status: str) -> str:
     """Return a color style for a per-task row given its status."""
     return _TASK_STATUS_STYLES.get(status, "")
-
-
-def _truncate_msg(text: str, limit: int = _PROGRESS_MSG_MAX) -> str:
-    """Truncate a progress message to ``limit`` chars, appending '…' if cut."""
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
 
 
 def _build_display_rows(
@@ -295,12 +284,6 @@ def build_table(
             active_marker = "\u25cf " if is_active else ""
             folder_cell = f"{active_marker}{prefix}{fs.name}"
 
-            # Parallel-mode folders get a "running N / cap M" badge.
-            if fs.is_parallel:
-                folder_cell += (
-                    f"  running {fs.running_count} / cap {fs.concurrency_cap}"
-                )
-
             if mode == ViewMode.TASK:
                 # Color tasks per-cell
                 tasks_str = f"{fs.tasks_completed}/{fs.tasks_total}"
@@ -347,29 +330,27 @@ def build_table(
             tr = fs.task_rows[ii]
             base_style = _task_status_style(tr.status)
             row_style = f"reverse {base_style}".strip() if is_cursor else base_style
-            text_cell = Text(f"  └ {tr.text}", style=base_style)
-            status_cell = Text(tr.status, style=base_style)
-            attempt_str = str(tr.attempt) if tr.attempt else ""
-            elapsed_cell = _fmt_time(int(tr.elapsed_s * 1000))
-            msg = _truncate_msg(tr.last_progress_message)
+            # The task id prefixes the text so the row traces straight back into
+            # .ola/tasks.json and events.jsonl. Status shows through the row
+            # color; a task has no per-task agent/model/turn/count value, so
+            # those columns stay blank rather than borrow another field's value.
+            folder_cell = f"  └ {tr.task_id}  {tr.text}"
+            elapsed_cell = _fmt_time(int(tr.elapsed_s * 1000)) if tr.elapsed_s else ""
 
             if mode == ViewMode.TASK:
                 # #, Folder, Agent, Model, Tasks, Turns, Time
                 table.add_row(
                     "",
-                    text_cell,
-                    status_cell,
-                    msg,
+                    folder_cell,
                     "",
-                    attempt_str,
+                    "",
+                    "",
+                    "",
                     elapsed_cell,
                     style=row_style or None,
                 )
             else:  # METRICS — task rows carry no token metrics
-                cells: list[Any] = ["", text_cell] + [""] * 10
-                cells[2] = status_cell
-                cells[3] = msg
-                cells[-1] = elapsed_cell
+                cells: list[Any] = ["", folder_cell] + [""] * 9 + [elapsed_cell]
                 table.add_row(*cells, style=row_style or None)
         else:  # iter row
             it = fs.iterations[ii]

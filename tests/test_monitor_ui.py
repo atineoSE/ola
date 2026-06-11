@@ -24,7 +24,6 @@ from ola.monitor.ui import (
     _folder_row_index,
     _read_key,
     _task_status_style,
-    _truncate_msg,
     build_table,
 )
 
@@ -668,16 +667,6 @@ class TestTaskStatusStyle:
         assert _task_status_style("weird") == ""
 
 
-class TestTruncateMsg:
-    def test_short_unchanged(self):
-        assert _truncate_msg("hi") == "hi"
-
-    def test_long_truncated(self):
-        out = _truncate_msg("x" * 100)
-        assert len(out) == 30
-        assert out.endswith("…")
-
-
 def _parallel_folder(**overrides) -> FolderStatus:
     """A parallel-mode FolderStatus with a small per-task spine."""
     defaults = dict(
@@ -715,19 +704,26 @@ def _parallel_folder(**overrides) -> FolderStatus:
 
 
 class TestParallelTaskView:
-    def test_collapsed_shows_arrow_and_badge(self):
-        """A parallel folder shows the expand arrow and a running/cap badge."""
+    def test_collapsed_shows_arrow_no_badge(self):
+        """A parallel folder shows the expand arrow but no clever badge."""
         folders = [_parallel_folder()]
         table = build_table(folders, expanded=set())
         # Folder row only — task rows hidden until expanded.
         assert table.row_count == 1
         text = _render_table_text(table)
         assert "▶" in text
-        # One task running, cap 3.
-        assert "running 1 / cap 3" in text
+        # No running/cap enrichment crammed into the folder cell.
+        assert "cap" not in text
+        assert "running" not in text
 
     def test_expanded_renders_task_rows(self):
-        """Expanding a parallel folder renders one sub-row per task."""
+        """Expanding a parallel folder renders one sub-row per task.
+
+        Each sub-row carries the task id (for tracing back into tasks.json /
+        events.jsonl) and the task text in the Folder column, plus elapsed time
+        in the Time column. Status is conveyed by row color, not text; the
+        Agent/Model columns stay blank because a task has no per-task value.
+        """
         folders = [_parallel_folder()]
         table = build_table(folders, expanded={"09-parallel"})
         # 1 folder + 3 task rows.
@@ -737,10 +733,13 @@ class TestParallelTaskView:
         assert "Refactor extractor" in text
         assert "Add HTTP client" in text
         assert "Write docs" in text
-        # Status + progress message + elapsed surface in the sub-rows.
-        assert "complete" in text
-        assert "running tests" in text
+        # Task ids surface for file traceability.
+        assert "t-aaa" in text
+        assert "t-bbb" in text
+        # Elapsed time surfaces in the Time column.
         assert "42s" in text
+        # The live progress message is no longer crammed into the Model column.
+        assert "running tests" not in text
 
     def test_build_display_rows_uses_tasks_for_parallel(self):
         """A parallel folder's expanded sub-rows are 'task', not 'iter'."""
@@ -769,11 +768,12 @@ class TestParallelTaskView:
         assert "reverse" in (table.rows[2].style or "")
         assert "reverse" not in (table.rows[1].style or "")
 
-    def test_badge_with_zero_cap(self):
-        """A paused folder (cap 0) still renders the badge."""
+    def test_paused_folder_renders_without_badge(self):
+        """A paused folder (cap 0) renders its row without any cap/running badge."""
         folders = [_parallel_folder(concurrency_cap=0)]
         text = _render_table_text(build_table(folders))
-        assert "running 1 / cap 0" in text
+        assert "cap" not in text
+        assert "running" not in text
 
     def test_non_parallel_folder_unchanged(self):
         """A folder without .ola/ (concurrency_cap None) shows no badge."""
@@ -837,6 +837,7 @@ def test_read_folder_status_populates_parallel_view(tmp_path):
     assert [r.task_id for r in status.task_rows] == ["t-aaa", "t-bbb"]
 
     text = _render_table_text(build_table([status], expanded={"09-parallel"}))
-    assert "running 1 / cap 2" in text
+    assert "cap" not in text  # no running/cap badge
     assert "One" in text
     assert "Two" in text
+    assert "t-aaa" in text  # task ids trace back into tasks.json
