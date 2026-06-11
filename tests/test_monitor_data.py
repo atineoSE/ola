@@ -1068,6 +1068,9 @@ def test_build_snapshot_clock_counters_and_activity(tmp_path: Path):
     assert clock["first_started_ts"] == "2026-05-27T14:00:00.000Z"
     assert clock["last_terminal_ts"] == "2026-05-27T14:00:10.000Z"
     assert clock["project"] == "09-par"
+    # The backend is surfaced for the header/theme; events with no backend
+    # leave the latest non-empty one in place.
+    assert clock["agent_backend"] == "cc"
     assert snap["first_started_ts"] == "2026-05-27T14:00:00.000Z"
     assert snap["counters"] == {
         "total_tasks": 2,
@@ -1076,6 +1079,50 @@ def test_build_snapshot_clock_counters_and_activity(tmp_path: Path):
         "active": 1,
     }
     assert [a["task_id"] for a in snap["activity"]] == ["t-a"]
+
+
+def test_build_snapshot_surfaces_models_from_stats(tmp_path: Path):
+    """Model names (absent from events) are surfaced from STATS.jsonl, deduped."""
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-a", "text": "A", "line_no": 1, "status": "running"}],
+    )
+    _write_events_jsonl(
+        folder,
+        [
+            {
+                "task_id": "t-a",
+                "status": "started",
+                "ts": "2026-05-27T14:00:00.000Z",
+                "agent_backend": "cc",
+            },
+        ],
+    )
+    (folder / "STATS.jsonl").write_text(
+        json.dumps(
+            {"phase": "task-t-a-0", "models": ["claude-opus-4-8", "claude-haiku-4-5"]}
+        )
+        + "\n"
+        + json.dumps({"phase": "task-t-a-1", "models": ["claude-opus-4-8"]})
+        + "\n"
+    )
+    clock = build_snapshot(tmp_path)["folders"]["09-par"]
+    assert clock["models"] == ["claude-opus-4-8", "claude-haiku-4-5"]
+
+
+def test_build_snapshot_models_empty_without_stats(tmp_path: Path):
+    """No STATS.jsonl → empty model list, never a missing key or a crash."""
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-a", "text": "A", "line_no": 1, "status": "pending"}],
+    )
+    clock = build_snapshot(tmp_path)["folders"]["09-par"]
+    assert clock["models"] == []
+    assert clock["agent_backend"] == ""
 
 
 def test_build_snapshot_missing_agent_dir(tmp_path: Path):

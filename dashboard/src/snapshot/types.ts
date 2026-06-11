@@ -65,6 +65,12 @@ export interface FolderClock {
   last_terminal_ts: string | null;
   /** Display name for the folder — the plan subfolder name. */
   project?: string;
+  /** Dominant agent backend driving the folder (`"cc"` / `"oh"` / `"cx"`);
+   * empty before any event lands. Themes the dashboard and names the agent. */
+  agent_backend?: string;
+  /** Model names reported in the folder's STATS.jsonl, first-seen order.
+   * Events don't carry the model, so the snapshot surfaces it from there. */
+  models?: string[];
 }
 
 /**

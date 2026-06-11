@@ -6,7 +6,7 @@ parallel agents sweeping a codebase) as well as monitoring. It is a **view over
 the same files** ola-top reads: there is no collector and no background state.
 
 ```bash
-ola-dashboard [-f <agent-folder>] [-p <port>] [--no-browser]
+ola-dashboard [-f <agent-folder>] [-p <port>] [--open]
 ```
 
 | Flag | Description | Default |
@@ -15,7 +15,7 @@ ola-dashboard [-f <agent-folder>] [-p <port>] [--no-browser]
 | `-p, --port` | Port to listen on | `8765` |
 | `--host` | Host/interface to bind | `127.0.0.1` |
 | `--dist` | Path to the built SPA | `<repo>/dashboard/dist` |
-| `--no-browser` | Don't open a browser on startup | off |
+| `--open` | Open a browser on startup (otherwise just print the URL) | off |
 
 Build the SPA once before first use (it is served from `dashboard/dist`):
 
@@ -68,7 +68,7 @@ The SPA source lives in `dashboard/` (Vite + React + TypeScript). In dev mode
 `/api/*` to the dashboard server on :8765, so run both:
 
 ```bash
-ola-dashboard -f ../agent --no-browser   # API + (stale) built SPA on :8765
+ola-dashboard -f ../agent                # API + (stale) built SPA on :8765
 npm --prefix dashboard run dev           # hot-reloading SPA on :5173
 ```
 

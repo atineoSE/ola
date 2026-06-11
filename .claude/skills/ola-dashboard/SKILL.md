@@ -1,7 +1,7 @@
 ---
 name: ola-dashboard
 description: Design philosophy and scope guardrails for ola-dashboard, the browser monitor. Load whenever changing ola-dashboard — every change must be checked against this philosophy.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # The ola-dashboard design philosophy
@@ -49,9 +49,18 @@ The shape worth keeping from the prototype:
 
 - **Project picker** — the title is a dropdown over the folders found on disk;
   every panel is scoped to the picked one.
+- **Agent identity + theme** — alongside the title, the picked run names its
+  agent (`agent_backend` → "Claude Code" / "OpenHands" / "Codex") and the
+  model(s) it is driving, and the whole dashboard's accent recolors to the
+  agent's signature color (cc `#CB7153`, oh `#FFFF9B`, cx `#372FF5`) so a glance
+  tells you which agent is running. The model name is **not** in the event
+  envelope — it is surfaced from `STATS.jsonl` through the snapshot, a view of
+  existing file data, not a new harness emission.
 - **Hero metrics** — counters (total / completed / failed / active), the run
   clock (elapsed, frozen at the last terminal event), live fleet output
-  tokens/sec, and the **parallel-agents slider** (writes `.ola/concurrency`).
+  tokens/sec (with the run's avg and peak beneath it), total output tokens in
+  millions (a running total to watch climb), and the **parallel-agents slider**
+  (writes `.ola/concurrency`).
 - **Work-item heatmap** — space-filling grid, every task visible from the
   start, coloured by status in dispatch order; the signature demo visual.
 - **Activity feed** — scrolling list of completed tasks.

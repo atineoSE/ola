@@ -30,6 +30,17 @@ export function formatTokensPerSec(value: number | null | undefined): string {
 }
 
 /**
+ * Format a raw token count as millions, e.g. `1.23` for 1,230,000. Two decimals
+ * keep the readout responsive to growth (each 0.01 is 10k tokens) while staying
+ * compact. `0.00` for an empty/absent count, never a placeholder — the tile is
+ * a running total that starts at zero and only climbs.
+ */
+export function formatMillions(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return "0.00";
+  return (value / 1_000_000).toFixed(2);
+}
+
+/**
  * Extract the typed `Metrics` block from an event's `data` payload, or
  * `null` when the event carries no usable metrics (e.g. a `started` event,
  * or a backend that can't report usage). A block is usable only when

@@ -4,7 +4,8 @@ import { ActivityFeed } from "./components/ActivityFeed";
 import { HeroMetrics } from "./components/HeroMetrics";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { TaskGrid } from "./components/TaskGrid";
-import { recomputeCounters, useSnapshot } from "./snapshot";
+import { recomputeCounters, sumOutputTokens, useSnapshot } from "./snapshot";
+import { agentColor, agentName, inkOn } from "./agent";
 import { useConcurrency } from "./hooks/useConcurrency";
 import { useOutputTokensPerSec } from "./hooks/useOutputTokensPerSec";
 
@@ -69,20 +70,44 @@ function App() {
   // gaps and reset on a project switch, so the tile shows a continuously
   // updated number instead of the slowly-moving lifetime average.
   const outputTokPerSec = useOutputTokensPerSec(tasks, project);
+  const totalOutputTokens = useMemo(() => sumOutputTokens(tasks), [tasks]);
   const activity = useMemo(
     () => snapshot.activity.filter((e) => e.folder === project),
     [snapshot.activity, project],
   );
   const clock = project !== null ? snapshot.folders[project] : undefined;
 
+  // The run is themed by its agent backend: the agent's signature color fills
+  // the page background (and stays the in-panel accent), the header switches to
+  // a contrasting ink, and it names the agent and its model(s). Until a backend
+  // is known the dashboard keeps its default dark theme.
+  const backend = clock?.agent_backend ?? "";
+  const accent = agentColor(backend);
+  const themed = backend !== "";
+  const ink = inkOn(accent);
+
   return (
-    <main className="flex h-screen flex-col gap-4 overflow-hidden p-4 md:p-6">
-      <header className="flex flex-wrap items-center justify-between gap-4">
-        <ProjectTitle
-          projects={projects}
-          project={project}
-          onPick={setPicked}
-        />
+    <main
+      className="flex h-screen flex-col gap-4 overflow-hidden p-4 md:p-6"
+      style={
+        {
+          "--color-accent": accent,
+          ...(themed ? { background: accent } : {}),
+        } as React.CSSProperties
+      }
+    >
+      <header
+        className="flex flex-wrap items-center justify-between gap-4"
+        style={themed ? { color: ink } : undefined}
+      >
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <ProjectTitle
+            projects={projects}
+            project={project}
+            onPick={setPicked}
+          />
+          <AgentIdentity backend={backend} models={clock?.models ?? []} />
+        </div>
         <ConnectionBadge status={status} />
       </header>
 
@@ -93,6 +118,7 @@ function App() {
         agentsTarget={agentsTarget}
         onAgentsTargetChange={concurrencyAvailable ? setAgentsTarget : undefined}
         outputTokensPerSec={outputTokPerSec}
+        totalOutputTokens={totalOutputTokens}
       />
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1fr_340px]">
         <TaskGrid tasks={tasks} />
@@ -146,6 +172,42 @@ function ProjectTitle({ projects, project, onPick }: ProjectTitleProps) {
   );
 }
 
+interface AgentIdentityProps {
+  backend: string;
+  models: string[];
+}
+
+/**
+ * The agent driving the picked run and the model(s) it is using. The whole
+ * page is already tinted the agent's color, so the name needs no swatch — it
+ * just rides the header's contrasting ink (bold for the name, dimmed mono for
+ * the models). Both come from the folder's snapshot clock — `agent_backend`
+ * from the event stream, `models` from STATS.jsonl. Renders nothing until a
+ * backend is known, so an empty/just-started run shows only the title.
+ */
+function AgentIdentity({ backend, models }: AgentIdentityProps) {
+  if (!backend) return null;
+  return (
+    <div
+      data-testid="agent-identity"
+      className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm"
+    >
+      <span data-testid="agent-name" className="font-semibold">
+        {agentName(backend)}
+      </span>
+      {models.length > 0 && (
+        <span
+          data-testid="agent-model"
+          className="font-mono opacity-80"
+          title={models.join(", ")}
+        >
+          {models.join(", ")}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function ConnectionBadge({ status }: { status: string }) {
   const dotColor =
     status === "open"
@@ -153,8 +215,10 @@ function ConnectionBadge({ status }: { status: string }) {
       : status === "connecting"
         ? "bg-status-working"
         : "bg-status-failed";
+  // Inherits the header's color (themed ink, or the default muted look off a
+  // dark page) with a slight dim, so it reads on any agent background.
   return (
-    <div className="flex items-center gap-2 text-sm text-text-muted">
+    <div className="flex items-center gap-2 text-sm opacity-80">
       <span className={`inline-block h-2 w-2 rounded-full ${dotColor}`} />
       {status}
     </div>
