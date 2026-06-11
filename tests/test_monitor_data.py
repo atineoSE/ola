@@ -30,7 +30,7 @@ SAMPLE_PLAN = """\
 """
 
 SAMPLE_STATS = """\
-{"phase": "seed", "wall_ms": 1000, "input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 80, "cache_creation_tokens": 20, "num_turns": 3}
+{"phase": "task-t1-1", "wall_ms": 1000, "input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 80, "cache_creation_tokens": 20, "num_turns": 3}
 {"phase": "loop-1", "wall_ms": 2000, "input_tokens": 200, "output_tokens": 100, "cache_read_tokens": 150, "cache_creation_tokens": 50, "num_turns": 5}
 """
 
@@ -66,7 +66,7 @@ def test_parse_task_counts_ignores_code_block():
 def test_parse_stats_jsonl():
     iterations = parse_stats_jsonl(SAMPLE_STATS)
     assert len(iterations) == 2
-    assert iterations[0].phase == "seed"
+    assert iterations[0].phase == "task-t1-1"
     assert iterations[0].wall_ms == 1000
     assert iterations[0].input_tokens == 100
     assert iterations[0].output_tokens == 50
@@ -76,13 +76,13 @@ def test_parse_stats_jsonl():
 
 
 def test_parse_stats_jsonl_mixed_legacy_and_parallel_phases():
-    """A folder with legacy (seed, loop-N) and new (task-<id>-<n>) rows all parse.
+    """A folder with a legacy (loop-N) and new (task-<id>-<n>) rows all parse.
 
     The parser treats ``phase`` as an opaque string, so the parallel-mode shape
     coexists with the legacy shapes without any parser branching.
     """
     mixed = (
-        '{"phase": "seed", "wall_ms": 1000, "input_tokens": 100, "output_tokens": 50}\n'
+        '{"phase": "task-t1-1", "wall_ms": 1000, "input_tokens": 100, "output_tokens": 50}\n'
         '{"phase": "loop-1", "wall_ms": 2000, "input_tokens": 200, "output_tokens": 99}\n'
         '{"phase": "task-t-abc1234-1", "wall_ms": 1500, "input_tokens": 300,'
         ' "output_tokens": 120, "tasks_completed_delta": 1}\n'
@@ -91,7 +91,7 @@ def test_parse_stats_jsonl_mixed_legacy_and_parallel_phases():
     )
     iterations = parse_stats_jsonl(mixed)
     assert [it.phase for it in iterations] == [
-        "seed",
+        "task-t1-1",
         "loop-1",
         "task-t-abc1234-1",
         "task-t-def5678-2",
@@ -102,7 +102,7 @@ def test_parse_stats_jsonl_mixed_legacy_and_parallel_phases():
 
 def test_parse_stats_jsonl_with_agent():
     line = (
-        '{"phase": "seed", "wall_ms": 500, "input_tokens": 10, "output_tokens": 5,'
+        '{"phase": "task-t1-1", "wall_ms": 500, "input_tokens": 10, "output_tokens": 5,'
         ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
         ' "agent": "cc", "agent_version": "1.2.3"}\n'
     )
@@ -113,22 +113,22 @@ def test_parse_stats_jsonl_with_agent():
 
 
 def test_agent_display_no_version():
-    it = IterationStatus(phase="seed", agent="oh")
+    it = IterationStatus(phase="task-t1-1", agent="oh")
     assert it.agent_display == "OpenHands"
 
 
 def test_agent_display_codex():
-    it = IterationStatus(phase="seed", agent="cx", agent_version="0.1.0")
+    it = IterationStatus(phase="task-t1-1", agent="cx", agent_version="0.1.0")
     assert it.agent_display == "Codex 0.1.0"
 
 
 def test_agent_display_codex_no_version():
-    it = IterationStatus(phase="seed", agent="cx")
+    it = IterationStatus(phase="task-t1-1", agent="cx")
     assert it.agent_display == "Codex"
 
 
 def test_agent_display_empty():
-    it = IterationStatus(phase="seed")
+    it = IterationStatus(phase="task-t1-1")
     assert it.agent_display == ""
 
 
@@ -136,7 +136,7 @@ def test_folder_agent_display():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", agent="cc", agent_version="1.0"),
+            IterationStatus(phase="task-t1-1", agent="cc", agent_version="1.0"),
             IterationStatus(phase="loop-1", agent="cc", agent_version="1.1"),
         ],
     )
@@ -155,12 +155,12 @@ def test_parse_stats_jsonl_empty():
 
 def test_iteration_cache_hit_rate():
     # input_tokens already includes cache_read_tokens (as stored by both agents)
-    it = IterationStatus(phase="seed", input_tokens=100, cache_read_tokens=80)
+    it = IterationStatus(phase="task-t1-1", input_tokens=100, cache_read_tokens=80)
     assert it.cache_hit_rate == 80 / 100 * 100
 
 
 def test_iteration_cache_hit_rate_zero():
-    it = IterationStatus(phase="seed", input_tokens=0, cache_read_tokens=0)
+    it = IterationStatus(phase="task-t1-1", input_tokens=0, cache_read_tokens=0)
     assert it.cache_hit_rate == 0.0
 
 
@@ -171,7 +171,7 @@ def test_folder_status_aggregation():
         tasks_total=5,
         iterations=[
             IterationStatus(
-                phase="seed",
+                phase="task-t1-1",
                 wall_ms=1000,
                 input_tokens=100,
                 output_tokens=50,
@@ -232,7 +232,7 @@ def test_read_agent_folder(tmp_path: Path):
     f1.mkdir()
     (f1 / "PLAN.md").write_text("- [x] Done\n- [ ] Todo\n")
     (f1 / "STATS.jsonl").write_text(
-        '{"phase": "seed", "wall_ms": 500, "input_tokens": 10, "output_tokens": 5, '
+        '{"phase": "task-t1-1", "wall_ms": 500, "input_tokens": 10, "output_tokens": 5, '
         '"cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1}\n'
     )
 
@@ -261,7 +261,7 @@ def test_read_agent_folder_nonexistent(tmp_path: Path):
 
 def test_parse_stats_jsonl_with_tool_ms():
     line = (
-        '{"phase": "seed", "wall_ms": 10000, "input_tokens": 100, "output_tokens": 50,'
+        '{"phase": "task-t1-1", "wall_ms": 10000, "input_tokens": 100, "output_tokens": 50,'
         ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
         ' "tool_ms": 4000}\n'
     )
@@ -282,24 +282,24 @@ def test_parse_stats_jsonl_with_task_fields():
 
 
 def test_iteration_io_ratio():
-    it = IterationStatus(phase="seed", input_tokens=400, output_tokens=100)
+    it = IterationStatus(phase="task-t1-1", input_tokens=400, output_tokens=100)
     assert it.io_ratio == 4.0
 
 
 def test_iteration_io_ratio_zero_output():
-    it = IterationStatus(phase="seed", input_tokens=100, output_tokens=0)
+    it = IterationStatus(phase="task-t1-1", input_tokens=100, output_tokens=0)
     assert it.io_ratio == 0.0
 
 
 def test_iteration_time_breakdown():
-    it = IterationStatus(phase="seed", wall_ms=10000, tool_ms=3000)
+    it = IterationStatus(phase="task-t1-1", wall_ms=10000, tool_ms=3000)
     llm, tool = it.time_breakdown
     assert tool == 30.0
     assert llm == 70.0
 
 
 def test_iteration_time_breakdown_zero():
-    it = IterationStatus(phase="seed", wall_ms=0, tool_ms=0)
+    it = IterationStatus(phase="task-t1-1", wall_ms=0, tool_ms=0)
     assert it.time_breakdown == (0.0, 0.0)
 
 
@@ -307,7 +307,7 @@ def test_folder_total_tool_ms():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", tool_ms=1000),
+            IterationStatus(phase="task-t1-1", tool_ms=1000),
             IterationStatus(phase="loop-1", tool_ms=2000),
         ],
     )
@@ -318,7 +318,7 @@ def test_folder_io_ratio():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", input_tokens=200, output_tokens=50),
+            IterationStatus(phase="task-t1-1", input_tokens=200, output_tokens=50),
             IterationStatus(phase="loop-1", input_tokens=300, output_tokens=100),
         ],
     )
@@ -334,7 +334,7 @@ def test_folder_time_breakdown():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", wall_ms=5000, tool_ms=2000),
+            IterationStatus(phase="task-t1-1", wall_ms=5000, tool_ms=2000),
             IterationStatus(phase="loop-1", wall_ms=5000, tool_ms=1000),
         ],
     )
@@ -345,30 +345,32 @@ def test_folder_time_breakdown():
 
 def test_iteration_llm_tok_per_sec():
     # 500 output tokens, 10s wall, 4s tool → 6s decode → 500/6 ≈ 83.3
-    it = IterationStatus(phase="seed", output_tokens=500, wall_ms=10000, tool_ms=4000)
+    it = IterationStatus(
+        phase="task-t1-1", output_tokens=500, wall_ms=10000, tool_ms=4000
+    )
     assert abs(it.llm_tok_per_sec - 500 / 6) < 0.1
 
 
 def test_iteration_llm_tok_per_sec_no_tool():
     # No tool time → all wall is LLM → 100/10 = 10.0
-    it = IterationStatus(phase="seed", output_tokens=100, wall_ms=10000, tool_ms=0)
+    it = IterationStatus(phase="task-t1-1", output_tokens=100, wall_ms=10000, tool_ms=0)
     assert it.llm_tok_per_sec == 10.0
 
 
 def test_iteration_llm_tok_per_sec_zero_wall():
-    it = IterationStatus(phase="seed", output_tokens=100, wall_ms=0)
+    it = IterationStatus(phase="task-t1-1", output_tokens=100, wall_ms=0)
     assert it.llm_tok_per_sec == 0.0
 
 
 def test_folder_llm_tok_per_sec():
-    # seed: decode = 5000 - 2000 = 3000ms → 200/3 ≈ 66.7
+    # task-t1-1: decode = 5000 - 2000 = 3000ms → 200/3 ≈ 66.7
     # loop-1: decode = 5000 - 1000 = 4000ms → 300/4 = 75.0
     # median of [66.7, 75.0] = 70.83
     fs = FolderStatus(
         name="test",
         iterations=[
             IterationStatus(
-                phase="seed", output_tokens=200, wall_ms=5000, tool_ms=2000
+                phase="task-t1-1", output_tokens=200, wall_ms=5000, tool_ms=2000
             ),
             IterationStatus(
                 phase="loop-1", output_tokens=300, wall_ms=5000, tool_ms=1000
@@ -380,12 +382,12 @@ def test_folder_llm_tok_per_sec():
 
 
 def test_iteration_avg_input_tokens():
-    it = IterationStatus(phase="seed", input_tokens=9000, num_turns=3)
+    it = IterationStatus(phase="task-t1-1", input_tokens=9000, num_turns=3)
     assert it.avg_input_tokens == 3000
 
 
 def test_iteration_avg_input_tokens_zero_turns():
-    it = IterationStatus(phase="seed", input_tokens=9000, num_turns=0)
+    it = IterationStatus(phase="task-t1-1", input_tokens=9000, num_turns=0)
     assert it.avg_input_tokens == 0
 
 
@@ -393,7 +395,7 @@ def test_folder_avg_input_tokens():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", input_tokens=10000, num_turns=2),
+            IterationStatus(phase="task-t1-1", input_tokens=10000, num_turns=2),
             IterationStatus(phase="loop-1", input_tokens=30000, num_turns=3),
         ],
     )
@@ -405,7 +407,7 @@ def test_folder_max_input_tokens():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", max_input_tokens=15000),
+            IterationStatus(phase="task-t1-1", max_input_tokens=15000),
             IterationStatus(phase="loop-1", max_input_tokens=42000),
             IterationStatus(phase="loop-2", max_input_tokens=38000),
         ],
@@ -424,7 +426,7 @@ def test_folder_max_input_tokens_empty():
 def test_iteration_llm_tok_per_sec_with_ttft():
     # 500 output tokens, 10s wall, 4s tool, 1s ttft → 5s decode → 100 tok/s
     it = IterationStatus(
-        phase="seed", output_tokens=500, wall_ms=10000, tool_ms=4000, ttft_ms=1000
+        phase="task-t1-1", output_tokens=500, wall_ms=10000, tool_ms=4000, ttft_ms=1000
     )
     assert it.llm_tok_per_sec == 100.0
 
@@ -432,7 +434,7 @@ def test_iteration_llm_tok_per_sec_with_ttft():
 def test_iteration_llm_tok_per_sec_all_ttft():
     # Edge case: decode_ms would be zero or negative → returns 0.0
     it = IterationStatus(
-        phase="seed", output_tokens=500, wall_ms=5000, tool_ms=3000, ttft_ms=2000
+        phase="task-t1-1", output_tokens=500, wall_ms=5000, tool_ms=3000, ttft_ms=2000
     )
     assert it.llm_tok_per_sec == 0.0
 
@@ -441,7 +443,7 @@ def test_folder_median_ttft_ms():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", ttft_ms=500),
+            IterationStatus(phase="task-t1-1", ttft_ms=500),
             IterationStatus(phase="loop-1", ttft_ms=300),
             IterationStatus(phase="loop-2", ttft_ms=400),
         ],
@@ -450,14 +452,14 @@ def test_folder_median_ttft_ms():
 
 
 def test_folder_llm_tok_per_sec_median():
-    # seed: decode = 5000 - 1000 - 500 = 3500ms → 200/3.5 ≈ 57.1
+    # task-t1-1: decode = 5000 - 1000 - 500 = 3500ms → 200/3.5 ≈ 57.1
     # loop-1: decode = 5000 - 1000 - 500 = 3500ms → 300/3.5 ≈ 85.7
     # median of [57.1, 85.7] = 71.4
     fs = FolderStatus(
         name="test",
         iterations=[
             IterationStatus(
-                phase="seed",
+                phase="task-t1-1",
                 output_tokens=200,
                 wall_ms=5000,
                 tool_ms=1000,
@@ -478,7 +480,7 @@ def test_folder_llm_tok_per_sec_median():
 
 def test_parse_stats_jsonl_with_ttft():
     line = (
-        '{"phase": "seed", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        '{"phase": "task-t1-1", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
         ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
         ' "tool_ms": 1000, "ttft_ms": 800}\n'
     )
@@ -489,7 +491,7 @@ def test_parse_stats_jsonl_with_ttft():
 def test_parse_stats_jsonl_backward_compat_ttft():
     """Old STATS.jsonl without ttft_ms field defaults to 0."""
     line = (
-        '{"phase": "seed", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        '{"phase": "task-t1-1", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
         ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1}\n'
     )
     iterations = parse_stats_jsonl(line)
@@ -502,7 +504,7 @@ def test_parse_stats_jsonl_backward_compat_ttft():
 def test_parse_stats_jsonl_with_llm_ms():
     """llm_ms field is read correctly."""
     line = (
-        '{"phase": "seed", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        '{"phase": "task-t1-1", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
         ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1,'
         ' "llm_ms": 3000}\n'
     )
@@ -513,7 +515,7 @@ def test_parse_stats_jsonl_with_llm_ms():
 def test_parse_stats_jsonl_backward_compat_llm_ms():
     """Old STATS.jsonl without llm_ms field defaults to 0."""
     line = (
-        '{"phase": "seed", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
+        '{"phase": "task-t1-1", "wall_ms": 5000, "input_tokens": 100, "output_tokens": 50,'
         ' "cache_read_tokens": 0, "cache_creation_tokens": 0, "num_turns": 1}\n'
     )
     iterations = parse_stats_jsonl(line)
@@ -525,24 +527,24 @@ def test_parse_stats_jsonl_backward_compat_llm_ms():
 
 def test_parse_stats_jsonl_backward_compat_models():
     """Missing models field defaults to empty list."""
-    line = '{"phase": "seed", "wall_ms": 1000}\n'
+    line = '{"phase": "task-t1-1", "wall_ms": 1000}\n'
     iterations = parse_stats_jsonl(line)
     assert iterations[0].models == []
 
 
 def test_parse_stats_jsonl_backward_compat_streamed():
     """Missing streamed field defaults to True."""
-    line = '{"phase": "seed", "wall_ms": 1000}\n'
+    line = '{"phase": "task-t1-1", "wall_ms": 1000}\n'
     iterations = parse_stats_jsonl(line)
     assert iterations[0].streamed is True
 
 
 def test_parse_stats_jsonl_backward_compat_minimal():
     """Minimal record with only phase — all other fields default."""
-    line = '{"phase": "seed", "wall_ms": 500}\n'
+    line = '{"phase": "task-t1-1", "wall_ms": 500}\n'
     iterations = parse_stats_jsonl(line)
     it = iterations[0]
-    assert it.phase == "seed"
+    assert it.phase == "task-t1-1"
     assert it.wall_ms == 500
     assert it.input_tokens == 0
     assert it.output_tokens == 0
@@ -570,7 +572,9 @@ def test_folder_model_display():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", models=["claude-3-opus", "claude-3-sonnet"]),
+            IterationStatus(
+                phase="task-t1-1", models=["claude-3-opus", "claude-3-sonnet"]
+            ),
             IterationStatus(phase="loop-1", models=["claude-3-opus"]),
         ],
     )
@@ -579,7 +583,7 @@ def test_folder_model_display():
 
 def test_folder_model_display_empty():
     """No models across any iteration returns empty string."""
-    fs = FolderStatus(name="test", iterations=[IterationStatus(phase="seed")])
+    fs = FolderStatus(name="test", iterations=[IterationStatus(phase="task-t1-1")])
     assert fs.model_display == ""
 
 
@@ -588,7 +592,7 @@ def test_folder_all_streamed_mixed():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", streamed=True),
+            IterationStatus(phase="task-t1-1", streamed=True),
             IterationStatus(phase="loop-1", streamed=False),
         ],
     )
@@ -600,7 +604,7 @@ def test_folder_all_streamed_all_true():
     fs = FolderStatus(
         name="test",
         iterations=[
-            IterationStatus(phase="seed", streamed=True),
+            IterationStatus(phase="task-t1-1", streamed=True),
             IterationStatus(phase="loop-1", streamed=True),
         ],
     )
@@ -626,7 +630,7 @@ def test_parse_stats_jsonl_with_error_fields():
 
 def test_parse_stats_jsonl_backward_compat_error_fields():
     """Old STATS.jsonl without error fields defaults to None."""
-    line = '{"phase": "seed", "wall_ms": 1000}\n'
+    line = '{"phase": "task-t1-1", "wall_ms": 1000}\n'
     iterations = parse_stats_jsonl(line)
     assert iterations[0].error_type is None
     assert iterations[0].error_message is None

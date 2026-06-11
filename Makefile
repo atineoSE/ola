@@ -1,7 +1,10 @@
-.PHONY: install test test-py test-sh test-e2e test-integration sandbox-dev
+.PHONY: install install-skill test test-py test-sh test-e2e test-integration sandbox-dev
 
 install: sandbox-dev ## Install ola CLI globally and build local dev sandbox image
 	uv tool install --editable .
+
+install-skill: ## Symlink the ola-plan skill into the Claude Code + OpenHands skill dirs
+	bash helper-scripts/install-ola-plan-skill.sh
 
 test: test-py test-sh ## Run python + shell tests (default; test-py includes e2e)
 

@@ -71,9 +71,6 @@ class ScriptedAgent(Agent):
       leftovers folder dictated by the prompt with the moved task.
     * ``"escalate"`` — creates the blockers folder dictated by the prompt
       with a BLOCKERS.md and removes the blocked task's line.
-
-    Seed phase (a run with no ``task_id`` label) writes ``seed_plan`` to the
-    PLAN.md path named in the prompt.
     """
 
     mnemonic = "cc"
@@ -85,7 +82,6 @@ class ScriptedAgent(Agent):
         action: str = "tick",
         source_file: str | None = None,
         fail_until_attempt: int = 0,
-        seed_plan: str = "- [ ] Seeded task\n",
         block_tasks: dict[str, str] | None = None,
         janitor_action: str = "unblock",
         janitor_prereq: str = "Provision the prerequisite",
@@ -94,7 +90,6 @@ class ScriptedAgent(Agent):
         self.action = action
         self.source_file = source_file
         self.fail_until_attempt = fail_until_attempt
-        self.seed_plan = seed_plan
         self.block_tasks = dict(block_tasks or {})
         self.janitor_action = janitor_action
         self.janitor_prereq = janitor_prereq
@@ -109,11 +104,6 @@ class ScriptedAgent(Agent):
 
         if labels.get("phase") == "janitor":
             return self._run_janitor(prompt, Path(workdir), labels)
-
-        # Seed phase: no task_id. Write the configured plan to the named path.
-        if task_id is None:
-            self._write_seed_plan(prompt)
-            return AgentResponse(output="seeded", success=True, stats=IterationStats())
 
         folder = labels.get("folder", "")
         attempt = int(labels.get("attempt", "1"))
@@ -195,12 +185,6 @@ class ScriptedAgent(Agent):
     def _task_text(prompt: str) -> str | None:
         m = re.search(r"The task is: (.*?) \(task id", prompt)
         return m.group(1) if m else None
-
-    def _write_seed_plan(self, prompt: str) -> None:
-        for token in prompt.split():
-            if token.endswith("PLAN.md") and "/" in token:
-                Path(token).write_text(self.seed_plan)
-                return
 
     def version(self) -> str:
         return "e2e-1.0"

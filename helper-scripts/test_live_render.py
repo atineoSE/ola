@@ -28,7 +28,7 @@ FIXTURES = [
         tasks_total=5,
         iterations=[
             IterationStatus(
-                phase="seed",
+                phase="task-t1-1",
                 wall_ms=45_000,
                 input_tokens=12_500,
                 output_tokens=3_200,
@@ -42,7 +42,7 @@ FIXTURES = [
         tasks_total=7,
         iterations=[
             IterationStatus(
-                phase="seed",
+                phase="task-t1-1",
                 wall_ms=120_000,
                 input_tokens=250_000,
                 output_tokens=45_000,
