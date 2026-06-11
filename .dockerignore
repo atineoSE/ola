@@ -4,3 +4,12 @@ __pycache__
 *.pyc
 .ruff_cache
 .mypy_cache
+# Parallel-agents runtime state: per-task worktrees, state dirs, and event logs
+# accumulate under .ola/ during a run. COPY . is a layer, so the later rm of
+# /tmp/ola-src can't reclaim them — keep this litter out of the build context.
+.ola
+logs
+# Dashboard build artifacts — never needed to install the ola CLI.
+dashboard/node_modules
+dashboard/dist
+*.tar
