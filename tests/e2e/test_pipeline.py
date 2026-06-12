@@ -55,7 +55,7 @@ def test_sequential_plan_all_complete(tmp_path):
 
     # Every checkbox ticked.
     tasks = enumerate_tasks(folder)
-    assert len(tasks) == 3
+    assert len(tasks) == 2
     assert all(t.checked for t in tasks)
 
     # tasks.json spine: all complete.
@@ -63,7 +63,7 @@ def test_sequential_plan_all_complete(tmp_path):
 
     # One per-task commit per task landed on the agent branch.
     subjects = git_log_subjects(agent_path)
-    assert sum(s.startswith("ola: 02-utils ") for s in subjects) == 3
+    assert sum(s.startswith("ola: 02-utils ") for s in subjects) == 2
 
     # No .ola/concurrency file → ola materializes the default cap on the first
     # tick, so the file is present and auditable afterward.

@@ -2,14 +2,18 @@
 
 A minimal, **safe-to-run** example project that exercises the main ola features:
 three indexed plan folders run in order, with the last one running its tasks in
-parallel. The tasks are trivial (record the date, write small files) so you can
-watch the harness work without a large bill or a real codebase.
+parallel. The tasks are small and cheap (record the date, fetch one doc, send
+one chat message) so you can watch the harness work without a large bill or a
+real codebase. `02-utils` deliberately reaches the network through the sandbox
+allowlist and then trips the **janitor**, so a real run shows both off.
 
-> These folders double as the happy-path e2e scenarios: the hermetic,
-> network-free suite in [`tests/e2e/`](../../tests/e2e/) copies them verbatim
-> and drives the real pipeline over them with a stub agent. If you edit this
-> example, run `make test-e2e` — the tests keep it from silently rotting, and
-> this folder stays the human-facing version you can run with a real agent.
+> These folders double as the e2e scenarios: the hermetic, network-free suite
+> in [`tests/e2e/`](../../tests/e2e/) copies the numbered folders verbatim and
+> drives the real pipeline over them with a stub agent. The stub ticks every
+> task, so the suite stays green and offline even though `02-utils`'s second
+> task blocks under a *real* agent. If you edit this example, run
+> `make test-e2e` — the tests keep it from silently rotting, and this folder
+> stays the human-facing version you can run with a real agent.
 
 ## Layout
 
@@ -18,8 +22,9 @@ dummy-project/             # workspace root
   dummy-project/           # the project repo — your "source code" (empty placeholder here)
   agent/
     .env.example           # copy to .env and fill in your provider
+    allowlist.txt          # extra sandbox domains (opens *.cohere.com for 02-utils)
     01-find-date/          # a ready-made PLAN.md, run at the default cap of 1
-    02-utils/              # a ready-made PLAN.md, run at the default cap of 1
+    02-utils/              # fetches a doc over the network, then blocks → janitor
     03-parallel/           # a PLAN.md + .ola/concurrency=2 → runs tasks in parallel
 ```
 
@@ -78,8 +83,12 @@ is dispatched immediately: it either injects the missing prerequisite into the
 live plan and defers the blocked task to a sibling `NNa-…-leftovers/` folder
 that runs next, or — when only a human can help — files a
 `NNb-…-blockers/BLOCKERS.md` that ola skips and reports at the end of the run.
-To see it happen, add a task like `- [ ] Call the FOO API using FOO_API_KEY`
-to a plan and run with a real agent.
+
+`02-utils` ships this scenario built in: its second task asks a real agent to
+call the Cohere Chat API, which needs a `COHERE_API_KEY` you haven't set. The
+agent blocks, and since only a human can supply the key, the janitor escalates
+to a `02b-utils-blockers/BLOCKERS.md`. Run `02-utils` with a real agent to watch
+it happen (the network-free e2e stub just ticks the task instead).
 
 > **Security note:** never put real API keys in `agent/.env.example` or commit
 > `agent/.env`. The example ships only placeholders.
