@@ -2,8 +2,12 @@
 
 Mirrors the checkboxes in ``<folder>/PLAN.md`` into a sidecar file
 ``<folder>/.ola/tasks.json`` so the scheduler can track per-task lifecycle
-(pending / running / complete / failed), attempt counts, and last error
-across runs and across worker threads.
+(pending / running / complete / failed / blocked), attempt counts, and last
+error across worker threads *within a single run*. PLAN.md is the source of
+truth: every run starts by re-deriving status from the checkboxes
+(:meth:`TaskState.sync_from_plan`), so a prior run's verdict never gates the
+next one. tasks.json is intra-run execution state, not a cross-run ledger —
+the durable run history for the monitors lives in events.jsonl / STATS.jsonl.
 """
 
 from __future__ import annotations
@@ -62,40 +66,33 @@ class TaskState:
 
     @classmethod
     def sync_from_plan(cls, folder: Path) -> TaskState:
-        """Load tasks.json (if any) and reconcile with PLAN.md.
+        """Build task state from PLAN.md — the source of truth — discarding any
+        prior verdict.
 
-        For task ids that exist in both, status/attempts/last_error are preserved
-        and only text/line_no are refreshed from PLAN.md. For task ids in PLAN.md
-        that are new, a pending entry is created (or complete if the checkbox is
-        already ticked). For task ids in tasks.json that no longer appear in
-        PLAN.md, entries are dropped.
+        Each ``ola`` invocation is a fresh pass over the plan: a ticked checkbox
+        is ``complete``, an unticked one is ``pending`` (attempts 0, no error).
+        Whatever a previous run left in tasks.json — ``failed``/``blocked``
+        status, accumulated attempt counts, a stale ``running`` crash orphan —
+        is **not** carried over. The developer re-runs ola repeatedly while
+        fixing prompts, env, and code between runs, so a past failure must never
+        gate the next attempt; ``--max-attempts`` is a per-run budget. Prior-run
+        results live on in events.jsonl / STATS.jsonl for the monitors — that
+        history is read-only and never feeds execution. To park a task
+        permanently, edit the plan (remove the line or relocate it to a
+        leftovers/blockers folder) — never rely on a remembered failure.
 
-        Crash recovery: a ``running`` status read from disk is stale — a fresh
-        process has nothing actually in flight — so it is reset to ``pending``
-        and its attempt count is rolled back by one (the dispatch loop
-        re-increments on the next try), so a worker killed mid-attempt is
-        retried without that interrupted attempt counting toward
-        ``--max-attempts``. Unlike :meth:`resync` (mid-run, where ``running``
-        means a live worker and must be preserved), this only runs at startup.
+        This runs once at startup, when nothing is in flight. Contrast
+        :meth:`resync`, which mutates in place mid-run and must preserve a live
+        worker's ``running`` entry.
         """
-        existing = cls.load(folder)
         synced = cls(folder)
         for t in enumerate_tasks(folder):
-            prior = existing._entries.get(t.task_id)
-            if prior is not None:
-                prior.text = t.text
-                prior.line_no = t.line_no
-                if prior.status == "running":
-                    prior.status = "pending"
-                    prior.attempts = max(0, prior.attempts - 1)
-                synced._entries[t.task_id] = prior
-            else:
-                synced._entries[t.task_id] = TaskEntry(
-                    task_id=t.task_id,
-                    text=t.text,
-                    line_no=t.line_no,
-                    status="complete" if t.checked else "pending",
-                )
+            synced._entries[t.task_id] = TaskEntry(
+                task_id=t.task_id,
+                text=t.text,
+                line_no=t.line_no,
+                status="complete" if t.checked else "pending",
+            )
         return synced
 
     def resync(self) -> None:

@@ -70,20 +70,56 @@ class TestSyncFromPlan:
         assert entries[0].status == "complete"
         assert entries[1].status == "pending"
 
-    def test_preserves_status_attempts_and_error_across_sync(self, tmp_path):
+    def test_discards_prior_failed_verdict_on_fresh_sync(self, tmp_path):
+        """A fresh run re-derives status from PLAN.md, discarding prior verdicts.
+
+        The developer re-runs ola after fixing whatever failed; a `failed`
+        entry with burned attempts must not gate the next run. The still-unticked
+        checkbox is the truth: pending, attempts 0, no error.
+        """
         _write_plan(tmp_path, "- [ ] Alpha\n- [ ] Beta\n")
         state = TaskState.sync_from_plan(tmp_path)
         alpha_id = state.all()[0].task_id
-        state.mark(alpha_id, "failed", attempts=2, last_error="boom")
+        state.mark(alpha_id, "failed", attempts=3, last_error="boom")
         state.save()
 
-        # Re-sync: PLAN.md unchanged. Status, attempts, last_error must persist.
         resynced = TaskState.sync_from_plan(tmp_path)
         alpha = resynced.get(alpha_id)
         assert alpha is not None
-        assert alpha.status == "failed"
-        assert alpha.attempts == 2
-        assert alpha.last_error == "boom"
+        assert alpha.status == "pending"
+        assert alpha.attempts == 0
+        assert alpha.last_error is None
+
+    def test_discards_prior_blocked_verdict_on_fresh_sync(self, tmp_path):
+        """`blocked` is re-derived too: the dev may have supplied the missing
+        prerequisite between runs, so a fresh start retries the task."""
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "blocked", attempts=1, last_error="blocked: no key")
+        state.save()
+
+        resynced = TaskState.sync_from_plan(tmp_path)
+        alpha = resynced.get(alpha_id)
+        assert alpha is not None
+        assert alpha.status == "pending"
+        assert alpha.attempts == 0
+
+    def test_ticked_box_wins_over_prior_failed(self, tmp_path):
+        """If the box got ticked between runs (e.g. a manual fix), it is
+        complete — the checkbox always wins over the stored verdict."""
+        _write_plan(tmp_path, "- [ ] Alpha\n")
+        state = TaskState.sync_from_plan(tmp_path)
+        alpha_id = state.all()[0].task_id
+        state.mark(alpha_id, "failed", attempts=3)
+        state.save()
+
+        _write_plan(tmp_path, "- [x] Alpha\n")
+        resynced = TaskState.sync_from_plan(tmp_path)
+        alpha = resynced.get(alpha_id)
+        assert alpha is not None
+        assert alpha.status == "complete"
+        assert alpha.attempts == 0
 
     def test_refreshes_text_and_line_no_on_existing_task(self, tmp_path):
         # Two tasks, same ids both runs (id is sha1 of text)
@@ -99,36 +135,18 @@ class TestSyncFromPlan:
         beta = resynced.get(beta_id)
         assert beta is not None
         assert beta.line_no == 1
-        assert beta.status == "failed"  # status preserved
+        assert beta.status == "pending"  # prior verdict discarded; box still unticked
         # Order in `all()` follows PLAN.md after sync
         assert [e.text for e in resynced.all()] == ["Beta", "Alpha"]
 
-    def test_resets_stale_running_to_pending(self, tmp_path):
-        """A `running` read at startup is a crash orphan: requeue it.
-
-        sync_from_plan runs in a fresh process with nothing actually in flight,
-        so a persisted `running` is stale. It is reset to `pending` and its
-        attempt count rolled back by one (the dispatch loop re-increments),
-        so the interrupted attempt doesn't burn a --max-attempts slot.
-        """
+    def test_discards_stale_running_crash_orphan(self, tmp_path):
+        """A `running` read at startup is a crash orphan: a fresh process has
+        nothing in flight, so it is discarded like any other prior verdict —
+        back to pending with attempts reset (the box is still unticked)."""
         _write_plan(tmp_path, "- [ ] Alpha\n")
         state = TaskState.sync_from_plan(tmp_path)
         alpha_id = state.all()[0].task_id
         state.mark(alpha_id, "running", attempts=2)
-        state.save()
-
-        resynced = TaskState.sync_from_plan(tmp_path)
-        alpha = resynced.get(alpha_id)
-        assert alpha is not None
-        assert alpha.status == "pending"
-        assert alpha.attempts == 1  # rolled back from 2
-
-    def test_resets_stale_running_attempts_floor_zero(self, tmp_path):
-        """Rolling back attempts never goes negative."""
-        _write_plan(tmp_path, "- [ ] Alpha\n")
-        state = TaskState.sync_from_plan(tmp_path)
-        alpha_id = state.all()[0].task_id
-        state.mark(alpha_id, "running", attempts=0)
         state.save()
 
         resynced = TaskState.sync_from_plan(tmp_path)

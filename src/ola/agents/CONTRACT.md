@@ -28,12 +28,19 @@ inspect and edit.
 - **A folder is finished only when nothing is left undone.** The harness keeps
   retrying a folder's tasks until every checkbox is ticked or its task has been
   relocated to a sibling leftovers/blockers folder (the janitor removes the
-  relocated line). Each task is retried up to `--max-attempts`; a task that
-  exhausts its attempts stops being retried. Only then, if PLAN.md still has
-  unticked lines, does the harness **bail out and stop** — it never advances to
-  the next folder leaving unfinished work behind. A crash-interrupted task
-  (left mid-run with no live worker) is requeued on the next run rather than
-  abandoned, and the interrupted attempt does not count against `--max-attempts`.
+  relocated line). Each task is retried up to `--max-attempts` **within a run**;
+  a task that exhausts its attempts stops being retried *for that run*. Only
+  then, if PLAN.md still has unticked lines, does the harness **bail out and
+  stop** — it never advances to the next folder leaving unfinished work behind.
+- **Run state is intra-run; a new run starts fresh from PLAN.md.** The next
+  `ola` invocation re-derives every task's status from the checkboxes, so an
+  unticked task — whether it was failed, blocked, or merely crash-interrupted
+  last time — starts over with a full attempt budget again (`--max-attempts` is
+  a per-run budget). The developer re-runs ola repeatedly, fixing prompts, env,
+  or code between runs; a past failure must never gate the next attempt. Prior
+  runs persist only as monitor history (events.jsonl / STATS.jsonl), never as an
+  execution gate. To park a task permanently, edit the plan — remove the line or
+  relocate it to a blockers/leftovers folder.
 
 ## Blocked tasks
 

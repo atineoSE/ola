@@ -1,7 +1,7 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # The ola design philosophy
@@ -30,6 +30,12 @@ the answer is wrong:
 
 - Does it keep PLAN.md authoritative (checkbox-is-truth), or does it invent a
   second completion signal?
+- Does it keep runtime state (`tasks.json` status/attempts, blocked markers,
+  worktrees) **intra-run only**, so a fresh `ola` invocation re-derives every
+  task from PLAN.md? A prior run's `failed`/`blocked` verdict or attempt count
+  must never gate the next run — the dev re-runs ola repeatedly, fixing things
+  between runs. Prior results persist solely as monitor history (events.jsonl /
+  STATS.jsonl) on a read-only path that never feeds execution.
 - Does it preserve task independence, or does it introduce coupling between
   tasks inside one plan? Dependent work belongs in a later folder.
 - Does it keep orchestration file-driven and auditable, or does it move state
