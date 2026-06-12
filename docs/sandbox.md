@@ -61,6 +61,13 @@ This will:
 4. Create a sandbox with the workspace root (parent of the project repo) as workspace — both the project repo and `agent/` are writable
 5. Copy credentials into the sandbox, write the resolved env snapshot to `~/.ola/agent.env`, and set the shell to land in the project repo
 
+> Claude Code config: ola injects its own **minimal** `~/.claude/settings.json`
+> (`bypassPermissions` + `skipDangerousModePermissionPrompt`, nothing else) — it
+> does **not** copy the host's. The docker sandbox is the isolation boundary, so
+> Claude Code's own command sandbox would be redundant; worse, it confines writes
+> to the worktree cwd and silently blocks cross-worktree writes such as the
+> `ola-blocked` marker (which lands in the agent folder, above the worktree).
+
 Running `ola-sandbox my-sandbox` again reconnects to the existing sandbox and re-runs steps 2–3 and the snapshot refresh (picking up changed host values).
 
 Inside the sandbox:

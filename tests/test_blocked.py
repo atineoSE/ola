@@ -1,6 +1,9 @@
 """Tests for ola.blocked — the ola-blocked escape-hatch plumbing."""
 
+import os
 import subprocess
+
+import pytest
 
 from ola.blocked import (
     BlockedRecord,
@@ -70,6 +73,42 @@ def test_clear_removes_marker_and_is_idempotent(tmp_path):
     clear_blocked_record(folder, "t-abc12345")
     assert read_blocked_record(folder, "t-abc12345") is None
     clear_blocked_record(folder, "t-abc12345")  # no-op, no raise
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses write-permission bits, so the marker write never fails",
+)
+def test_script_fails_loudly_when_marker_unwritable(tmp_path):
+    """A write that fails must error and NOT falsely claim BLOCKED.
+
+    Regression guard: Claude Code's command sandbox once denied this write
+    (the marker lands above the worktree cwd), but the script still printed
+    "recorded as BLOCKED", so the agent stopped while the harness saw no
+    marker and retried to exhaustion. The failure must now be visible.
+    """
+    worktree = tmp_path / "wt"
+    folder = tmp_path / "agent-folder"
+    folder.mkdir()
+    worktree.mkdir()
+    script = provision_blocked_script(worktree, folder, "t-abc12345")
+
+    # Make the agent folder unwritable so `mkdir -p .ola/blocked` fails, the
+    # same way the sandbox denied the cross-worktree write in a real run.
+    folder.chmod(0o500)
+    try:
+        result = subprocess.run(
+            [str(script), "--reason", "missing FOO_API_KEY"],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        folder.chmod(0o700)
+
+    assert result.returncode != 0
+    assert "BLOCKED" not in result.stdout
+    assert "ERROR" in result.stderr
+    assert read_blocked_record(folder, "t-abc12345") is None
 
 
 def test_script_without_reason_records_empty_reason(tmp_path):

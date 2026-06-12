@@ -275,6 +275,28 @@ _ola_inject_file() {
   sbx exec "$name" bash -c "echo '$data' | base64 -d > $dest" 2>/dev/null
 }
 
+# Write ola's canonical Claude Code settings.json into a running sandbox.
+# Deliberately minimal — and deliberately NOT a copy of the host settings.json.
+# The docker sandbox is the isolation boundary, so Claude Code's *own* command
+# sandbox is redundant inside it; worse, that sandbox confines writes to the
+# worktree cwd, which silently blocks the ola-blocked marker (it lands in the
+# agent folder, above the worktree) and any other cross-worktree write. Copying
+# the host file would also drag in personal hooks/MCP. Keep it to exactly two
+# keys: bypass permissions and skip the dangerous-mode prompt. No "sandbox".
+_ola_inject_cc_settings() {
+  local name="$1"
+  local settings='{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "skipDangerousModePermissionPrompt": true
+}'
+  sbx exec "$name" bash -c 'mkdir -p "$HOME/.claude"' 2>/dev/null
+  local data
+  data="$(printf '%s' "$settings" | base64)"
+  sbx exec "$name" bash -c "echo '$data' | base64 -d > \$HOME/.claude/settings.json" 2>/dev/null
+}
+
 # Inject agent credentials and config into a running sandbox.
 _ola_inject_credentials() {
   local name="$1"
@@ -286,7 +308,9 @@ _ola_inject_credentials() {
     echo "Warning: $cc_cred not found — run 'cc-credentials' or 'claude' on the host first." >&2
   fi
   _ola_inject_file "$name" "$cc_dir/.claude.json" "\$HOME/.claude/.claude.json" || true
-  _ola_inject_file "$name" "$cc_dir/settings.json" "\$HOME/.claude/settings.json" || true
+  # ola owns the in-sandbox settings.json (minimal, no CC sandbox); never copy
+  # the host's. See _ola_inject_cc_settings for why.
+  _ola_inject_cc_settings "$name"
 
   # OpenHands: agent settings and CLI config. agent_settings.json is the
   # baseline copy; _ola_inject_oh_settings overwrites it with the resolved
