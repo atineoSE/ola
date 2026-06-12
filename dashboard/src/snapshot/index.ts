@@ -13,6 +13,7 @@ export {
   ACTIVITY_FEED_LIMIT,
   EMPTY_COUNTERS,
   EMPTY_SNAPSHOT,
+  peakTaskTokensPerSec,
   recomputeCounters,
   sumOutputTokens,
   windowedTokensPerSec,

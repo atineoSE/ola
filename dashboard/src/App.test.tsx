@@ -76,7 +76,9 @@ describe("<App /> project selection", () => {
     expect(screen.queryByTestId("project-select")).toBeNull();
   });
 
-  it("offers every known folder and defaults to the first, scoping the grid", () => {
+  it("offers every known folder sorted, defaulting to the frontier run", () => {
+    // Nothing running and nothing finished here (all pending), so the default
+    // is the last folder in run order with outstanding work — "yt-dlp".
     mockedSnapshot.mockReturnValue({
       snapshot: snapshotWith([
         task("t-1", "yt-dlp"),
@@ -92,11 +94,62 @@ describe("<App /> project selection", () => {
       .getAllByRole("option")
       .map((o) => o.textContent);
     expect(labels).toEqual(["other-project", "yt-dlp"]); // sorted
-    expect(select.value).toBe("other-project");
+    expect(select.value).toBe("yt-dlp");
 
     // Only the selected project's items are on the grid.
-    expect(screen.getByTestId("task-cell-t-3")).toBeTruthy();
-    expect(screen.queryByTestId("task-cell-t-1")).toBeNull();
+    expect(screen.getByTestId("task-cell-t-1")).toBeTruthy();
+    expect(screen.queryByTestId("task-cell-t-3")).toBeNull();
+  });
+
+  it("defaults to the folder with an agent currently running", () => {
+    // 00 finished, 02 a future run, 01 active → the active run wins regardless
+    // of run order.
+    const snapshot = snapshotWith([
+      task("t-0", "00-done", { status: "complete" }),
+      task("t-1", "01-live", { status: "working" }),
+      task("t-2", "02-next"),
+    ]);
+    snapshot.folders["01-live"] = {
+      first_started_ts: null,
+      last_terminal_ts: null,
+      project: "01-live",
+      active_anchor_ts: "2026-05-27T14:03:15.000Z",
+    };
+    mockedSnapshot.mockReturnValue({ snapshot, status: "open" });
+    render(<App />);
+
+    const select = screen.getByTestId("project-select") as HTMLSelectElement;
+    expect(select.value).toBe("01-live");
+  });
+
+  it("defaults to the last unfinished folder when nothing is running", () => {
+    // 00 + 01 finished, 02 still has work and no agent is active → 02.
+    mockedSnapshot.mockReturnValue({
+      snapshot: snapshotWith([
+        task("t-0", "00-done", { status: "complete" }),
+        task("t-1", "01-done", { status: "complete" }),
+        task("t-2", "02-next"),
+      ]),
+      status: "open",
+    });
+    render(<App />);
+
+    const select = screen.getByTestId("project-select") as HTMLSelectElement;
+    expect(select.value).toBe("02-next");
+  });
+
+  it("defaults to the last folder when every run is finished", () => {
+    mockedSnapshot.mockReturnValue({
+      snapshot: snapshotWith([
+        task("t-0", "00-done", { status: "complete" }),
+        task("t-1", "01-done", { status: "complete" }),
+      ]),
+      status: "open",
+    });
+    render(<App />);
+
+    const select = screen.getByTestId("project-select") as HTMLSelectElement;
+    expect(select.value).toBe("01-done");
   });
 
   it("switches every panel when another project is picked", () => {

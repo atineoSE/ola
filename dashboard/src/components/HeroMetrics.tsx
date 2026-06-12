@@ -12,7 +12,6 @@
  */
 
 import type { Counters } from "../snapshot";
-import type { OutputTokensPerSec } from "../hooks/useOutputTokensPerSec";
 import { formatElapsed, formatMillions, formatTokensPerSec } from "../format";
 import { useActiveElapsed } from "../hooks/useActiveElapsed";
 
@@ -29,11 +28,17 @@ export interface HeroMetricsProps {
   /** Step the target; absent when the collector has no path registered —
    * the agents tile then shows the actual count only. */
   onAgentsTargetChange?: (next: number) => void;
-  /** Live fleet output throughput: current rate (held across gaps) plus the
-   * run's average and peak. `null` fields before the first reading lands. */
-  outputTokensPerSec?: OutputTokensPerSec | null;
+  /** Live fleet output throughput: the windowed current rate, held across
+   * reporting gaps while agents are active. `null` when the run is idle or
+   * finished — there is no live rate to show, so the tile reads `—`. */
+  liveTokensPerSec?: number | null;
+  /** Peak single-agent throughput across the run, derived from the durable
+   * per-task metrics so it persists after the run ends. `null` before any
+   * task reports usable metrics. */
+  peakTokensPerSec?: number | null;
   /** Total output tokens generated across the run so far, displayed in
-   * millions so the running total can be watched climbing. */
+   * millions so the running total can be watched climbing. Also the numerator
+   * for the durable average tok/sec (over the active-elapsed clock). */
   totalOutputTokens?: number;
 }
 
@@ -43,7 +48,8 @@ export function HeroMetrics({
   activeAnchorTs = null,
   agentsTarget = null,
   onAgentsTargetChange,
-  outputTokensPerSec = null,
+  liveTokensPerSec = null,
+  peakTokensPerSec = null,
   totalOutputTokens = 0,
 }: HeroMetricsProps) {
   const { total_tasks, completed, failed, active } = counters;
@@ -59,6 +65,13 @@ export function HeroMetrics({
   // Avoid a divide-by-zero blip before the snapshot lands.
   const completionPct =
     total_tasks > 0 ? Math.min(100, (completed / total_tasks) * 100) : 0;
+  // Durable lifetime average: total output tokens over the run's active wall
+  // time. Both come from the files, so unlike the live rate this stays put
+  // when the run finishes and survives a page reload. `null` until work lands.
+  const avgTokensPerSec =
+    elapsedSeconds > 0 && totalOutputTokens > 0
+      ? totalOutputTokens / elapsedSeconds
+      : null;
 
   return (
     <section
@@ -114,18 +127,20 @@ export function HeroMetrics({
             className="font-mono tabular-nums tracking-tight"
             data-testid="output-tokens-value"
           >
-            {formatTokensPerSec(outputTokensPerSec?.current ?? null)}
+            {formatTokensPerSec(liveTokensPerSec)}
           </span>
         }
         footer={
           // Half the main value's font size (text-5xl → text-2xl), so avg/peak
-          // read as a clearly secondary readout beneath the live rate.
+          // read as a clearly secondary readout beneath the live rate. Both are
+          // file-derived, so they persist after the run finishes (when the live
+          // rate above falls back to `—`).
           <div className="flex justify-between font-mono text-2xl tabular-nums text-text-muted">
             <span data-testid="output-tokens-avg">
-              avg {formatTokensPerSec(outputTokensPerSec?.avg ?? null)}
+              avg {formatTokensPerSec(avgTokensPerSec)}
             </span>
             <span data-testid="output-tokens-max">
-              max {formatTokensPerSec(outputTokensPerSec?.max ?? null)}
+              max {formatTokensPerSec(peakTokensPerSec)}
             </span>
           </div>
         }

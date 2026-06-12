@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ola.plan import parse_task_counts
+from ola.plan import enumerate_tasks, parse_task_counts
 from ola.stats import cache_hit_rate as _cache_hit_rate
 from ola.taskstate import TaskState
 
@@ -540,21 +540,29 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset({"complete", "failed"})
 def build_snapshot(agent_path: Path) -> dict:
     """Build the dashboard snapshot for ``agent_path`` from the on-disk files.
 
-    Only parallel-mode subfolders (those with ``.ola/tasks.json``) appear —
-    they are the per-task spine the dashboard renders. Each task starts from
+    Two kinds of subfolder appear. A folder running in parallel mode (with
+    ``.ola/tasks.json``) renders from its per-task spine: each task starts from
     its spine entry (``task_id``, text, attempts) and is enriched with its
     latest ``events.jsonl`` event for ``agent_backend``, ``data`` (latest
     payload, incl. ``metrics``), the finer lifecycle ``status``, and ``attempt``.
-    Stateless: every call re-reads the files, so a killed/restarted server
-    loses nothing.
+    A folder with only a ``PLAN.md`` (a future run the harness hasn't started)
+    is seeded from its checkboxes as ``pending`` tasks so the picker can move to
+    it before it begins. Stateless: every call re-reads the files, so a
+    killed/restarted server loses nothing.
     """
     tasks: dict[str, dict] = {}
     folders: dict[str, dict] = {}
     activity: list[dict] = []
     first_started_ts: str | None = None
 
-    for folder in _parallel_subfolders(agent_path):
+    for folder in _dashboard_subfolders(agent_path):
         name = folder.name
+        if not (folder / ".ola" / "tasks.json").exists():
+            # Future run: a PLAN.md the harness hasn't started yet (no task
+            # spine). Seed its checkboxes as pending so the picker can move to
+            # it and preview the plan; it has no events, clock, or activity.
+            _add_future_folder(folder, name, tasks, folders)
+            continue
         events_by_task = _read_events_by_task(folder)
 
         folder_first: str | None = None
@@ -709,8 +717,47 @@ def _active_elapsed(events: list[dict]) -> tuple[float, str | None]:
     return active_s, anchor
 
 
-def _parallel_subfolders(agent_path: Path) -> list[Path]:
-    """Sorted subfolders of ``agent_path`` running in parallel mode (``.ola/``)."""
+def _add_future_folder(
+    folder: Path,
+    name: str,
+    tasks: dict[str, dict],
+    folders: dict[str, dict],
+) -> None:
+    """Seed a not-yet-started folder (a ``PLAN.md`` with no ``.ola/tasks.json``).
+
+    Its checkbox tasks are surfaced as ``pending`` (``complete`` if already
+    ticked) so the dashboard can preview an upcoming run before the harness
+    seeds the spine. No events exist yet, so the folder clock is empty and the
+    folder contributes nothing to the run's activity feed or elapsed stopwatch.
+    """
+    for t in enumerate_tasks(folder):
+        tasks[t.task_id] = {
+            "task_id": t.task_id,
+            "task_text": t.text,
+            "folder": name,
+            "agent_backend": "",
+            "status": "complete" if t.checked else "pending",
+            "attempt": 0,
+            "data": {},
+        }
+    folders[name] = {
+        "first_started_ts": None,
+        "last_terminal_ts": None,
+        "project": name,
+        "agent_backend": "",
+        "models": _folder_models(folder),
+        "active_elapsed_s": 0.0,
+        "active_anchor_ts": None,
+    }
+
+
+def _dashboard_subfolders(agent_path: Path) -> list[Path]:
+    """Sorted subfolders the dashboard surfaces.
+
+    Folders running in parallel mode (``.ola/tasks.json``) — finished or live —
+    plus folders that merely have a ``PLAN.md`` (a future run the harness has
+    not started yet), so the project picker can move to a run before it begins.
+    """
     if not agent_path.is_dir():
         return []
     return sorted(
@@ -718,7 +765,7 @@ def _parallel_subfolders(agent_path: Path) -> list[Path]:
         for p in agent_path.iterdir()
         if p.is_dir()
         and not p.name.startswith(".")
-        and (p / ".ola" / "tasks.json").exists()
+        and ((p / ".ola" / "tasks.json").exists() or (p / "PLAN.md").exists())
     )
 
 

@@ -106,6 +106,27 @@ export function sumOutputTokens(
   return total;
 }
 
+/**
+ * Peak single-agent throughput (tokens/sec) across a project's tasks: the max
+ * of each task's lifetime-average `tokens_per_sec`. Unlike the windowed fleet
+ * rate (a live-only delta between two polls), this is derived purely from the
+ * durable per-task `data.metrics` block, so it survives a finished run and a
+ * fresh page load — the "max" readout the hero tile can still show after the
+ * run ends. `null` when no task carries usable metrics yet.
+ */
+export function peakTaskTokensPerSec(
+  tasks: Record<string, TaskState> | TaskState[],
+): number | null {
+  const list = Array.isArray(tasks) ? tasks : Object.values(tasks);
+  let peak: number | null = null;
+  for (const t of list) {
+    const m = readMetrics(t.data);
+    if (m == null) continue;
+    if (peak === null || m.tokens_per_sec > peak) peak = m.tokens_per_sec;
+  }
+  return peak;
+}
+
 export function recomputeCounters(tasks: Record<string, TaskState>): Counters {
   let completed = 0;
   let failed = 0;

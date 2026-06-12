@@ -4,16 +4,58 @@ import { ActivityFeed } from "./components/ActivityFeed";
 import { HeroMetrics } from "./components/HeroMetrics";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { TaskGrid } from "./components/TaskGrid";
-import { recomputeCounters, sumOutputTokens, useSnapshot } from "./snapshot";
+import {
+  peakTaskTokensPerSec,
+  recomputeCounters,
+  sumOutputTokens,
+  useSnapshot,
+} from "./snapshot";
+import type { Snapshot } from "./snapshot";
 import { agentColor, agentName, inkOn } from "./agent";
 import { useConcurrency } from "./hooks/useConcurrency";
-import { useOutputTokensPerSec } from "./hooks/useOutputTokensPerSec";
+import { useLiveTokensPerSec } from "./hooks/useLiveTokensPerSec";
 
 /** One dropdown entry: the folder is the event-grouping key; the label is
  * the folder's display name (its plan subfolder name). */
 interface ProjectOption {
   folder: string;
   label: string;
+}
+
+/**
+ * A folder is finished when it has tasks and every one is `complete`. A folder
+ * with no tasks yet — a future run seeded only from its PLAN.md — counts as
+ * unfinished: it is upcoming work, not done.
+ */
+function folderFinished(folder: string, snapshot: Snapshot): boolean {
+  let any = false;
+  for (const t of Object.values(snapshot.tasks)) {
+    if (t.folder !== folder) continue;
+    any = true;
+    if (t.status !== "complete") return false;
+  }
+  return any;
+}
+
+/**
+ * The folder to show before the user picks one. Prefer the run that is
+ * currently active (an agent decoding right now); else the last folder in run
+ * order that still has outstanding work (the frontier — a partially-done or
+ * not-yet-started run); else, when everything is finished, the last folder.
+ * `projects` is sorted in run order, so "last" is the highest-numbered match.
+ */
+function chooseDefaultFolder(
+  projects: ProjectOption[],
+  snapshot: Snapshot,
+): string | null {
+  if (projects.length === 0) return null;
+  const running = projects.filter(
+    (p) => snapshot.folders[p.folder]?.active_anchor_ts != null,
+  );
+  if (running.length > 0) return running[running.length - 1].folder;
+  const unfinished = projects.filter((p) => !folderFinished(p.folder, snapshot));
+  if (unfinished.length > 0) return unfinished[unfinished.length - 1].folder;
+  return projects[projects.length - 1].folder;
 }
 
 function App() {
@@ -42,11 +84,17 @@ function App() {
     );
   }, [snapshot.folders, snapshot.tasks]);
 
+  // Once the user picks a folder we honor it; until then (and whenever the
+  // picked folder vanishes) fall back to the active/frontier run, recomputed
+  // each poll so an unattended dashboard follows the work as it advances.
   const [picked, setPicked] = useState<string | null>(null);
-  const project =
-    picked !== null && projects.some((p) => p.folder === picked)
-      ? picked
-      : (projects[0]?.folder ?? null);
+  const project = useMemo(
+    () =>
+      picked !== null && projects.some((p) => p.folder === picked)
+        ? picked
+        : chooseDefaultFolder(projects, snapshot),
+    [picked, projects, snapshot],
+  );
 
   const {
     target: agentsTarget,
@@ -66,10 +114,12 @@ function App() {
     [tasks],
   );
   // Live fleet output rate: a windowed Δtokens/Δdecode across active agents
-  // (see useOutputTokensPerSec). Held at the last reading across reporting
-  // gaps and reset on a project switch, so the tile shows a continuously
-  // updated number instead of the slowly-moving lifetime average.
-  const outputTokPerSec = useOutputTokensPerSec(tasks, project);
+  // (see useLiveTokensPerSec). Held across reporting gaps while agents run and
+  // `null` once the run is idle/finished, so the tile reads `—`. The avg/max
+  // beneath it (rendered by HeroMetrics) are file-derived instead, so they
+  // persist after the run ends; `peakTaskTokensPerSec` is the durable peak.
+  const liveTokPerSec = useLiveTokensPerSec(tasks, project);
+  const peakTokPerSec = useMemo(() => peakTaskTokensPerSec(tasks), [tasks]);
   const totalOutputTokens = useMemo(() => sumOutputTokens(tasks), [tasks]);
   const activity = useMemo(
     () => snapshot.activity.filter((e) => e.folder === project),
@@ -117,7 +167,8 @@ function App() {
         activeAnchorTs={clock?.active_anchor_ts ?? null}
         agentsTarget={agentsTarget}
         onAgentsTargetChange={concurrencyAvailable ? setAgentsTarget : undefined}
-        outputTokensPerSec={outputTokPerSec}
+        liveTokensPerSec={liveTokPerSec}
+        peakTokensPerSec={peakTokPerSec}
         totalOutputTokens={totalOutputTokens}
       />
       {/* Below lg the two columns collapse into a single column and stack

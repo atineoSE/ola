@@ -964,12 +964,15 @@ def test_read_task_rows_without_iterations_has_no_stats(tmp_path: Path):
 # --- build_snapshot (ola-dashboard) ------------------------------------------
 
 
-def test_build_snapshot_only_parallel_folders(tmp_path: Path):
-    """Sequential folders (no .ola/tasks.json) are absent from the snapshot."""
-    seq = tmp_path / "01-seq"
-    seq.mkdir()
-    (seq / "PLAN.md").write_text("- [x] done\n- [ ] todo\n")
-    (seq / "STATS.jsonl").write_text("")
+def test_build_snapshot_future_folder_from_plan(tmp_path: Path):
+    """A folder with a PLAN.md but no .ola/tasks.json appears as a future run.
+
+    Its checkboxes are seeded (pending / complete) so the picker can preview it
+    before the harness starts it, and its clock is empty.
+    """
+    future = tmp_path / "01-future"
+    future.mkdir()
+    (future / "PLAN.md").write_text("- [x] done\n- [ ] todo\n")
     par = tmp_path / "02-par"
     par.mkdir()
     _write_tasks_json(
@@ -977,8 +980,35 @@ def test_build_snapshot_only_parallel_folders(tmp_path: Path):
         [{"task_id": "t-aaa", "text": "Task", "line_no": 1, "status": "pending"}],
     )
     snap = build_snapshot(tmp_path)
-    assert set(snap["folders"]) == {"02-par"}
+    assert set(snap["folders"]) == {"01-future", "02-par"}
     assert snap["tasks"]["t-aaa"]["folder"] == "02-par"
+
+    # The future folder's tasks come from PLAN.md checkboxes, no events/clock.
+    future_tasks = {
+        tid: t for tid, t in snap["tasks"].items() if t["folder"] == "01-future"
+    }
+    assert {t["status"] for t in future_tasks.values()} == {"pending", "complete"}
+    assert all(
+        t["agent_backend"] == "" and t["data"] == {} for t in future_tasks.values()
+    )
+    clock = snap["folders"]["01-future"]
+    assert clock["first_started_ts"] is None
+    assert clock["active_anchor_ts"] is None
+    assert clock["active_elapsed_s"] == 0.0
+
+
+def test_build_snapshot_spine_wins_over_plan(tmp_path: Path):
+    """Once a folder has a .ola/tasks.json spine, it renders from the spine."""
+    folder = tmp_path / "01-par"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [ ] todo\n")
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-aaa", "text": "Task", "line_no": 1, "status": "pending"}],
+    )
+    snap = build_snapshot(tmp_path)
+    # Spine task id, not the PLAN.md-derived one.
+    assert set(snap["tasks"]) == {"t-aaa"}
 
 
 def test_build_snapshot_pending_from_spine(tmp_path: Path):

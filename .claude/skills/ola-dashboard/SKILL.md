@@ -1,7 +1,7 @@
 ---
 name: ola-dashboard
 description: Design philosophy and scope guardrails for ola-dashboard, the browser monitor. Load whenever changing ola-dashboard — every change must be checked against this philosophy.
-version: 1.2.0
+version: 1.3.0
 ---
 
 # The ola-dashboard design philosophy
@@ -48,7 +48,14 @@ uses. No other dashboard control mutates run state.
 The shape worth keeping from the prototype:
 
 - **Project picker** — the title is a dropdown over the folders found on disk;
-  every panel is scoped to the picked one.
+  every panel is scoped to the picked one. The list spans finished, running,
+  and **future** runs: a folder with only a `PLAN.md` (no `.ola/tasks.json`
+  spine yet) is listed too, its checkboxes seeded as `pending` so an upcoming
+  run can be previewed before the harness starts it — `build_snapshot` re-scans
+  disk every poll, so the list tracks folders/plans as the agent writes them.
+  Before the user picks, the default follows the work: the run with an agent
+  active right now, else the last folder in run order with outstanding work
+  (the frontier), else the last folder once everything is done.
 - **Agent identity + theme** — alongside the title, the picked run names its
   agent (`agent_backend` → "Claude Code" / "OpenHands" / "Codex") and the
   model(s) it is driving, and the whole dashboard's accent recolors to the
@@ -61,9 +68,12 @@ The shape worth keeping from the prototype:
   is running and freezes during idle gaps, so it reads as time-worked, not
   wall-clock — `build_snapshot` accumulates the active seconds from the event
   stream and hands back an anchor ts to tick the open tail), live fleet output
-  tokens/sec (with the run's avg and peak beneath it), total output tokens in
-  millions (a running total to watch climb), and the **parallel-agents slider**
-  (writes `.ola/concurrency`).
+  tokens/sec (the *current* windowed rate, which blanks to `—` when no agent is
+  decoding; the **avg and peak beneath it are file-derived** — avg = total
+  output tokens over active runtime, peak = the fastest task's lifetime rate —
+  so they persist after the run ends and survive a reload, unlike a client-side
+  session accumulator), total output tokens in millions (a running total to
+  watch climb), and the **parallel-agents slider** (writes `.ola/concurrency`).
 - **Work-item heatmap** — space-filling grid, every task visible from the
   start, coloured by status in dispatch order; the signature demo visual.
 - **Activity feed** — scrolling list of completed tasks.

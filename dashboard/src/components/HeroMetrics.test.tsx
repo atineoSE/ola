@@ -171,21 +171,47 @@ describe("<HeroMetrics /> agents stepper", () => {
 });
 
 describe("<HeroMetrics /> output tok/sec tile", () => {
-  it("renders the current rate to one decimal, with avg and max below", () => {
+  it("renders the live rate to one decimal, with durable avg and max below", () => {
     render(
       <HeroMetrics
-        counters={counters({ active: 3 })}        outputTokensPerSec={{ current: 146.04, avg: 120, max: 210.5 }}
+        counters={counters({ active: 3 })}
+        liveTokensPerSec={146.04}
+        peakTokensPerSec={210.5}
+        // avg = total output tokens / active elapsed seconds = 8740 / 100.
+        activeElapsedSeconds={100}
+        activeAnchorTs={null}
+        totalOutputTokens={8740}
       />,
     );
     expect(screen.getByTestId("output-tokens-value").textContent).toBe("146.0");
-    expect(screen.getByTestId("output-tokens-avg").textContent).toBe("avg 120.0");
+    expect(screen.getByTestId("output-tokens-avg").textContent).toBe("avg 87.4");
     expect(screen.getByTestId("output-tokens-max").textContent).toBe("max 210.5");
   });
 
-  it("renders the not-yet-available placeholder when null", () => {
+  it("keeps avg and max after the run finishes, with the live rate at —", () => {
+    // A finished run (or a fresh reload): no agent active, so the live rate is
+    // null, but the file-derived avg/max still read off the snapshot.
     render(
       <HeroMetrics
-        counters={counters()}        outputTokensPerSec={null}
+        counters={counters()}
+        liveTokensPerSec={null}
+        peakTokensPerSec={142}
+        activeElapsedSeconds={100}
+        activeAnchorTs={null}
+        totalOutputTokens={8740}
+      />,
+    );
+    expect(screen.getByTestId("output-tokens-value").textContent).toBe("—");
+    expect(screen.getByTestId("output-tokens-avg").textContent).toBe("avg 87.4");
+    expect(screen.getByTestId("output-tokens-max").textContent).toBe("max 142.0");
+  });
+
+  it("renders the not-yet-available placeholder when nothing has run", () => {
+    render(
+      <HeroMetrics
+        counters={counters()}
+        liveTokensPerSec={null}
+        peakTokensPerSec={null}
       />,
     );
     expect(screen.getByTestId("output-tokens-value").textContent).toBe("—");
