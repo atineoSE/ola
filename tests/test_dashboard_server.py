@@ -174,3 +174,21 @@ def test_put_negative_concurrency_is_400(agent_and_dist):
                 f"{base}/api/concurrency", {"folder": "09-par", "concurrency": -1}
             )
     assert exc.value.code == 400
+
+
+def test_auto_port_falls_forward_when_preferred_is_taken(agent_and_dist):
+    agent, dist = agent_and_dist
+    # Occupy a preferred port, then ask for the same one with auto_port on.
+    first = serve(agent, host="127.0.0.1", port=0, dist_dir=dist)
+    taken = first.server_address[1]
+    try:
+        second = serve(
+            agent, host="127.0.0.1", port=taken, dist_dir=dist, auto_port=True
+        )
+        try:
+            assert second.server_address[1] != taken
+            assert taken < second.server_address[1] < taken + 64
+        finally:
+            second.server_close()
+    finally:
+        first.server_close()

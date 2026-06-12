@@ -12,6 +12,7 @@ concurrency PUT is the dashboard's only write (the parallel-agents slider).
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 from http import HTTPStatus
@@ -167,6 +168,11 @@ def make_handler(
     return BoundHandler
 
 
+# How far to scan upward for a free port before giving up, when ``auto_port``
+# is set. One dashboard per project means a handful of collisions at most.
+_PORT_SCAN_RANGE = 64
+
+
 def serve(
     agent_folder: Path,
     *,
@@ -174,12 +180,30 @@ def serve(
     port: int = 8765,
     dist_dir: Path | None = None,
     quiet: bool = True,
+    auto_port: bool = False,
 ) -> ThreadingHTTPServer:
     """Create (but do not start) a dashboard server bound to ``host:port``.
 
     Call ``serve_forever()`` on the returned server to run it. ``ThreadingHTTPServer``
     keeps snapshot polls and static-asset fetches from blocking each other.
+
+    With ``auto_port``, ``port`` is a *preferred* port: if it is already taken
+    (another dashboard on another folder), scan upward for the first free one so
+    running ``ola-dashboard`` in several checkouts just works. Read the chosen
+    port back off ``server.server_address``. Without it, bind ``port`` exactly
+    and let an in-use port raise — an explicit ``-p`` is a hard request.
     """
     dist = (dist_dir or repo_dist_dir()).resolve()
     handler = make_handler(agent_folder.resolve(), dist, quiet=quiet)
-    return ThreadingHTTPServer((host, port), handler)
+    if not auto_port:
+        return ThreadingHTTPServer((host, port), handler)
+    last_err: OSError | None = None
+    for candidate in range(port, port + _PORT_SCAN_RANGE):
+        try:
+            return ThreadingHTTPServer((host, candidate), handler)
+        except OSError as exc:
+            if exc.errno not in (errno.EADDRINUSE, errno.EADDRNOTAVAIL):
+                raise
+            last_err = exc
+    assert last_err is not None  # range is non-empty, so a failure was recorded
+    raise last_err
