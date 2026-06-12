@@ -120,7 +120,12 @@ function App() {
         outputTokensPerSec={outputTokPerSec}
         totalOutputTokens={totalOutputTokens}
       />
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1fr_340px]">
+      {/* Below lg the two columns collapse into a single column and stack
+          vertically. Pin definite row tracks (not content-driven `auto` rows)
+          so the h-full / flex-1 height chain resolves deterministically;
+          otherwise the TaskGrid ResizeObserver and the stacked feed/metrics
+          scrollbars feed back on each other and the lower panel flickers. */}
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-4 lg:grid-cols-[1fr_340px] lg:grid-rows-[minmax(0,1fr)]">
         <TaskGrid tasks={tasks} />
         <div className="flex min-h-0 flex-col gap-4">
           <ActivityFeed entries={activity} />
