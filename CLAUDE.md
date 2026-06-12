@@ -37,6 +37,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-plan` | 1.0.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-sdk` | 1.1.0 | Configure the OpenHands SDK `LLM` and `Agent` classes. |
+| `sbx` | 1.0.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle, network policy, secrets, templates. Contract version-pinned; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 
