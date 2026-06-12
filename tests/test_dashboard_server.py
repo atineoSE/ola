@@ -77,6 +77,20 @@ def _get(url: str):
         return resp.status, resp.read()
 
 
+def _headers(url: str):
+    with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310
+        resp.read()
+        return resp.headers
+
+
+def _missing_headers(url: str):
+    try:
+        urllib.request.urlopen(url, timeout=5)  # noqa: S310
+    except urllib.error.HTTPError as exc:
+        return exc.headers
+    raise AssertionError(f"expected {url} to 404")
+
+
 def _put_json(url: str, body: dict):
     data = json.dumps(body).encode()
     req = urllib.request.Request(  # noqa: S310
@@ -121,6 +135,24 @@ def test_static_index_is_served(agent_and_dist):
         status, body = _get(f"{base}/")
     assert status == 200
     assert b"ola-dashboard" in body
+
+
+def test_cache_control_keeps_the_shell_fresh_but_assets_immutable(agent_and_dist):
+    """The SPA shell must revalidate so a rebuild can't strand the browser on
+    deleted bundle names; content-hashed assets cache hard, but a missing one
+    is never cached immutable."""
+    agent, dist = agent_and_dist
+    (dist / "assets").mkdir()
+    (dist / "assets" / "index-abc123.js").write_text("// bundle")
+    with _running(agent, dist) as base:
+        shell = _headers(f"{base}/")["Cache-Control"]
+        asset = _headers(f"{base}/assets/index-abc123.js")["Cache-Control"]
+        api = _headers(f"{base}/api/snapshot")["Cache-Control"]
+        missing = _missing_headers(f"{base}/assets/index-deadbeef.js")["Cache-Control"]
+    assert shell == "no-cache"
+    assert asset == "public, max-age=31536000, immutable"
+    assert api == "no-store"
+    assert missing == "no-cache"  # a 404 must not be cached forever
 
 
 def test_concurrency_get_null_then_put_then_get(agent_and_dist):
@@ -174,3 +206,21 @@ def test_put_negative_concurrency_is_400(agent_and_dist):
                 f"{base}/api/concurrency", {"folder": "09-par", "concurrency": -1}
             )
     assert exc.value.code == 400
+
+
+def test_auto_port_falls_forward_when_preferred_is_taken(agent_and_dist):
+    agent, dist = agent_and_dist
+    # Occupy a preferred port, then ask for the same one with auto_port on.
+    first = serve(agent, host="127.0.0.1", port=0, dist_dir=dist)
+    taken = first.server_address[1]
+    try:
+        second = serve(
+            agent, host="127.0.0.1", port=taken, dist_dir=dist, auto_port=True
+        )
+        try:
+            assert second.server_address[1] != taken
+            assert taken < second.server_address[1] < taken + 64
+        finally:
+            second.server_close()
+    finally:
+        first.server_close()

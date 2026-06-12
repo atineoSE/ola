@@ -12,7 +12,7 @@ ola-dashboard [-f <agent-folder>] [-p <port>] [--open]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-f, --agent-folder` | Path to the agent folder | `../agent` |
-| `-p, --port` | Port to listen on | `8765` |
+| `-p, --port` | Port to listen on. Omit it and the server scans upward from `8765` for the first free port, so a dashboard per checkout picks its own; pass `-p` to pin an exact port (errors if it is in use). | scan from `8765` |
 | `--host` | Host/interface to bind | `127.0.0.1` |
 | `--dist` | Path to the built SPA | `<repo>/dashboard/dist` |
 | `--open` | Open a browser on startup (otherwise just print the URL) | off |

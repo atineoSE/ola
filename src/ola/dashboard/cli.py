@@ -31,8 +31,12 @@ def main(argv: list[str] | None = None) -> None:
         "-p",
         "--port",
         type=int,
-        default=8765,
-        help="Port to listen on (default: 8765)",
+        default=None,
+        help=(
+            "Port to listen on. Default: scan upward from 8765 for the first "
+            "free port, so a dashboard per checkout picks its own. Pass -p to "
+            "pin an exact port (errors if it is in use)."
+        ),
     )
     parser.add_argument(
         "--host",
@@ -62,10 +66,20 @@ def main(argv: list[str] | None = None) -> None:
             "Build it first: `make dashboard` (or `npm --prefix dashboard run build`).\n",
         )
 
+    # No -p → start at 8765 and fall forward to the first free port, so several
+    # checkouts each get their own dashboard without colliding on the default.
+    auto_port = args.port is None
     httpd = serve(
-        agent_folder, host=args.host, port=args.port, dist_dir=dist_dir, quiet=False
+        agent_folder,
+        host=args.host,
+        port=args.port if args.port is not None else 8765,
+        dist_dir=dist_dir,
+        quiet=False,
+        auto_port=auto_port,
     )
-    url = f"http://{args.host}:{args.port}/"
+    # The bound port may differ from the preferred one after a fall-forward.
+    bound_port = httpd.server_address[1]
+    url = f"http://{args.host}:{bound_port}/"
     print(f"ola-dashboard serving {agent_folder}", file=sys.stderr)
     print(f"  → open {url}", file=sys.stderr)
     if args.open_browser:
