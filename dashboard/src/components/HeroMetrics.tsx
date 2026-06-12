@@ -69,7 +69,7 @@ export function HeroMetrics({
   // time. Both come from the files, so unlike the live rate this stays put
   // when the run finishes and survives a page reload. `null` until work lands.
   const avgTokensPerSec =
-    elapsedSeconds > 0 && totalOutputTokens > 0
+    elapsedSeconds != null && elapsedSeconds > 0 && totalOutputTokens > 0
       ? totalOutputTokens / elapsedSeconds
       : null;
 
