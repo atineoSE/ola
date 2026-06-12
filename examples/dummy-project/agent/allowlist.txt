@@ -2,7 +2,7 @@
 # policy. One host per line; subdomains are included automatically. Blank lines
 # and lines starting with '#' are ignored. See docs/sandbox.md.
 
-# 02-utils fetches the Cohere Chat API reference (docs.cohere.com) and calls
-# the Chat API itself (api.cohere.com); without a key the call blocks → janitor.
+# 02-get-docs fetches the Cohere Chat API reference (docs.cohere.com) and
+# 03-cohere-chat calls the Chat API itself (api.cohere.com).
 docs.cohere.com
 api.cohere.com

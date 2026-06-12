@@ -48,8 +48,8 @@ def _statuses(events: list[dict], task_id: str) -> list[str]:
 
 
 def test_sequential_plan_all_complete(tmp_path):
-    agent_path = build_example_repo(tmp_path, "02-utils")
-    folder = agent_path / "02-utils"
+    agent_path = build_example_repo(tmp_path, "01-find-date")
+    folder = agent_path / "01-find-date"
 
     run_pipeline(ScriptedAgent(), agent_path)
 
@@ -63,7 +63,7 @@ def test_sequential_plan_all_complete(tmp_path):
 
     # One per-task commit per task landed on the agent branch.
     subjects = git_log_subjects(agent_path)
-    assert sum(s.startswith("ola: 02-utils ") for s in subjects) == 2
+    assert sum(s.startswith("ola: 01-find-date ") for s in subjects) == 2
 
     # No .ola/concurrency file → ola materializes the default cap on the first
     # tick, so the file is present and auditable afterward.
@@ -76,8 +76,8 @@ def test_sequential_plan_all_complete(tmp_path):
 
 
 def test_parallel_plan_all_land_on_branch(tmp_path):
-    agent_path = build_example_repo(tmp_path, "03-parallel")
-    folder = agent_path / "03-parallel"
+    agent_path = build_example_repo(tmp_path, "04-parallel")
+    folder = agent_path / "04-parallel"
 
     agent = ScriptedAgent()
     run_pipeline(agent, agent_path)
@@ -89,7 +89,7 @@ def test_parallel_plan_all_land_on_branch(tmp_path):
 
     # Four distinct per-task commits.
     subjects = git_log_subjects(agent_path)
-    assert sum(s.startswith("ola: 03-parallel ") for s in subjects) == 4
+    assert sum(s.startswith("ola: 04-parallel ") for s in subjects) == 4
 
     # Worktrees cleaned up on success.
     for t in tasks:
@@ -132,7 +132,7 @@ def test_multi_folder_ordering(tmp_path):
     run_pipeline(agent, agent_path)
 
     # All folders fully complete.
-    names = ("01-find-date", "02-utils", "03-parallel")
+    names = ("01-find-date", "02-get-docs", "03-cohere-chat", "04-parallel")
     for name in names:
         tasks = enumerate_tasks(agent_path / name)
         assert tasks and all(t.checked for t in tasks), name
@@ -245,8 +245,8 @@ def test_crash_orphan_running_is_retried(tmp_path):
     run must re-dispatch it (not skip it as already-in-flight) and drive the
     folder to completion without bailing.
     """
-    agent_path = build_example_repo(tmp_path, "02-utils")
-    folder = agent_path / "02-utils"
+    agent_path = build_example_repo(tmp_path, "01-find-date")
+    folder = agent_path / "01-find-date"
     tasks = enumerate_tasks(folder)
     orphan = tasks[0]
 
@@ -285,8 +285,8 @@ def test_crash_orphan_running_is_retried(tmp_path):
 
 
 def test_source_edit_merges_back(tmp_path):
-    agent_path = build_example_repo(tmp_path, "02-utils")
-    folder = agent_path / "02-utils"
+    agent_path = build_example_repo(tmp_path, "01-find-date")
+    folder = agent_path / "01-find-date"
 
     # Every task in this scenario writes the *same* file (widget.py), so they
     # are not parallel-safe; pin the cap to 1 to serialize the edits and make
@@ -305,7 +305,7 @@ def test_source_edit_merges_back(tmp_path):
     assert "implemented by" in merged.read_text()
 
     tracked = git_log_subjects(agent_path)
-    assert any(s.startswith("ola: 02-utils ") for s in tracked)
+    assert any(s.startswith("ola: 01-find-date ") for s in tracked)
 
     tasks = enumerate_tasks(folder)
     assert tasks and all(t.checked for t in tasks)
@@ -315,8 +315,8 @@ def test_source_edit_merges_back(tmp_path):
 
 
 def test_events_lifecycle_per_task(tmp_path):
-    agent_path = build_example_repo(tmp_path, "03-parallel")
-    folder = agent_path / "03-parallel"
+    agent_path = build_example_repo(tmp_path, "04-parallel")
+    folder = agent_path / "04-parallel"
 
     run_pipeline(ScriptedAgent(), agent_path)
 
