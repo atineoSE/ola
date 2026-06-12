@@ -44,10 +44,42 @@ class _Handler(SimpleHTTPRequestHandler):
     # Set per-server by :func:`make_handler`.
     agent_folder: Path
     quiet: bool = True
+    # Set by _send_json so end_headers() leaves the API's own Cache-Control
+    # (no-store) alone instead of layering a static-file policy on top.
+    _api_response: bool = False
+    # Last status handed to send_response(); gates the immutable asset header
+    # so a 404 is never cached forever.
+    _status: int = HTTPStatus.OK
 
     def log_message(self, *args: object) -> None:  # noqa: D102
         if not self.quiet:
             super().log_message(*args)
+
+    # --- caching ---------------------------------------------------------
+
+    def send_response(self, code: object, message: str | None = None) -> None:  # noqa: D102
+        self._status = int(code)  # type: ignore[arg-type]
+        super().send_response(code, message)  # type: ignore[arg-type]
+
+    def end_headers(self) -> None:  # noqa: D102
+        if not self._api_response:
+            self._send_cache_control()
+        super().end_headers()
+
+    def _send_cache_control(self) -> None:
+        """Cache policy for the static SPA.
+
+        The shell (``index.html`` and friends) carries no content hash, so a
+        rebuild reuses its URL; force revalidation or the browser keeps a stale
+        shell pointing at deleted bundles — the 404 storm on old asset names.
+        Files under ``/assets/`` are content-hashed by Vite, so a real hit is
+        safe to cache hard; a 404 there must not be cached at all.
+        """
+        path = urlparse(self.path).path
+        if path.startswith("/assets/") and self._status == HTTPStatus.OK:
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        else:
+            self.send_header("Cache-Control", "no-cache")
 
     # --- routing ---------------------------------------------------------
 
@@ -139,6 +171,7 @@ class _Handler(SimpleHTTPRequestHandler):
         return parsed
 
     def _send_json(self, obj: object, status: HTTPStatus = HTTPStatus.OK) -> None:
+        self._api_response = True  # keep end_headers() off this response
         payload = json.dumps(obj).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
