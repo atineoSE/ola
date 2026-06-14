@@ -338,6 +338,50 @@ def test_transcript_stats_sums_usage_and_skips_synthetic():
     assert s.streamed is False
 
 
+def test_transcript_stats_reconstructs_tool_time():
+    """Tool wall-time = the gap between an assistant tool_use and its result."""
+    text = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "timestamp": "2026-06-14T08:00:00.000Z",
+                    "message": {
+                        "model": "claude-opus-4-8",
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                        "content": [{"type": "tool_use", "name": "Bash"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "timestamp": "2026-06-14T08:00:02.500Z",  # +2.5s tool run
+                    "message": {"content": [{"type": "tool_result"}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "timestamp": "2026-06-14T08:00:10.000Z",
+                    "message": {
+                        "model": "claude-opus-4-8",
+                        "usage": {"input_tokens": 12, "output_tokens": 8},
+                        "content": [{"type": "text", "text": "done"}],
+                    },
+                }
+            ),
+        ]
+    )
+    s = transcript_stats(text)
+    assert s.tool_ms == 2500  # 08:00:02.5 − 08:00:00
+    assert s.num_turns == 2  # both assistant messages had usage
+
+
+def test_transcript_stats_no_tool_time_without_tools():
+    assert transcript_stats(_TWO_TURN).tool_ms == 0  # no timestamps/tool_use
+
+
 def test_transcript_stats_empty_on_failed_session():
     # An aborted attempt's transcript carries only synthetic / no-usage records.
     text = json.dumps({"type": "assistant", "message": {"model": "<synthetic>"}})

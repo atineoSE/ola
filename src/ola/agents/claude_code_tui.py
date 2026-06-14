@@ -46,6 +46,7 @@ import subprocess
 import termios
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from ola.agents.base import AgentResponse, ProgressCallback
@@ -192,21 +193,42 @@ def seed_claude_json(config_dir: Path, workdir: str) -> None:
     (config_dir / ".claude.json").write_text(json.dumps(data))
 
 
+def _ts(value: object) -> datetime | None:
+    """Parse a transcript record's ISO-8601 ``timestamp`` (trailing 'Z')."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _has_block(content: object, kind: str) -> bool:
+    """True when a message ``content`` list holds a block of type ``kind``."""
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == kind for b in content
+    )
+
+
 def transcript_stats(text: str) -> IterationStats:
-    """Recover token/turn/model metrics from a Claude Code transcript JSONL.
+    """Recover token/turn/model/timing metrics from a Claude Code transcript JSONL.
 
     The interactive TUI does not stream usage to us, but for any session that
     runs long enough to flush it persists a full transcript under
     ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl``. Each ``assistant``
     record carries a ``message.usage`` block, so summing across turns recovers
-    everything except the streaming-only timings (TTFT / decode-isolated
-    tok/sec), which are never written to disk. Fields we cannot source stay 0
-    and ``streamed`` is False, matching the honest "no live timing" contract.
+    the token economics; tool wall-time is reconstructed from record timestamps
+    — the gap between an assistant ``tool_use`` and its following ``tool_result``
+    is how long that tool ran. The one thing that is never written to disk is the
+    streaming-only timing (TTFT and decode-isolated tok/sec), so those stay 0 and
+    ``streamed`` is False, matching the honest "no live timing" contract.
     """
     input_t = output_t = cache_r = cache_c = 0
     turns = 0
     max_ctx = 0
     models: list[str] = []
+    tool_s = 0.0
+    pending_tool_ts: datetime | None = None
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -215,27 +237,36 @@ def transcript_stats(text: str) -> IterationStats:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if obj.get("type") != "assistant":
-            continue
+        rtype = obj.get("type")
         msg = obj.get("message") or {}
-        usage = msg.get("usage") or {}
-        it = usage.get("input_tokens", 0)
-        cc = usage.get("cache_creation_input_tokens", 0)
-        cr = usage.get("cache_read_input_tokens", 0)
-        ot = usage.get("output_tokens", 0)
-        # Count only real LLM turns; skip synthetic records (compaction
-        # summaries etc.) that carry no usage and a "<synthetic>" model.
-        if not (it or cc or cr or ot):
-            continue
-        turns += 1
-        input_t += it
-        cache_c += cc
-        cache_r += cr
-        output_t += ot
-        max_ctx = max(max_ctx, it + cc + cr)
-        model = msg.get("model")
-        if model and model not in models:
-            models.append(model)
+        content = msg.get("content")
+        ts = _ts(obj.get("timestamp"))
+
+        if rtype == "assistant":
+            usage = msg.get("usage") or {}
+            it = usage.get("input_tokens", 0)
+            cc = usage.get("cache_creation_input_tokens", 0)
+            cr = usage.get("cache_read_input_tokens", 0)
+            ot = usage.get("output_tokens", 0)
+            # Count only real LLM turns; skip synthetic records (compaction
+            # summaries etc.) that carry no usage and a "<synthetic>" model.
+            if it or cc or cr or ot:
+                turns += 1
+                input_t += it
+                cache_c += cc
+                cache_r += cr
+                output_t += ot
+                max_ctx = max(max_ctx, it + cc + cr)
+                model = msg.get("model")
+                if model and model not in models:
+                    models.append(model)
+            # A tool_use opens a tool interval that the next tool_result closes.
+            if ts is not None and _has_block(content, "tool_use"):
+                pending_tool_ts = ts
+        elif rtype == "user" and pending_tool_ts is not None and ts is not None:
+            if _has_block(content, "tool_result") or "toolUseResult" in obj:
+                tool_s += (ts - pending_tool_ts).total_seconds()
+                pending_tool_ts = None
     return IterationStats(
         # input_tokens is the total prompt size (incl. cache), matching the cc
         # adapter so cache_hit_rate and totals read the same across backends.
@@ -246,6 +277,10 @@ def transcript_stats(text: str) -> IterationStats:
         num_turns=turns,
         models=models,
         max_input_tokens=max_ctx,
+        # Wall time spent in tools (assistant tool_use → tool_result gaps). With
+        # wall_ms from the scheduler this yields the LLM/Tool breakdown and a
+        # tok/sec that excludes tool time. Never negative; clamped at parse.
+        tool_ms=max(0, int(tool_s * 1000)),
         streamed=False,
     )
 
