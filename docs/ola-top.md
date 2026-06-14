@@ -35,13 +35,13 @@ ola-top adapts what it shows when you expand a folder, based on whether the fold
 * **Sequential folder** — expanding shows one **iteration** row per loop pass (`task-…` phases from `STATS.jsonl`).
 * **Parallel folder** — expanding shows one **task** row per task in `PLAN.md`, sourced from `.ola/tasks.json` and `.ola/events.jsonl`. Each sub-row sticks to the same columns as everything else — it only fills the ones a single task has a value for, and leaves the rest blank:
   * **Folder** — the task id followed by the task text. The task id (e.g. `t-1a2b3c4d`) is the same key used in `PLAN.md`, `.ola/tasks.json`, and `.ola/events.jsonl`, so you can grep it straight back into those files.
-  * **Time** — elapsed wall time for the task (first→last event), blank until the first events land.
+  * **Time** — worked time for the task (summed across its events, excluding idle gaps longer than two minutes), blank until the first events land.
   * **status** is conveyed by the row colour (`pending` / `running` / `complete` / `failed` / `blocked`), not a text column.
   * Agent, Model, Tasks, and Turns stay blank — a single task carries no per-task value for them.
 
 > Elapsed time comes from the `events.jsonl` stream and populates as the run emits events; a folder that has only just started shows its tasks from `tasks.json` with an empty Time column until the first events land.
 
-> For a parallel folder, the **Folder row's Time** is the wall-clock span across *all* its events (earliest→latest timestamp), recomputed on every refresh. It is derived from `events.jsonl` rather than summed from `STATS.jsonl`, so an interrupted-then-resumed run reports its true elapsed time instead of a stale number that can read shorter than a single task. Sequential folders keep summing per-iteration wall time from `STATS.jsonl`.
+> For a parallel folder, the **Folder row's Time** is the worked span across *all* its events — the sum of gaps between consecutive events, **excluding any gap longer than two minutes** — recomputed on every refresh. Dropping long gaps means an idle stretch, or the gap between an aborted run and a re-run that share one `events.jsonl`, doesn't inflate the number into a wall-clock span (so a dangling/aborted run no longer shows a runaway clock). It is derived from `events.jsonl` rather than summed from `STATS.jsonl`, so an interrupted-then-resumed run reports its true elapsed time instead of a stale number that can read shorter than a single task. Sequential folders keep summing per-iteration wall time from `STATS.jsonl`.
 
 ## Example output
 

@@ -1,12 +1,14 @@
 """Tests for the ola-top monitor data layer."""
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ola.monitor.data import (
     FolderStatus,
     IterationStatus,
     TaskRow,
+    _worked_seconds,
     build_snapshot,
     parse_stats_jsonl,
     parse_task_counts,
@@ -1200,9 +1202,57 @@ def test_build_snapshot_active_elapsed_counts_overlap_once(tmp_path: Path):
             {"task_id": "t-b", "status": "working", "ts": "2026-05-27T14:00:12.000Z"},
         ],
     )
-    clock = build_snapshot(tmp_path)["folders"]["09-par"]
+    # ``now`` close to the last event → the open tail is live, not stale.
+    now = datetime.fromisoformat("2026-05-27T14:00:20.000Z")
+    clock = build_snapshot(tmp_path, now=now)["folders"]["09-par"]
     assert clock["active_elapsed_s"] == 12.0  # union [00:00, 00:12], counted once
     assert clock["active_anchor_ts"] == "2026-05-27T14:00:12.000Z"
+
+
+def test_worked_seconds_excludes_long_gaps():
+    """Gaps longer than the staleness window (e.g. between an aborted run and a
+    re-run sharing one events.jsonl) are dropped from the worked total."""
+    base = datetime.fromisoformat("2026-05-27T14:00:00.000Z")
+    ts = [
+        base,
+        base + timedelta(seconds=10),  # +10s worked
+        base + timedelta(seconds=820),  # +810s gap — excluded (>120s)
+        base + timedelta(seconds=830),  # +10s worked
+    ]
+    assert _worked_seconds(ts) == 20.0
+
+
+def test_build_snapshot_dangling_run_freezes_and_falls_back(tmp_path: Path):
+    """An aborted run leaves a 'working' event with no terminal. Once stale, the
+    live clock freezes (anchor None) and the task renders from its spine status
+    (checkbox-is-truth) instead of as perpetually running."""
+    folder = tmp_path / "01-par"
+    folder.mkdir()
+    # Spine reflects the ticked checkbox: the task IS complete.
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-x", "text": "X", "line_no": 1, "status": "complete"}],
+    )
+    _write_events_jsonl(
+        folder,
+        [
+            {"task_id": "t-x", "status": "started", "ts": "2026-05-27T14:00:00.000Z"},
+            {"task_id": "t-x", "status": "working", "ts": "2026-05-27T14:00:09.000Z"},
+        ],
+    )
+    # "now" is well past the staleness window → the open agent is dangling.
+    now = datetime.fromisoformat("2026-05-27T14:30:00.000Z")
+    snap = build_snapshot(tmp_path, now=now)
+    clock = snap["folders"]["01-par"]
+    assert clock["active_anchor_ts"] is None  # dangling tail → frozen, not "now"
+    assert snap["tasks"]["t-x"]["status"] == "complete"  # spine wins, not "working"
+    assert snap["counters"]["active"] == 0  # no longer counted as running
+
+    # While still fresh, the same data reads as live/running.
+    fresh = datetime.fromisoformat("2026-05-27T14:00:12.000Z")
+    snap2 = build_snapshot(tmp_path, now=fresh)
+    assert snap2["folders"]["01-par"]["active_anchor_ts"] == "2026-05-27T14:00:09.000Z"
+    assert snap2["tasks"]["t-x"]["status"] == "working"
 
 
 def test_build_snapshot_missing_agent_dir(tmp_path: Path):

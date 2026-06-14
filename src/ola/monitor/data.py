@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ola.plan import enumerate_tasks, parse_task_counts
@@ -342,6 +342,48 @@ def _parse_ts(ts: str) -> datetime | None:
         return None
 
 
+# A run that has emitted no event for this long is treated as dangling: an
+# aborted ``ola`` invocation that never wrote its agents' terminal events. Past
+# this window an open ("started" without "complete"/"failed") agent is no longer
+# counted as running — the live clock freezes, the picker stops treating its
+# folder as active, and gaps this long (e.g. between an aborted run and a re-run
+# sharing one events.jsonl) are excluded from elapsed time. Generous versus the
+# agents' event cadence (cc ~1/s, ct every ~5s) so a slow turn is never mistaken
+# for a dead one.
+_STALE_AFTER_S = 120.0
+
+
+def _is_stale(dt: datetime | None, now: datetime) -> bool:
+    """True when an event time is older than the staleness window.
+
+    Defends against a naive/aware mismatch by treating an uncomparable ts as
+    *fresh* — better to keep a live readout ticking than to wrongly freeze it.
+    """
+    if dt is None:
+        return True
+    try:
+        return (now - dt).total_seconds() > _STALE_AFTER_S
+    except TypeError:
+        return False
+
+
+def _worked_seconds(timestamps: list[datetime]) -> float:
+    """Sum of gaps between consecutive (sorted) events, excluding any gap longer
+    than :data:`_STALE_AFTER_S`.
+
+    So a quiet stretch where nothing ran — most importantly the gap between an
+    aborted run and a later re-run that share one ``events.jsonl`` — does not
+    inflate a folder's elapsed time into a wall-clock span. Fewer than two
+    timestamps yields 0.0.
+    """
+    ts = sorted(timestamps)
+    return sum(
+        d
+        for a, b in zip(ts, ts[1:])
+        if (d := (b - a).total_seconds()) <= _STALE_AFTER_S
+    )
+
+
 def _read_events(folder: Path) -> list[dict]:
     """Read ``<folder>/.ola/events.jsonl`` as a flat list in file (emission) order.
 
@@ -364,19 +406,21 @@ def _read_events(folder: Path) -> list[dict]:
 
 
 def _events_elapsed_s(folder: Path) -> float:
-    """Wall-clock span of ``<folder>/.ola/events.jsonl`` (earliest→latest ts).
+    """Worked time across ``<folder>/.ola/events.jsonl`` (gaps-excluded span).
 
-    Recomputed on every read so an interrupted-then-resumed run reports its
-    true elapsed time, rather than a stale ``STATS.jsonl``-derived number that
-    can read shorter than a single task. Returns 0.0 with fewer than two
-    parsable timestamps.
+    Recomputed on every read so an interrupted-then-resumed run reports its true
+    elapsed time, rather than a stale ``STATS.jsonl``-derived number that can
+    read shorter than a single task. Idle/dead stretches longer than
+    :data:`_STALE_AFTER_S` — e.g. the gap between an aborted run and a re-run
+    sharing this file — are excluded, so a dangling run can't inflate the span.
+    Returns 0.0 with fewer than two parsable timestamps.
     """
     timestamps = [
         t for t in (_parse_ts(e.get("ts", "")) for e in _read_events(folder)) if t
     ]
     if len(timestamps) < 2:
         return 0.0
-    return (max(timestamps) - min(timestamps)).total_seconds()
+    return _worked_seconds(timestamps)
 
 
 def _read_events_by_task(folder: Path) -> dict[str, list[dict]]:
@@ -466,10 +510,11 @@ def read_task_rows(
     for entry in TaskState.load(folder).all():
         events = events_by_task.get(entry.task_id, [])
 
-        elapsed_s = 0.0
+        # Worked time across the task's events, with dead gaps (e.g. an aborted
+        # attempt that never closed before a re-run) excluded — see
+        # :func:`_worked_seconds`.
         timestamps = [t for t in (_parse_ts(e.get("ts", "")) for e in events) if t]
-        if len(timestamps) >= 2:
-            elapsed_s = (max(timestamps) - min(timestamps)).total_seconds()
+        elapsed_s = _worked_seconds(timestamps)
 
         # Latest event carrying a progress message (working/complete/failed may
         # all attach one under data.message).
@@ -538,7 +583,7 @@ _SPINE_TO_LIFECYCLE: dict[str, str] = {
 _TERMINAL_STATUSES: frozenset[str] = frozenset({"complete", "failed"})
 
 
-def build_snapshot(agent_path: Path) -> dict:
+def build_snapshot(agent_path: Path, now: datetime | None = None) -> dict:
     """Build the dashboard snapshot for ``agent_path`` from the on-disk files.
 
     Two kinds of subfolder appear. A folder running in parallel mode (with
@@ -551,6 +596,9 @@ def build_snapshot(agent_path: Path) -> dict:
     it before it begins. Stateless: every call re-reads the files, so a
     killed/restarted server loses nothing.
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
     tasks: dict[str, dict] = {}
     folders: dict[str, dict] = {}
     activity: list[dict] = []
@@ -581,6 +629,15 @@ def build_snapshot(agent_path: Path) -> dict:
                 agent_backend = last.get("agent_backend", "")
                 attempt = int(last.get("attempt", entry.attempts))
                 data = last.get("data") or {}
+                # A non-terminal latest event that has gone stale means the
+                # agent for that attempt died (an aborted run that never wrote a
+                # terminal event). Fall back to the spine status — which the
+                # harness keeps in lock-step with PLAN.md (checkbox-is-truth) —
+                # so a dangling "working" task doesn't render as running forever.
+                if status not in _TERMINAL_STATUSES and _is_stale(
+                    _parse_ts(last.get("ts", "")), now
+                ):
+                    status = _SPINE_TO_LIFECYCLE.get(entry.status, "pending")
             else:
                 status = _SPINE_TO_LIFECYCLE.get(entry.status, "pending")
                 agent_backend = ""
@@ -626,7 +683,7 @@ def build_snapshot(agent_path: Path) -> dict:
                     }
                 )
 
-        active_elapsed_s, active_anchor_ts = _active_elapsed(folder_events)
+        active_elapsed_s, active_anchor_ts = _active_elapsed(folder_events, now)
         folders[name] = {
             "first_started_ts": folder_first,
             "last_terminal_ts": folder_last_terminal,
@@ -681,7 +738,7 @@ def _folder_models(folder: Path) -> list[str]:
     return models
 
 
-def _active_elapsed(events: list[dict]) -> tuple[float, str | None]:
+def _active_elapsed(events: list[dict], now: datetime) -> tuple[float, str | None]:
     """Wall seconds with ≥1 agent active, plus the live-tail anchor ts.
 
     An attempt is active between its ``started`` and its terminal
@@ -689,11 +746,15 @@ def _active_elapsed(events: list[dict]) -> tuple[float, str | None]:
     unchanged. Walking the ts-sorted stream and tracking how many agents are
     concurrently active, this sums the time the count was >0 — idle gaps
     (count 0) are excluded, so the dashboard's elapsed readout is a stopwatch
-    that runs only while work is happening.
+    that runs only while work is happening. A gap longer than
+    :data:`_STALE_AFTER_S` is also excluded even while the count is >0: an open
+    agent that never closed across such a gap was a dead/aborted run, not work.
 
     The second return value is the ts of the last event when an agent is still
-    running, so the consumer can tick the open interval out to "now"; it is
-    ``None`` when the run is currently idle and the elapsed value is frozen.
+    running, so the consumer can tick the open interval out to "now". It is
+    ``None`` when the run is idle (count 0) *or* when the last event is stale —
+    i.e. an aborted run left an agent "running" forever — so the readout freezes
+    instead of ticking up indefinitely.
     """
     timed = sorted(
         (
@@ -708,13 +769,16 @@ def _active_elapsed(events: list[dict]) -> tuple[float, str | None]:
     prev: datetime | None = None
     for dt, status, _ts in timed:
         if prev is not None and count > 0:
-            active_s += (dt - prev).total_seconds()
+            gap = (dt - prev).total_seconds()
+            if gap <= _STALE_AFTER_S:  # don't count time across a dead gap
+                active_s += gap
         if status == "started":
             count += 1
         elif status in _TERMINAL_STATUSES:
             count = max(0, count - 1)
         prev = dt
-    anchor = timed[-1][2] if (count > 0 and timed) else None
+    live = count > 0 and timed and not _is_stale(timed[-1][0], now)
+    anchor = timed[-1][2] if live else None
     return active_s, anchor
 
 
