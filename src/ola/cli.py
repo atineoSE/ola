@@ -60,9 +60,19 @@ def main() -> None:
     parser.add_argument(
         "-a",
         "--agent",
-        choices=["openhands", "oh", "claude-code", "cc", "codex", "cx"],
+        choices=[
+            "openhands",
+            "oh",
+            "claude-code",
+            "cc",
+            "claude-tui",
+            "ct",
+            "codex",
+            "cx",
+        ],
         default="cc",
-        help="Agent to use (default: cc)",
+        help="Agent to use (default: cc). 'ct' drives the interactive Claude "
+        "Code TUI via a pty (no metrics — see ClaudeCodeTUIAgent).",
     )
     parser.add_argument(
         "-m",

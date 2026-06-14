@@ -5,7 +5,8 @@
 The implementation follows the [Ralph Wiggum technique](https://ghuntley.com/ralph/): a way for the agent to iterate on fresh contexts as it works relentlessly against tasks in a plan file. The design is heavily influenced by [this presentation](https://youtu.be/5syeNjq2ZCU?si=a2RvALDjiXPfYqJn) from [Ray Myers](https://github.com/raymyers), Chief Architect at [OpenHands](https://openhands.dev).
 
 There are 3 agents currently supported:
-* [Claude Code](https://github.com/anthropics/claude-code)
+* [Claude Code](https://github.com/anthropics/claude-code) — headless (`cc`) and an
+  experimental interactive-TUI variant (`ct`, see below)
 * [OpenHands SDK](https://github.com/OpenHands/software-agent-sdk)
 * [Codex](https://github.com/openai/codex)
 
@@ -18,13 +19,13 @@ uv tool install .
 ## Usage
 
 ```bash
-ola [-f <agent-folder>] [-a cc|oh|codex] [-m MODEL] [-l LIMIT] [--max-attempts N] [-v]
+ola [-f <agent-folder>] [-a cc|ct|oh|codex] [-m MODEL] [-l LIMIT] [--max-attempts N] [-v]
 ```
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-f, --agent-folder` | Path to the agent folder | `../agent` |
-| `-a, --agent` | Agent: `cc`/`claude-code`, `oh`/`openhands`, or `cx`/`codex` | `cc` |
+| `-a, --agent` | Agent: `cc`/`claude-code`, `ct`/`claude-tui`, `oh`/`openhands`, or `cx`/`codex` | `cc` |
 | `-m, --model` | Model name | Agent default |
 | `-l, --limit` | Max iterations per subfolder (ignored in parallel mode) | No limit |
 | `--max-attempts` | Total-attempts ceiling for failed/stagnant tasks | `3` |
@@ -195,6 +196,8 @@ See **[docs/ola-dashboard.md](./docs/ola-dashboard.md)** for the routes, panels,
 ## Agents
 
 **Claude Code** (`cc`) — calls `claude --dangerously-skip-permissions -p <prompt>` as a subprocess. When run via ola, `CLAUDE_CONFIG_DIR` is set to the phase's `.claude/` directory, giving each phase its own conversation history.
+
+**Claude Code TUI** (`ct` / `claude-tui`) — *experimental.* Drives the **interactive** `claude` UI inside a pseudo-terminal instead of the headless `-p` stream: it spawns the TUI, suppresses the first-run onboarding and workspace-trust dialogs (by pre-seeding `.claude/.claude.json`), bracket-pastes the prompt, waits for the turn to finish, and tears the session down. Shares `cc`'s `.claude/` state dir and self-hosted `LLM_*` handling. **Trade-off:** the interactive TUI does not flush a machine-readable transcript for short sessions, so `ct` recovers **no** result text or token/timing metrics — it detects end-of-turn from the screen going idle and returns minimal stats. This is sound because the ticked `PLAN.md` checkbox is the only completion signal the harness trusts. Use `cc` when you need metrics; use `ct` only to exercise the real interactive UI. Requires a pty (works in the Docker sandbox; the host command-sandbox may deny pty allocation). See `src/ola/agents/claude_code_tui.py` for the full contract.
 
 **OpenHands** (`oh`) — uses the OpenHands SDK (`LLM` + `Conversation`). Requires `LLM_API_KEY` (and optionally `LLM_MODEL`, `LLM_BASE_URL`) set in the environment or a `.env` file. SDK logs and conversation trajectories are saved to `<subfolder>/.openhands/logs/` and `<subfolder>/.openhands/trajectories/`.
 

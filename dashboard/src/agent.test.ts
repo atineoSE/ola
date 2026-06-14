@@ -5,6 +5,7 @@ import { agentColor, agentName, DEFAULT_ACCENT, inkOn } from "./agent";
 describe("agentName", () => {
   it("maps the known backend mnemonics to display names", () => {
     expect(agentName("cc")).toBe("Claude Code");
+    expect(agentName("ct")).toBe("Claude Code (TUI)");
     expect(agentName("oh")).toBe("OpenHands");
     expect(agentName("cx")).toBe("Codex");
   });

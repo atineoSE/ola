@@ -11,6 +11,7 @@
 /** Full, human display name for an agent backend mnemonic. */
 const AGENT_NAMES: Record<string, string> = {
   cc: "Claude Code",
+  ct: "Claude Code (TUI)",
   oh: "OpenHands",
   cx: "Codex",
 };
@@ -19,6 +20,7 @@ const AGENT_NAMES: Record<string, string> = {
  * accent for an unknown/empty backend so the dashboard never loses its accent. */
 const AGENT_COLORS: Record<string, string> = {
   cc: "#CB7153",
+  ct: "#E0995E",
   oh: "#FFFF9B",
   cx: "#372FF5",
 };

@@ -18,6 +18,7 @@ _TASK_TEXT_MAX = 60
 
 _AGENT_FULL_NAMES: dict[str, str] = {
     "cc": "Claude Code",
+    "ct": "Claude Code (TUI)",
     "oh": "OpenHands",
     "cx": "Codex",
 }

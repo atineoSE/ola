@@ -13,8 +13,19 @@ the tasks inside one `PLAN.md` are independent and parallel-safe, each task runs
 with a fresh context in its own worktree, and a ticked checkbox is the only
 completion signal the harness accepts.
 
-Three agent backends are supported: **Claude Code** (`cc`), the **OpenHands SDK**
-(`oh`), and **Codex** (`cx`).
+Four agent backends are supported: **Claude Code** (`cc`), the **OpenHands SDK**
+(`oh`), **Codex** (`cx`), and **Claude Code TUI** (`ct`).
+
+`ct` is an alternative Claude Code backend that drives the *interactive* `claude`
+UI inside a pseudo-terminal instead of the headless `claude -p` stream. It exists
+to exercise the real TUI form factor. The trade-off is deliberate and documented
+in `src/ola/agents/claude_code_tui.py`: the interactive TUI does **not** flush a
+machine-readable transcript for short sessions, so `ct` recovers **no** result
+text or token/timing metrics — it only detects end-of-turn from the screen going
+idle and tears the session down. That is sound because the ticked PLAN.md
+checkbox is the only completion signal the harness trusts (checkbox-is-truth);
+`ct`'s `AgentResponse` carries minimal stats (`streamed=False`). Use `cc` when you
+need metrics (TTFT, tokens, cost); use `ct` only to drive the interactive UI.
 
 ### Layout
 
