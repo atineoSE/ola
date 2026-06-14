@@ -68,6 +68,10 @@ def test_is_busy_and_idle_box():
 
 def test_is_auth_error():
     assert is_auth_error(AUTH_SCREEN)
+    # Regression: the "/" in "/login" must not defeat detection, and the
+    # "Not logged in" footer (shown before a turn even starts) must be caught.
+    assert is_auth_error("⎿ Not logged in · Please run /login")
+    assert is_auth_error("← for agents Not logged in · Run /login")
     assert not is_auth_error(READY_SPACED)
 
 

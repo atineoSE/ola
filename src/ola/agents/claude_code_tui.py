@@ -121,9 +121,11 @@ _TRUST_MARKERS = ("doyoutrust", "trustthefiles", "trustthisfolder", "quicksafety
 _ONBOARDING_MARKERS = ("choosethetextstyle", "let'sgetstarted")
 # Shown in the footer while a turn is actively running.
 _BUSY_MARKERS = ("esctointerrupt",)
-# Authentication failure banners.
+# Authentication failure banners. NB: keep these robust to the "/" in "/login"
+# (compacted text reads "pleaserun/login", "notloggedin·run/login").
 _AUTH_MARKERS = (
-    "pleaserunlogin",
+    "notloggedin",
+    "pleaserun/login",
     "invalidauthenticationcredentials",
     "/login·apierror",
 )
@@ -435,11 +437,14 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
     def _await_turn_end(
         self, child: _PtyProcess, on_progress: ProgressCallback | None
     ) -> bool:
-        """Return True once the turn is over, detected by the screen going idle.
+        """Return True once the turn is over, detected by the pty going quiet.
 
-        The turn is "done" once we've seen activity and then the pty has been
-        silent for ``_done_quiescence`` while the idle input box is back and no
-        "esc to interrupt" footer is showing.
+        Quiescence is the reliable end-of-turn signal: the spinner animates
+        continuously while the model thinks or a tool runs, so the pty only stays
+        silent for ``_done_quiescence`` once the turn is actually over. We do NOT
+        gate on the on-screen "esc to interrupt" footer — ``tail()`` is the raw,
+        cumulative byte stream (no terminal emulation), so a stale frame lingers
+        in the window and that footer would never clear.
         """
         deadline = time.monotonic() + _turn_timeout()
         saw_activity = False
@@ -460,7 +465,7 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                     on_progress("working (interactive TUI)…", None)
                 except Exception:
                     logger.exception("on_progress raised; continuing")
-            if saw_activity and idle > _done_quiescence() and is_idle_box(screen):
+            if saw_activity and idle > _done_quiescence():
                 return True
             time.sleep(0.5)
         return False
