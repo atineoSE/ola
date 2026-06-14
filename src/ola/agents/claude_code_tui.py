@@ -229,6 +229,8 @@ def transcript_stats(text: str) -> IterationStats:
     models: list[str] = []
     tool_s = 0.0
     pending_tool_ts: datetime | None = None
+    first_ts: datetime | None = None
+    last_ts: datetime | None = None
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -241,6 +243,9 @@ def transcript_stats(text: str) -> IterationStats:
         msg = obj.get("message") or {}
         content = msg.get("content")
         ts = _ts(obj.get("timestamp"))
+        if ts is not None:
+            first_ts = ts if first_ts is None else min(first_ts, ts)
+            last_ts = ts if last_ts is None else max(last_ts, ts)
 
         if rtype == "assistant":
             usage = msg.get("usage") or {}
@@ -267,6 +272,19 @@ def transcript_stats(text: str) -> IterationStats:
             if _has_block(content, "tool_result") or "toolUseResult" in obj:
                 tool_s += (ts - pending_tool_ts).total_seconds()
                 pending_tool_ts = None
+
+    tool_ms = max(0, int(tool_s * 1000))
+    # Approximate "decode" (LLM) time as the transcript span minus tool wall
+    # time. We have no true streaming decode clock, but this drives a tok/sec
+    # (output / decode) that excludes tool time — so the dashboard's per-task
+    # rate, and thus its peak/max tile, are non-zero. ttft is unknown (0), so
+    # llm_ms == decode_ms.
+    span_ms = (
+        int((last_ts - first_ts).total_seconds() * 1000)
+        if first_ts is not None and last_ts is not None
+        else 0
+    )
+    decode_ms = max(0, span_ms - tool_ms)
     return IterationStats(
         # input_tokens is the total prompt size (incl. cache), matching the cc
         # adapter so cache_hit_rate and totals read the same across backends.
@@ -278,9 +296,10 @@ def transcript_stats(text: str) -> IterationStats:
         models=models,
         max_input_tokens=max_ctx,
         # Wall time spent in tools (assistant tool_use → tool_result gaps). With
-        # wall_ms from the scheduler this yields the LLM/Tool breakdown and a
-        # tok/sec that excludes tool time. Never negative; clamped at parse.
-        tool_ms=max(0, int(tool_s * 1000)),
+        # wall_ms from the scheduler this yields the LLM/Tool breakdown.
+        tool_ms=tool_ms,
+        decode_ms=decode_ms,
+        llm_ms=decode_ms,
         streamed=False,
     )
 

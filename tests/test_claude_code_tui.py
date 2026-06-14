@@ -376,10 +376,16 @@ def test_transcript_stats_reconstructs_tool_time():
     s = transcript_stats(text)
     assert s.tool_ms == 2500  # 08:00:02.5 − 08:00:00
     assert s.num_turns == 2  # both assistant messages had usage
+    # span 08:00:00 → 08:00:10 = 10s; decode = span − tool = 7.5s → drives a
+    # non-zero tok/sec so the dashboard's peak tile is populated.
+    assert s.decode_ms == 7500
+    assert s.llm_ms == 7500
 
 
 def test_transcript_stats_no_tool_time_without_tools():
-    assert transcript_stats(_TWO_TURN).tool_ms == 0  # no timestamps/tool_use
+    s = transcript_stats(_TWO_TURN)
+    assert s.tool_ms == 0  # no timestamps/tool_use
+    assert s.decode_ms == 0  # no timestamps → no span
 
 
 def test_transcript_stats_empty_on_failed_session():
