@@ -18,15 +18,19 @@ CLI during a spike (see git history / the ``ct`` skill):
   per-project ``hasTrustDialogAccepted`` keyed by the **realpath** of the
   workdir) to skip both, and keep an Enter-to-accept fallback for the trust
   dialog in case the seed misses.
-* **Completion signal.** The interactive TUI does **not** flush its conversation
-  transcript to disk for short sessions, so — unlike ``cc`` — we cannot read the
-  result or token/timing metrics back from the conversation folder. We therefore
-  detect end-of-turn from the **screen** going idle and return *minimal* stats.
+* **Completion signal.** The interactive TUI does not stream usage to us, so we
+  detect end-of-turn from the **screen** going idle (not from a result event).
   That is acceptable because ola's only real completion signal is the ticked
   PLAN.md checkbox (checkbox-is-truth); the harness re-derives success from the
   worktree regardless of what this backend returns.
-
-If you need real metrics (TTFT, tokens, cost) use the ``cc`` backend.
+* **Metrics, post-turn.** Any session that runs long enough to flush persists a
+  full transcript under ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl``.
+  On teardown (after ``/exit`` flushes it) we read that transcript and recover
+  per-task token counts, turn count, models, and peak context — enough for cost
+  and cache-hit reporting (see :func:`transcript_stats`). What is **not**
+  recoverable is the streaming-only timing: TTFT and decode-isolated tok/sec are
+  never written to disk. A session too short to flush falls back to minimal
+  stats. So ``ct`` reports token economics but, unlike ``cc``, no live timing.
 """
 
 import fcntl
@@ -186,6 +190,74 @@ def seed_claude_json(config_dir: Path, workdir: str) -> None:
         }
     }
     (config_dir / ".claude.json").write_text(json.dumps(data))
+
+
+def transcript_stats(text: str) -> IterationStats:
+    """Recover token/turn/model metrics from a Claude Code transcript JSONL.
+
+    The interactive TUI does not stream usage to us, but for any session that
+    runs long enough to flush it persists a full transcript under
+    ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl``. Each ``assistant``
+    record carries a ``message.usage`` block, so summing across turns recovers
+    everything except the streaming-only timings (TTFT / decode-isolated
+    tok/sec), which are never written to disk. Fields we cannot source stay 0
+    and ``streamed`` is False, matching the honest "no live timing" contract.
+    """
+    input_t = output_t = cache_r = cache_c = 0
+    turns = 0
+    max_ctx = 0
+    models: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") != "assistant":
+            continue
+        msg = obj.get("message") or {}
+        usage = msg.get("usage") or {}
+        it = usage.get("input_tokens", 0)
+        cc = usage.get("cache_creation_input_tokens", 0)
+        cr = usage.get("cache_read_input_tokens", 0)
+        ot = usage.get("output_tokens", 0)
+        # Count only real LLM turns; skip synthetic records (compaction
+        # summaries etc.) that carry no usage and a "<synthetic>" model.
+        if not (it or cc or cr or ot):
+            continue
+        turns += 1
+        input_t += it
+        cache_c += cc
+        cache_r += cr
+        output_t += ot
+        max_ctx = max(max_ctx, it + cc + cr)
+        model = msg.get("model")
+        if model and model not in models:
+            models.append(model)
+    return IterationStats(
+        # input_tokens is the total prompt size (incl. cache), matching the cc
+        # adapter so cache_hit_rate and totals read the same across backends.
+        input_tokens=input_t + cache_c + cache_r,
+        output_tokens=output_t,
+        cache_read_tokens=cache_r,
+        cache_creation_tokens=cache_c,
+        num_turns=turns,
+        models=models,
+        max_input_tokens=max_ctx,
+        streamed=False,
+    )
+
+
+def _transcript_paths(config_dir: Path) -> set[Path]:
+    """Main-session transcript files under a config dir's ``projects/`` tree.
+
+    Matches ``projects/<slug>/<session>.jsonl`` only — the deeper
+    ``…/<session>/subagents/*.jsonl`` are excluded so a sub-agent's transcript
+    never masquerades as the task's own session.
+    """
+    return set((config_dir / "projects").glob("*/*.jsonl"))
 
 
 class _PtyProcess:
@@ -370,6 +442,11 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             argv += ["--model", self.model]
         logger.debug("ct: spawning interactive TUI: %s", " ".join(argv))
 
+        # Snapshot pre-existing transcripts so we can pick out *this* attempt's
+        # after teardown (the per-task config dir accumulates one per attempt).
+        config_dir = Path(state_dir) if state_dir else None
+        before = _transcript_paths(config_dir) if config_dir else set()
+
         try:
             child = _PtyProcess(argv, workdir, env)
         except FileNotFoundError:
@@ -386,31 +463,65 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                 stats=self._stats(error_type="pty_alloc_failed"),
             )
 
+        output = ""
+        success = False
+        error_type: str | None = None
         try:
             if not self._await_ready(child):
-                return AgentResponse(
-                    output="TUI never reached a ready prompt:\n"
-                    + strip_ansi(child.tail(2000)),
-                    success=False,
-                    stats=self._stats(error_type="tui_not_ready"),
+                output = "TUI never reached a ready prompt:\n" + strip_ansi(
+                    child.tail(2000)
                 )
-            _paste(child, prompt)
-            if on_progress is not None:
-                try:
-                    on_progress("running (interactive TUI)…", None)
-                except Exception:
-                    logger.exception("on_progress raised; continuing")
-            done = self._await_turn_end(child, on_progress)
-            output = strip_ansi(child.tail(2000))
-            if not done:
-                return AgentResponse(
-                    output="timed out waiting for the turn to finish:\n" + output,
-                    success=False,
-                    stats=self._stats(error_type="turn_timeout"),
-                )
-            return AgentResponse(output=output, success=True, stats=self._stats())
+                error_type = "tui_not_ready"
+            else:
+                _paste(child, prompt)
+                if on_progress is not None:
+                    try:
+                        on_progress("running (interactive TUI)…", None)
+                    except Exception:
+                        logger.exception("on_progress raised; continuing")
+                done = self._await_turn_end(child, on_progress)
+                output = strip_ansi(child.tail(2000))
+                if done:
+                    success = True
+                else:
+                    output = "timed out waiting for the turn to finish:\n" + output
+                    error_type = "turn_timeout"
         finally:
+            # Teardown sends /exit, which is what makes the TUI flush its
+            # transcript — so stats are recovered *after* this returns.
             self._teardown(child)
+
+        stats = self._recover_stats(config_dir, before, error_type)
+        return AgentResponse(output=output, success=success, stats=stats)
+
+    def _recover_stats(
+        self,
+        config_dir: Path | None,
+        before: set[Path],
+        error_type: str | None,
+    ) -> IterationStats:
+        """Build IterationStats from this attempt's flushed transcript.
+
+        Finds the transcript that appeared during the run (newest of any new
+        files, to tolerate the rare case of more than one), parses its usage,
+        and stamps the run's ``error_type``. Falls back to minimal stats when no
+        transcript was written — e.g. a session too short to flush, or no
+        ``state_dir`` to locate one.
+        """
+        if config_dir is None:
+            return self._stats(error_type)
+        new = _transcript_paths(config_dir) - before
+        if not new:
+            return self._stats(error_type)
+        transcript = max(new, key=lambda p: p.stat().st_mtime)
+        try:
+            stats = transcript_stats(transcript.read_text())
+        except OSError:
+            return self._stats(error_type)
+        stats.error_type = error_type
+        if not stats.models and self.model:
+            stats.models = [self.model]
+        return stats
 
     def _await_ready(self, child: _PtyProcess) -> bool:
         """Wait until the input box appears, clearing the trust dialog if shown."""

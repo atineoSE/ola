@@ -18,14 +18,16 @@ Four agent backends are supported: **Claude Code** (`cc`), the **OpenHands SDK**
 
 `ct` is an alternative Claude Code backend that drives the *interactive* `claude`
 UI inside a pseudo-terminal instead of the headless `claude -p` stream. It exists
-to exercise the real TUI form factor. The trade-off is deliberate and documented
-in `src/ola/agents/claude_code_tui.py`: the interactive TUI does **not** flush a
-machine-readable transcript for short sessions, so `ct` recovers **no** result
-text or token/timing metrics — it only detects end-of-turn from the screen going
-idle and tears the session down. That is sound because the ticked PLAN.md
-checkbox is the only completion signal the harness trusts (checkbox-is-truth);
-`ct`'s `AgentResponse` carries minimal stats (`streamed=False`). Use `cc` when you
-need metrics (TTFT, tokens, cost); use `ct` only to drive the interactive UI.
+to exercise the real TUI form factor. The trade-offs are documented in
+`src/ola/agents/claude_code_tui.py`: it detects end-of-turn from the screen going
+idle (no result event), which is sound because the ticked PLAN.md checkbox is the
+only completion signal the harness trusts (checkbox-is-truth). For metrics, `ct`
+reads the per-task transcript the TUI flushes on exit
+(`<state_dir>/projects/.../<session>.jsonl`) and recovers token counts, turns,
+models, and peak context (cost/cache-hit) — but **not** the streaming-only
+timings (TTFT, decode-isolated tok/sec), which are never written to disk, and
+nothing for a session too short to flush. Use `cc` when you need live timing;
+use `ct` to drive the interactive UI with post-hoc token economics.
 
 ### Layout
 

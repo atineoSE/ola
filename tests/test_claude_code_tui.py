@@ -14,6 +14,7 @@ import pytest
 from ola.agents import claude_code_tui as ct
 from ola.agents.claude_code_tui import (
     ClaudeCodeTUIAgent,
+    _transcript_paths,
     is_auth_error,
     is_busy,
     is_idle_box,
@@ -21,6 +22,7 @@ from ola.agents.claude_code_tui import (
     is_ready,
     is_trust_dialog,
     seed_claude_json,
+    transcript_stats,
 )
 
 
@@ -288,3 +290,104 @@ def test_run_cli_not_found(monkeypatch):
     resp = ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
     assert resp.success is False
     assert resp.stats.error_type == "cli_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Transcript metric recovery (.claude folder, post-turn)
+# ---------------------------------------------------------------------------
+
+
+def _assistant_line(model="claude-opus-4-8", inp=0, out=0, cache_c=0, cache_r=0):
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "model": model,
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "cache_creation_input_tokens": cache_c,
+                    "cache_read_input_tokens": cache_r,
+                },
+            },
+        }
+    )
+
+
+_TWO_TURN = "\n".join(
+    [
+        json.dumps({"type": "user", "message": {"role": "user"}}),
+        _assistant_line(inp=100, out=20, cache_c=10, cache_r=5000),
+        # A synthetic record with no usage must not count as a turn or a model.
+        json.dumps({"type": "assistant", "message": {"model": "<synthetic>"}}),
+        _assistant_line(inp=50, out=30, cache_c=0, cache_r=8000),
+    ]
+)
+
+
+def test_transcript_stats_sums_usage_and_skips_synthetic():
+    s = transcript_stats(_TWO_TURN)
+    assert s.num_turns == 2  # synthetic record excluded
+    assert s.output_tokens == 50  # 20 + 30
+    assert s.cache_read_tokens == 13000  # 5000 + 8000
+    assert s.cache_creation_tokens == 10
+    assert s.input_tokens == 100 + 50 + 10 + 13000  # total prompt incl. cache
+    assert s.max_input_tokens == 50 + 8000  # peak per-turn context (turn 2)
+    assert s.models == ["claude-opus-4-8"]  # "<synthetic>" not collected
+    assert s.streamed is False
+
+
+def test_transcript_stats_empty_on_failed_session():
+    # An aborted attempt's transcript carries only synthetic / no-usage records.
+    text = json.dumps({"type": "assistant", "message": {"model": "<synthetic>"}})
+    s = transcript_stats(text)
+    assert s.num_turns == 0
+    assert s.output_tokens == 0
+
+
+def _write_transcript(cfg: Path, slug: str, name: str, text: str) -> Path:
+    proj = cfg / "projects" / slug
+    proj.mkdir(parents=True, exist_ok=True)
+    path = proj / f"{name}.jsonl"
+    path.write_text(text)
+    return path
+
+
+def test_recover_stats_reads_new_transcript(tmp_path):
+    cfg = tmp_path / "cfg"
+    # A prior attempt's transcript that must be ignored.
+    _write_transcript(cfg, "slug", "old-session", _assistant_line(inp=1, out=1))
+    before = _transcript_paths(cfg)
+    # This attempt's transcript appears during the run.
+    _write_transcript(cfg, "slug", "new-session", _TWO_TURN)
+
+    stats = ClaudeCodeTUIAgent(model="opus")._recover_stats(cfg, before, None)
+    assert stats.num_turns == 2  # the new transcript, not the old one
+    assert stats.output_tokens == 50
+    assert stats.error_type is None
+
+
+def test_recover_stats_stamps_error_type(tmp_path):
+    cfg = tmp_path / "cfg"
+    before = _transcript_paths(cfg)
+    _write_transcript(cfg, "slug", "s", _TWO_TURN)
+    stats = ClaudeCodeTUIAgent()._recover_stats(cfg, before, "turn_timeout")
+    assert stats.num_turns == 2
+    assert stats.error_type == "turn_timeout"
+
+
+def test_recover_stats_fallback_when_no_transcript(tmp_path):
+    cfg = tmp_path / "cfg"
+    (cfg / "projects").mkdir(parents=True)
+    before = _transcript_paths(cfg)  # empty
+    stats = ClaudeCodeTUIAgent(model="opus")._recover_stats(cfg, before, None)
+    assert stats.num_turns == 0
+    assert stats.models == ["opus"]  # minimal fallback
+    assert stats.streamed is False
+
+
+def test_recover_stats_no_state_dir(tmp_path):
+    stats = ClaudeCodeTUIAgent(model="opus")._recover_stats(None, set(), None)
+    assert stats.num_turns == 0
+    assert stats.models == ["opus"]
