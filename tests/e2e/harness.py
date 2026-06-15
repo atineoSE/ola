@@ -111,8 +111,6 @@ class ScriptedAgent(Agent):
         if on_progress:
             on_progress(f"working on {task_id} (attempt {attempt})")
 
-        wt_folder = Path(workdir) / folder
-
         task_text = self._task_text(prompt)
         if task_text in self.block_tasks:
             reason = self.block_tasks.pop(task_text)  # block only once
@@ -129,12 +127,13 @@ class ScriptedAgent(Agent):
             # Claim success without ticking — the harness must detect this.
             return AgentResponse(output="no tick", success=True, stats=IterationStats())
 
-        # Happy path: optionally edit a source file, then tick the checkbox.
+        # Happy path: optionally edit a project source file in the worktree,
+        # then tick the checkbox in the staged PLAN.md copy under .ola/.
         if self.source_file:
-            target = wt_folder / self.source_file
+            target = Path(workdir) / self.source_file
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(f"implemented by {task_id}\n")
-        set_task_checked(wt_folder, task_id, True)
+        set_task_checked(Path(workdir) / ".ola", task_id, True)
         return AgentResponse(
             output="done",
             success=True,
@@ -215,10 +214,40 @@ def _init_agent_repo(agent: Path) -> Path:
     return agent
 
 
+def _init_project_repo(project: Path) -> Path:
+    """Create the sibling *project* repo the per-task worktrees branch from.
+
+    The rewired harness spawns worktrees from the project repo (process cwd)
+    and cherry-picks the agent's code back onto it; the agent folder only holds
+    the plan and its ticks. ``.ola/`` is gitignored so per-run worktrees and the
+    staged PLAN.md copy never pollute project commits.
+    """
+    project.mkdir(parents=True, exist_ok=True)
+    (project / ".gitignore").write_text(".env\n.ola/\n")
+    (project / "README.md").write_text("project under test\n")
+    _git(project, "init", "-b", "main")
+    _git(project, "config", "user.email", "e2e@example.com")
+    _git(project, "config", "user.name", "E2E")
+    _git(project, "config", "commit.gpgsign", "false")
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "project init")
+    return project
+
+
+def project_repo(agent_path: Path) -> Path:
+    """The project repo sibling for an *agent_path* produced by the builders."""
+    return agent_path.parent / "project"
+
+
 def build_agent_repo(tmp_path: Path, fixture: str) -> Path:
-    """Copy fixture *fixture* into an isolated git-backed agent repo."""
+    """Copy fixture *fixture* into an isolated git-backed agent repo.
+
+    Also stands up the sibling project repo (``<tmp>/project``) the worktrees
+    branch from.
+    """
     agent = tmp_path / "agent"
     shutil.copytree(FIXTURES / fixture, agent)
+    _init_project_repo(tmp_path / "project")
     return _init_agent_repo(agent)
 
 
@@ -236,6 +265,7 @@ def build_example_repo(tmp_path: Path, *folders: str) -> Path:
     )
     for name in names:
         shutil.copytree(EXAMPLE_AGENT / name, agent / name)
+    _init_project_repo(tmp_path / "project")
     return _init_agent_repo(agent)
 
 
@@ -246,11 +276,19 @@ def run_pipeline(
     max_attempts: int = 0,
     janitor_enabled: bool = True,
 ) -> None:
-    """Run the full outer loop over *agent_path* with *agent*."""
+    """Run the full outer loop over *agent_path* with *agent*.
+
+    Worktrees branch from the sibling project repo (``<tmp>/project``); the
+    agent's code lands there while ticks land on *agent_path*.
+    """
     from ola.loop import run_outer_loop
 
     run_outer_loop(
-        agent, agent_path, max_attempts=max_attempts, janitor_enabled=janitor_enabled
+        agent,
+        agent_path,
+        project_repo(agent_path),
+        max_attempts=max_attempts,
+        janitor_enabled=janitor_enabled,
     )
 
 
@@ -291,5 +329,10 @@ def git_log_subjects(repo: Path) -> list[str]:
 
 
 def worktree_dir(folder: Path, task_id: str) -> Path:
-    """Path to a task's worktree under the folder's ``.ola/``."""
-    return folder / ".ola" / "worktrees" / task_id
+    """Path to a task's worktree, under the project repo's ``.ola/``.
+
+    *folder* is a plan folder in the agent repo (``<tmp>/agent/<name>``); the
+    worktree lives in the sibling project repo (``<tmp>/project/.ola/…``).
+    """
+    project = folder.parent.parent / "project"
+    return project / ".ola" / "worktrees" / task_id

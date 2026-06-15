@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 1.0.0
+version: 1.0.1
 ---
 
 # Create an ola plan
@@ -59,15 +59,18 @@ anything. Do not silently expand scope or invent steps that were not discussed.
 
 ola runs against a **workspace** that holds two siblings: the **project repo**
 (the source code) and the **agent folder** (the plan database, conventionally
-named `agent/`). Determine the agent-folder path:
+named `agent/`). ola is invoked **from inside the project repo** — its process
+cwd is the project — and is pointed at the agent folder via the `--agent-folder`
+argument (default `../agent`, i.e. the sibling). The agent folder is ola-owned;
+the project repo is where the actual work lands. Determine the agent-folder path:
 
-- If the user names a location, use it.
+- If the user names a location, use it (it becomes ola's `--agent-folder`).
 - Otherwise propose the conventional sibling layout and confirm:
 
   ```
   workspace/
-    <project>/      # the source repo being worked on
-    agent/          # ← the ola plan you are about to write
+    <project>/      # the source repo being worked on; ola runs from here (cwd)
+    agent/          # ← the ola plan you are about to write (--agent-folder, default ../agent)
   ```
 
 Create the agent folder if it does not exist. Do **not** create plan folders

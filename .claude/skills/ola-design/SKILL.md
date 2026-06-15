@@ -1,7 +1,11 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.1.0
+version: 1.2.0
+# 1.2.0: add the project-repo/agent-folder separation, Ralph-minimal PLAN.md +
+#         JANITOR-NOTES.md provenance, and explicit per-task tick-surface
+#         principles to the philosophy and the change-checklist (minor: new
+#         compatible guidance, no existing rule changed).
 ---
 
 # The ola design philosophy
@@ -13,6 +17,24 @@ parallel-safe, every task runs with a fresh context in its own worktree, and
 a ticked checkbox is the only completion signal the harness accepts. When a
 task cannot proceed, the harness unblocks it automatically (the janitor)
 before ever waiting on a human.
+
+**Two repos, one owner.** ola runs from inside the **project repo** — its
+working directory is the project being worked on. The **agent folder** is the
+project's ola-owned sibling and holds the plan database; the agent never touches
+it. Per-task worktrees spawn from the *project* repo, so a task agent's working
+directory is a project worktree of code only — it never sees the agent folder,
+and everything it needs arrives in its prompt or is recoverable from the
+project's current state. ola gives each task its **tick surface as an explicit
+per-task path** — a per-task PLAN.md copy injected into the worktree — and
+reconciles the tick back onto the agent-folder PLAN.md itself, so the agent
+checks off a file it was handed rather than one it has to discover.
+
+**PLAN.md stays Ralph-minimal.** A task is its description plus its genuine
+dependencies and policies — never ola internals or self-referential priming.
+When the janitor relocates a blocked task it writes that same minimal PLAN.md
+(the task as an unchecked checkbox + real deps/policies) and parks the
+why-blocked reason, verification, and provenance in a separate
+`JANITOR-NOTES.md` sidecar — for human review only, never fed back to an agent.
 
 ## Canonical contract
 
@@ -46,6 +68,16 @@ the answer is wrong:
 - Does it preserve folder-ordering semantics, including letter-suffixed
   siblings (`01-init` → `01a-init-leftovers` → `01b-init-blockers` → `02-…`)
   and mid-run folder discovery?
+- Does it keep worktrees spawning from the **project** repo, with the agent's
+  cwd a project worktree and the agent folder ola-only — or does it leak
+  agent-folder paths/internals into what the task can see?
+- Does it keep PLAN.md **Ralph-minimal** (task + real dependencies/policies, no
+  harness internals), routing any blocked reason and provenance to a separate
+  `JANITOR-NOTES.md` sidecar — or does it push ola internals or why-blocked
+  narration into PLAN.md itself?
+- Does it hand the agent its **tick surface as an explicit per-task path** ola
+  injects into the prompt, or does it make the agent discover which file to
+  check off?
 - Does it stay agent-backend-agnostic (Claude Code, OpenHands, Codex), or
   does it branch on a specific backend?
 - Does it scale with parallelism (locks around shared PLAN.md/git state,

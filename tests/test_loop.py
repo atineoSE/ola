@@ -411,16 +411,20 @@ def test_process_folder_dispatches_to_scheduler(tmp_path):
     folder.mkdir()
     (folder / "PLAN.md").write_text("- [ ] Task A\n")
 
+    project = tmp_path / "project"
     agent = _FakeAgent()
     with patch("ola.scheduler.run_folder") as mock_run:
-        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
+        _process_folder(
+            agent, folder, limit=None, agent_root=tmp_path, project_path=project
+        )
 
     mock_run.assert_called_once()
     args = mock_run.call_args.args
     assert args[0] is agent
     assert args[1] == folder
-    assert args[2] == tmp_path
-    assert args[3] == DEFAULT_CONCURRENCY  # default cap
+    assert args[2] == tmp_path  # agent_root
+    assert args[3] == project  # project_path
+    assert args[4] == DEFAULT_CONCURRENCY  # default cap
 
 
 def test_process_folder_passes_concurrency_cap(tmp_path):
@@ -433,9 +437,11 @@ def test_process_folder_passes_concurrency_cap(tmp_path):
 
     agent = _FakeAgent()
     with patch("ola.scheduler.run_folder") as mock_run:
-        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
+        _process_folder(
+            agent, folder, limit=None, agent_root=tmp_path, project_path=tmp_path
+        )
 
-    assert mock_run.call_args.args[3] == 3
+    assert mock_run.call_args.args[4] == 3
 
 
 def test_process_folder_skips_when_no_plan(tmp_path, caplog):
@@ -448,7 +454,9 @@ def test_process_folder_skips_when_no_plan(tmp_path, caplog):
         caplog.at_level(logging.WARNING, logger="ola.loop"),
         patch("ola.scheduler.run_folder") as mock_run,
     ):
-        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
+        _process_folder(
+            agent, folder, limit=None, agent_root=tmp_path, project_path=tmp_path
+        )
 
     mock_run.assert_not_called()
     assert any("no PLAN.md" in rec.message for rec in caplog.records)
@@ -484,7 +492,9 @@ def test_process_folder_passes_emitter_to_scheduler(tmp_path):
 
     agent = _FakeAgent()
     with patch("ola.scheduler.run_folder") as mock_run:
-        _process_folder(agent, folder, limit=None, agent_root=tmp_path)
+        _process_folder(
+            agent, folder, limit=None, agent_root=tmp_path, project_path=tmp_path
+        )
 
     emitter = mock_run.call_args.kwargs["emitter"]
     assert isinstance(emitter, Emitter)
@@ -512,8 +522,11 @@ def test_process_folder_writes_events_jsonl(tmp_path):
         mnemonic = "cc"
 
         def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
-            # Tick the single task's checkbox in the worktree PLAN.md. The
-            # prompt mentions "PLAN.md" in prose too, so match the path token.
+            # Make a real code change in the project worktree so there is
+            # something to cherry-pick back.
+            (Path(workdir) / "artefact.txt").write_text("done")
+            # Tick the single task's checkbox in the staged .ola/PLAN.md copy,
+            # whose absolute path the prompt carries via {{plan_path}}.
             for token in prompt.split():
                 if token.endswith("PLAN.md") and "/" in token:
                     p = Path(token)
@@ -524,7 +537,9 @@ def test_process_folder_writes_events_jsonl(tmp_path):
         def version(self):
             return "1.0.0"
 
-    _process_folder(_TickAgent(), folder, limit=None, agent_root=tmp_path)
+    _process_folder(
+        _TickAgent(), folder, limit=None, agent_root=tmp_path, project_path=tmp_path
+    )
 
     events_file = folder / ".ola" / "events.jsonl"
     assert events_file.exists()
@@ -675,7 +690,7 @@ def test_process_folder_skips_blockers_folder(tmp_path, caplog):
 
     agent = _FakeAgent()
     with caplog.at_level(logging.INFO, logger="ola.loop"):
-        _process_folder(agent, folder, None, tmp_path)
+        _process_folder(agent, folder, None, tmp_path, tmp_path)
 
     assert any("awaiting human input" in r.message for r in caplog.records)
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
@@ -696,7 +711,13 @@ def test_run_outer_loop_picks_up_midrun_sibling_before_later_folders(tmp_path):
     order: list[str] = []
 
     def fake_process(
-        agent, folder, limit, agent_root, max_attempts=0, janitor_enabled=True
+        agent,
+        folder,
+        limit,
+        agent_root,
+        project_path,
+        max_attempts=0,
+        janitor_enabled=True,
     ):
         order.append(folder.name)
         if folder.name == "01-init":
@@ -710,7 +731,7 @@ def test_run_outer_loop_picks_up_midrun_sibling_before_later_folders(tmp_path):
         patch("ola.loop._load_agent_env"),
         patch("ola.loop._ensure_git"),
     ):
-        run_outer_loop(agent, tmp_path)
+        run_outer_loop(agent, tmp_path, tmp_path)
 
     assert order == ["01-init", "01a-init-leftovers", "02-utils"]
 
@@ -729,7 +750,13 @@ def test_run_outer_loop_bails_when_folder_left_unfinished(tmp_path):
     order: list[str] = []
 
     def fake_process(
-        agent, folder, limit, agent_root, max_attempts=0, janitor_enabled=True
+        agent,
+        folder,
+        limit,
+        agent_root,
+        project_path,
+        max_attempts=0,
+        janitor_enabled=True,
     ):
         # Simulate a stuck folder: run_folder drained but ticked nothing.
         order.append(folder.name)
@@ -741,7 +768,7 @@ def test_run_outer_loop_bails_when_folder_left_unfinished(tmp_path):
         patch("ola.loop._ensure_git"),
         pytest.raises(FolderIncompleteError) as excinfo,
     ):
-        run_outer_loop(agent, tmp_path)
+        run_outer_loop(agent, tmp_path, tmp_path)
 
     assert excinfo.value.folder_name == "01-init"
     assert excinfo.value.remaining == 1

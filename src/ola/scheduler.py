@@ -24,6 +24,7 @@ event stream (``started`` → ``working*`` → ``complete``/``failed``); an
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import threading
 import time
@@ -294,12 +295,17 @@ def _load_task_prompt(folder: Path) -> str:
 
 
 def _substitute(
-    template: str, task_text: str, task_id: str, blocked_cmd: str = ""
+    template: str,
+    task_text: str,
+    task_id: str,
+    blocked_cmd: str = "",
+    plan_path: str = "",
 ) -> str:
     return (
         template.replace("{{task_text}}", task_text)
         .replace("{{task_id}}", task_id)
         .replace("{{blocked_cmd}}", blocked_cmd)
+        .replace("{{plan_path}}", plan_path)
     )
 
 
@@ -307,21 +313,32 @@ def _propagate(
     worktree_path: Path,
     folder: Path,
     agent_root: Path,
+    project_path: Path,
     task_id: str,
+    base_sha: str,
 ) -> None:
-    """Cherry-pick the worktree's HEAD onto *agent_root* and tick PLAN.md.
+    """Land the worktree's code on *project_path* and tick PLAN.md in *agent_root*.
 
-    Caller must hold the PLAN.md lock. The agent-folder PLAN.md is excluded
-    from the cherry-pick and reapplied via :func:`set_task_checked` so two
-    concurrent ticks can't conflict on shared lines. The agent's commit
-    message is preserved via ``git commit -C <sha>``.
+    Caller must hold the PLAN.md lock. The agent's worktree commit (project
+    code only — the plan copy under ``.ola/`` is git-excluded) is cherry-picked
+    onto the project repo and committed there with the agent's original message
+    (``git commit -C <sha>``). The checkbox is then ticked in the agent folder's
+    PLAN.md via :func:`set_task_checked` and committed separately in the agent
+    folder, so concurrent ticks never conflict on shared plan lines.
+
+    *base_sha* is the worktree's HEAD at creation. When the agent ticked its
+    checkbox without changing any project code, the worktree commit equals
+    *base_sha* (nothing new to cherry-pick), so the project repo is left
+    untouched and only the tick is committed in the agent folder.
     """
     sha = commit(worktree_path, f"ola: {folder.name} {task_id}")
-    plan_rel = f"{folder.name}/PLAN.md"
-    merge_back(worktree_path, agent_root, exclude_paths=[plan_rel])
+    if sha != base_sha:
+        merge_back(worktree_path, project_path)
+        _git(project_path, "commit", "-C", sha)
     set_task_checked(folder, task_id, True)
+    plan_rel = f"{folder.name}/PLAN.md"
     _git(agent_root, "add", plan_rel)
-    _git(agent_root, "commit", "-C", sha)
+    _git(agent_root, "commit", "-m", f"ola: {folder.name} {task_id}")
 
 
 def _truncate(s: str, n: int = 500) -> str:
@@ -404,6 +421,7 @@ def _run_one_task(
     agent: Agent,
     folder: Path,
     agent_root: Path,
+    project_path: Path,
     task_id: str,
     task_text: str,
     attempt: int,
@@ -415,18 +433,30 @@ def _run_one_task(
     stats_lock: threading.Lock,
     emitter: Any | None,
 ) -> str:
-    """Run a single task end-to-end in its own worktree.
+    """Run a single task end-to-end in its own project-repo worktree.
 
-    On agent success + checkbox tick: propagates to the agent-folder branch
-    and cleans up the worktree. On any other outcome: marks the task failed
-    (or requeues it for retry) and retains the worktree for post-mortem.
+    The worktree is branched from *project_path* and the live folder PLAN.md is
+    copied into ``<worktree>/.ola/PLAN.md`` for the agent to read and tick (the
+    project repo has no numbered folder of its own). On agent success + checkbox
+    tick: the code lands on the project repo and the tick is committed to the
+    agent folder, then the worktree is cleaned up. On any other outcome: marks
+    the task failed (or requeues it for retry) and retains the worktree.
 
     Returns one of the ``_OUTCOME_*`` constants so the main loop can fold the
     result into the folder-wide stagnation counter. A raised exception is an
     out-of-band hard failure that the main loop treats as non-stagnant.
     """
-    worktree_path = create(folder, task_id)
-    worktree_folder = worktree_path / folder.name
+    worktree_path = create(project_path, folder, task_id)
+    # The worktree's HEAD at creation: if the agent ticks without changing any
+    # project code, its commit equals this and there is nothing to merge back.
+    base_sha = _git(worktree_path, "rev-parse", "HEAD").stdout.decode().strip()
+    # The project worktree has no numbered folder; stage the live PLAN.md into
+    # the worktree's .ola/ so the agent reads and ticks it there. .ola/ is
+    # git-excluded, so the tick never rides the cherry-pick back to the project.
+    plan_copy = worktree_path / ".ola" / "PLAN.md"
+    plan_copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(folder / "PLAN.md", plan_copy)
+    plan_dir = plan_copy.parent
     clear_blocked_record(folder, task_id)
     blocked_cmd = provision_blocked_script(worktree_path, folder, task_id)
     prog = _ProgressEmitter(
@@ -440,9 +470,9 @@ def _run_one_task(
     )
     try:
         prog.started()
-        prompt = _substitute(template, task_text, task_id, str(blocked_cmd))
-        plan_in_worktree = worktree_folder / "PLAN.md"
-        prompt += f"\n\nPLAN.md is located at: {plan_in_worktree}"
+        prompt = _substitute(
+            template, task_text, task_id, str(blocked_cmd), str(plan_copy)
+        )
         workdir = str(worktree_path)
         state_dir = per_task_state_dir(folder, agent, task_id)
         labels = {
@@ -455,7 +485,7 @@ def _run_one_task(
         # most one per second by _ProgressEmitter); a None emitter no-ops.
         on_progress = prog.working
 
-        tasks_before = count_tasks(worktree_folder)
+        tasks_before = count_tasks(plan_dir)
         t0 = time.monotonic()
         response = _run_with_rate_limit_resume(
             agent, prompt, workdir, state_dir, labels, on_progress
@@ -475,7 +505,7 @@ def _run_one_task(
         # Record a STATS.jsonl row for this attempt. The phase is the
         # parallel-mode shape ``task-<task_id>-<attempt>``; the monitor parser
         # treats phase as an opaque string.
-        tasks_after = count_tasks(worktree_folder)
+        tasks_after = count_tasks(plan_dir)
         with stats_lock:
             _append_stats(
                 folder,
@@ -488,7 +518,7 @@ def _run_one_task(
             )
 
         try:
-            ticked = task_is_checked(worktree_folder, task_id)
+            ticked = task_is_checked(plan_dir, task_id)
         except (FileNotFoundError, KeyError):
             ticked = False
         record = read_blocked_record(folder, task_id)
@@ -497,7 +527,14 @@ def _run_one_task(
             # Checkbox is truth: a tick wins even over a stray blocked marker.
             clear_blocked_record(folder, task_id)
             with plan_lock:
-                _propagate(worktree_path, folder, agent_root, task_id)
+                _propagate(
+                    worktree_path,
+                    folder,
+                    agent_root,
+                    project_path,
+                    task_id,
+                    base_sha,
+                )
             with state_lock:
                 state.mark(task_id, "complete", last_error=None)
                 state.save()
@@ -571,12 +608,17 @@ def run_folder(
     agent: Agent,
     folder: Path,
     agent_root: Path,
+    project_path: Path,
     initial_cap: int,
     emitter: Any | None = None,
     max_attempts: int = 0,
     janitor_enabled: bool = True,
 ) -> None:
     """Process every pending task in *folder*/PLAN.md in parallel.
+
+    *agent_root* is the agent folder (holds *folder* and receives checkbox
+    ticks); *project_path* is the project repo the per-task worktrees branch
+    from and where the agent's code lands.
 
     *initial_cap* seeds the in-flight worker bound, but the live cap is
     re-read from ``<folder>/.ola/concurrency`` on every tick: an increase
@@ -596,10 +638,14 @@ def run_folder(
     """
     folder = Path(folder)
     agent_root = Path(agent_root)
+    project_path = Path(project_path)
 
-    # Keep .ola/ runtime artifacts (provisioned ola-blocked scripts, sidecar
-    # state) out of worktree `git add -A` commits even when the caller didn't
-    # go through run_outer_loop's _ensure_git.
+    # Keep .ola/ runtime artifacts out of `git add -A` commits even when the
+    # caller didn't go through run_outer_loop's _ensure_git. On the project repo
+    # this covers the per-task worktrees, the staged PLAN.md copy, and the
+    # provisioned ola-blocked script; on the agent folder it covers the janitor's
+    # `git add -A` commits over events/tasks/blocked state.
+    _exclude_ola_artifacts(project_path)
     _exclude_ola_artifacts(agent_root)
 
     # One-time, thread-unsafe agent setup (e.g. the OpenHands backend's
@@ -697,6 +743,7 @@ def run_folder(
                     agent,
                     folder,
                     agent_root,
+                    project_path,
                     task_id,
                     task_text,
                     new_attempt,

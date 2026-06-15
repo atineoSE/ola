@@ -14,7 +14,9 @@ You are the ola JANITOR. A task in this run reported itself BLOCKED. Your one jo
 
 A. **UNBLOCK (strongly preferred).** If the missing prerequisite can be produced by an agent:
    1. Add the prerequisite work as new unchecked `- [ ]` checkboxes to the CURRENT folder's plan at {{plan_path}}. Keep each prerequisite small and independent of the others.
-   2. Remove the blocked task's line from that plan and create a new sibling folder named exactly `{{leftovers_folder}}` containing a PLAN.md that starts with a short note (this task was blocked, the reason, and that the prerequisites are assumed complete by the time this folder runs) followed by the blocked task as an unchecked `- [ ]` checkbox.
+   2. Remove the blocked task's line from that plan and create a new sibling folder named exactly `{{leftovers_folder}}` containing two files:
+      - `PLAN.md` — Ralph-minimal: the blocked task as a single unchecked `- [ ]` checkbox, plus only its genuine dependencies and policies. Write it as a standalone task a fresh agent can pick up cold — no note that it was ever blocked, no "leftovers folder" framing, no "assume the prerequisites are already complete" priming, and no references to worktrees or other harness internals.
+      - `JANITOR-NOTES.md` — a sidecar for human review only (the harness never feeds it to an agent): the worker's reason for blocking, how you verified it, and the provenance (the folder and task it came from, plus the prerequisites you added).
 
 B. **ESCALATE (only if a human or an unobtainable resource is genuinely required).** Create a sibling folder named exactly `{{blockers_folder}}` containing a BLOCKERS.md — not a PLAN.md — with the task text, the worker's reason, and your own explanation of why you could not unblock it. Remove the blocked task's line from the current plan.
 

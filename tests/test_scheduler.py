@@ -1,4 +1,11 @@
-"""Tests for ola.scheduler — parallel run_folder against a stub agent."""
+"""Tests for ola.scheduler — parallel run_folder against a stub agent.
+
+The scheduler now spans two repos: per-task worktrees branch from the *project*
+repo (the agent's code lands there via ``merge_back``), while the plan and its
+checkbox ticks live in a separate *agent folder* repo. Helpers below build that
+two-repo layout; the live PLAN.md is staged into ``<worktree>/.ola/PLAN.md`` for
+the agent, so stub agents tick *that* copy.
+"""
 
 from __future__ import annotations
 
@@ -49,6 +56,22 @@ def _setup_folder(repo: Path, name: str, plan: str) -> Path:
     return folder
 
 
+def _two_repos(
+    tmp_path: Path, plan: str, folder_name: str = "agent-folder"
+) -> tuple[Path, Path, Path]:
+    """Build (project_repo, agent_root, folder) for a two-repo scheduler run.
+
+    *project_repo* is where per-task worktrees branch from and code lands;
+    *agent_root* holds the numbered *folder* and its PLAN.md ticks.
+    """
+    project = tmp_path / "project"
+    _init_repo(project)
+    agent_root = tmp_path / "agent"
+    _init_repo(agent_root)
+    folder = _setup_folder(agent_root, folder_name, plan)
+    return project, agent_root, folder
+
+
 def _log_oneline(repo: Path, ref: str = "main") -> list[str]:
     out = subprocess.run(
         ["git", "log", "--oneline", ref],
@@ -59,8 +82,17 @@ def _log_oneline(repo: Path, ref: str = "main") -> list[str]:
     return [ln for ln in out.splitlines() if ln.strip()]
 
 
+def _plan_copy(workdir) -> Path:
+    """The staged PLAN.md copy the scheduler hands the agent in its worktree."""
+    return Path(workdir) / ".ola"
+
+
 class _TickingAgent(Agent):
-    """Stub agent that writes a unique file and ticks the assigned checkbox."""
+    """Stub agent: writes a unique file and ticks the assigned checkbox.
+
+    The file is written into the project worktree (it rides ``merge_back`` to the
+    project repo); the tick goes into the staged ``.ola/PLAN.md`` copy.
+    """
 
     mnemonic = "stub"
     state_dir_name = ""
@@ -80,12 +112,11 @@ class _TickingAgent(Agent):
                 }
             )
         task_id = labels["task_id"]
-        folder_name = labels["folder"]
-        worktree_folder = Path(workdir) / folder_name
-        # Drop a unique artefact so we can verify propagation.
+        # Drop a unique artefact in the project worktree so we can verify
+        # propagation to the project repo.
         (Path(workdir) / f"file_{task_id}.txt").write_text(task_id)
-        # Tick this task's checkbox in the worktree's PLAN.md.
-        set_task_checked(worktree_folder, task_id, True)
+        # Tick this task's checkbox in the staged PLAN.md copy.
+        set_task_checked(_plan_copy(workdir), task_id, True)
         return AgentResponse(output="ok", success=True, stats=IterationStats())
 
     def version(self):
@@ -171,9 +202,14 @@ class _RateLimitedThenTicksAgent(_TickingAgent):
 # --- Prompt helpers ---
 
 
-def test_substitute_replaces_both_placeholders():
-    out = _substitute("hi {{task_text}} / {{task_id}}", "build X", "t-abc")
-    assert out == "hi build X / t-abc"
+def test_substitute_replaces_placeholders():
+    out = _substitute(
+        "hi {{task_text}} / {{task_id}} @ {{plan_path}}",
+        "build X",
+        "t-abc",
+        plan_path="/wt/.ola/PLAN.md",
+    )
+    assert out == "hi build X / t-abc @ /wt/.ola/PLAN.md"
 
 
 def test_load_task_prompt_falls_back_to_default(tmp_path):
@@ -189,28 +225,31 @@ def test_load_task_prompt_prefers_folder_local(tmp_path):
 
 
 def test_run_folder_single_task_success(tmp_path):
-    """One task, agent ticks the checkbox → propagated to main with the agent's commit."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Build the thing\n")
+    """One task, agent ticks the checkbox → code on project, tick on agent folder."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _TickingAgent()
-    run_folder(agent, folder, repo, initial_cap=1)
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
 
-    # PLAN.md on main is ticked.
+    # PLAN.md on the agent folder is ticked.
     assert task_is_checked(folder, task.task_id) is True
 
-    # Agent's artefact landed on main.
-    assert (repo / f"file_{task.task_id}.txt").read_text() == task.task_id
+    # Agent's artefact landed on the project repo.
+    assert (project / f"file_{task.task_id}.txt").read_text() == task.task_id
 
-    # A propagation commit landed on main (initial + folder-add + propagated).
-    log = _log_oneline(repo, "main")
-    assert len(log) == 3
-    assert any(f"agent-folder {task.task_id}" in line for line in log)
+    # The project repo gained one code commit (initial + propagated).
+    plog = _log_oneline(project, "main")
+    assert len(plog) == 2
+    assert any(f"agent-folder {task.task_id}" in line for line in plog)
 
-    # Worktree was cleaned up.
-    wt = folder / ".ola" / "worktrees" / task.task_id
+    # The agent folder gained one tick commit (initial + folder-add + tick).
+    alog = _log_oneline(agent_root, "main")
+    assert len(alog) == 3
+    assert any(f"agent-folder {task.task_id}" in line for line in alog)
+
+    # Worktree (under the project repo) was cleaned up.
+    wt = project / ".ola" / "worktrees" / task.task_id
     assert not wt.exists()
 
     # tasks.json reflects completion.
@@ -228,6 +267,8 @@ def test_run_folder_single_task_success(tmp_path):
         "task_id": task.task_id,
         "attempt": "1",
     }
+    # The agent worked in the project worktree, not the agent folder.
+    assert agent.invocations[0]["workdir"] == str(wt)
 
 
 def test_run_folder_warms_up_agent_before_dispatch(tmp_path):
@@ -236,9 +277,9 @@ def test_run_folder_warms_up_agent_before_dispatch(tmp_path):
     Guards the litellm import-deadlock fix: the OpenHands backend's in-process
     imports must happen serially before workers spawn.
     """
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] One\n- [ ] Two\n- [ ] Three\n")
+    project, agent_root, folder = _two_repos(
+        tmp_path, "- [ ] One\n- [ ] Two\n- [ ] Three\n"
+    )
 
     class _WarmUpAgent(_TickingAgent):
         def __init__(self) -> None:
@@ -255,7 +296,7 @@ def test_run_folder_warms_up_agent_before_dispatch(tmp_path):
                 self.ran_before_warmup = True
 
     agent = _WarmUpAgent()
-    run_folder(agent, folder, repo, initial_cap=3)
+    run_folder(agent, folder, agent_root, project, initial_cap=3)
 
     assert agent.warm_calls == 1
     assert agent.warm_thread == threading.main_thread().name
@@ -264,27 +305,23 @@ def test_run_folder_warms_up_agent_before_dispatch(tmp_path):
 
 
 def test_run_folder_three_tasks_all_complete(tmp_path):
-    """Three independent tasks all complete; each ticked, three propagation commits."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(
-        repo,
-        "agent-folder",
+    """Three independent tasks all complete; each ticked, three code commits."""
+    project, agent_root, folder = _two_repos(
+        tmp_path,
         "- [ ] Task A\n- [ ] Task B\n- [ ] Task C\n",
     )
     tasks = enumerate_tasks(folder)
 
     agent = _TickingAgent()
-    run_folder(agent, folder, repo, initial_cap=3)
+    run_folder(agent, folder, agent_root, project, initial_cap=3)
 
     for t in tasks:
         assert task_is_checked(folder, t.task_id) is True
-        assert (repo / f"file_{t.task_id}.txt").read_text() == t.task_id
-        assert not (folder / ".ola" / "worktrees" / t.task_id).exists()
+        assert (project / f"file_{t.task_id}.txt").read_text() == t.task_id
+        assert not (project / ".ola" / "worktrees" / t.task_id).exists()
 
-    # initial + folder-add + 3 propagations = 5 commits.
-    log = _log_oneline(repo, "main")
-    assert len(log) == 5
+    # project: initial + 3 code commits = 4.
+    assert len(_log_oneline(project, "main")) == 4
 
     state = TaskState.load(folder)
     assert all(state.get(t.task_id).status == "complete" for t in tasks)
@@ -292,17 +329,14 @@ def test_run_folder_three_tasks_all_complete(tmp_path):
 
 def test_run_folder_skips_already_complete_tasks(tmp_path):
     """Tasks already ticked in PLAN.md are not re-run."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(
-        repo,
-        "agent-folder",
+    project, agent_root, folder = _two_repos(
+        tmp_path,
         "- [x] Already done\n- [ ] Still pending\n",
     )
     pending = [t for t in enumerate_tasks(folder) if not t.checked][0]
 
     agent = _TickingAgent()
-    run_folder(agent, folder, repo, initial_cap=2)
+    run_folder(agent, folder, agent_root, project, initial_cap=2)
 
     assert len(agent.invocations) == 1
     assert agent.invocations[0]["labels"]["task_id"] == pending.task_id
@@ -314,9 +348,9 @@ class _CommittingAgent(Agent):
     Unlike :class:`_TickingAgent`, this agent makes its *own* commit in the
     worktree with a distinctive message (``feat: <task_text>``). That lets the
     integration test assert the agent's original commit message survives the
-    propagation onto the agent-folder branch (``git commit -C <sha>``), rather
-    than the synthetic message the scheduler falls back to when the worktree
-    has uncommitted changes.
+    propagation onto the project repo (``git commit -C <sha>``), rather than the
+    synthetic message the scheduler falls back to when the worktree has
+    uncommitted changes.
     """
 
     mnemonic = "stub"
@@ -331,16 +365,14 @@ class _CommittingAgent(Agent):
         with self._lock:
             self.invocations.append({"labels": dict(labels or {})})
         task_id = labels["task_id"]
-        folder_name = labels["folder"]
         workdir = Path(workdir)
-        worktree_folder = workdir / folder_name
         # Parse the human task text out of the substituted prompt.
         match = re.search(r"The task is: (.*?) \(task id", prompt)
         task_text = match.group(1)
-        # The task text is "Create file A" → drop "A.txt" in the folder.
+        # The task text is "Create file A" → drop "A.txt" in the project worktree.
         letter = task_text.rsplit(" ", 1)[-1]
-        (worktree_folder / f"{letter}.txt").write_text(task_text)
-        set_task_checked(worktree_folder, task_id, True)
+        (workdir / f"{letter}.txt").write_text(task_text)
+        set_task_checked(_plan_copy(workdir), task_id, True)
         # Commit in the worktree with the agent's own message.
         subprocess.run(
             ["git", "add", "-A"], cwd=str(workdir), capture_output=True, check=True
@@ -358,68 +390,62 @@ class _CommittingAgent(Agent):
 
 
 def test_run_folder_three_independent_tasks_integration(tmp_path):
-    """End-to-end: three independent tasks at concurrency=3 all land on main.
+    """End-to-end: three independent tasks at concurrency=3 land on the project.
 
     A stub agent creates file A/B/C, ticks its own checkbox, and commits with
     its own message. Asserts: all three complete, PLAN.md fully ticked on the
-    agent-folder branch, three commits carry the agents' *original* messages,
-    and all three worktrees are cleaned up. (``emitter=None``; event-emission
-    assertions are deferred to Phase 6.)
+    agent folder, three commits carry the agents' *original* messages on the
+    project repo, and all three worktrees are cleaned up.
     """
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(
-        repo,
-        "agent-folder",
+    project, agent_root, folder = _two_repos(
+        tmp_path,
         "- [ ] Create file A\n- [ ] Create file B\n- [ ] Create file C\n",
     )
     tasks = enumerate_tasks(folder)
 
     agent = _CommittingAgent()
-    run_folder(agent, folder, repo, initial_cap=3)
+    run_folder(agent, folder, agent_root, project, initial_cap=3)
 
     # Each task completed in tasks.json.
     state = TaskState.load(folder)
     assert all(state.get(t.task_id).status == "complete" for t in tasks)
 
-    # PLAN.md on the agent-folder branch is fully ticked.
+    # PLAN.md on the agent folder is fully ticked.
     assert all(task_is_checked(folder, t.task_id) for t in tasks)
 
-    # Each expected artefact landed on main.
+    # Each expected artefact landed on the project repo.
     for letter in ("A", "B", "C"):
-        assert (folder / f"{letter}.txt").read_text() == f"Create file {letter}"
+        assert (project / f"{letter}.txt").read_text() == f"Create file {letter}"
 
-    # Three commits carrying the agents' original messages landed on main,
-    # on top of (initial + folder-add).
-    log = _log_oneline(repo, "main")
-    messages = {ln.split(" ", 1)[1] for ln in log}
+    # Three commits carrying the agents' original messages landed on the project
+    # repo, on top of its initial commit.
+    plog = _log_oneline(project, "main")
+    messages = {ln.split(" ", 1)[1] for ln in plog}
     for letter in ("A", "B", "C"):
         assert f"feat: Create file {letter}" in messages
-    assert len(log) == 5  # initial + folder-add + 3 propagated
+    assert len(plog) == 4  # initial + 3 propagated
 
     # All three worktrees were cleaned up.
     for t in tasks:
-        assert not (folder / ".ola" / "worktrees" / t.task_id).exists()
+        assert not (project / ".ola" / "worktrees" / t.task_id).exists()
 
 
 # --- run_folder failure paths ---
 
 
 def test_run_folder_agent_failure_marks_failed_and_retains_worktree(tmp_path):
-    """Agent returns success=False → task marked failed, worktree kept, no commit on main."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Will fail\n")
+    """Agent returns success=False → task failed, worktree kept, no code commit."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Will fail\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _FailingAgent()
-    run_folder(agent, folder, repo, initial_cap=1)
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
 
-    # Still unchecked on main.
+    # Still unchecked on the agent folder.
     assert task_is_checked(folder, task.task_id) is False
 
-    # Worktree retained.
-    wt = folder / ".ola" / "worktrees" / task.task_id
+    # Worktree retained under the project repo.
+    wt = project / ".ola" / "worktrees" / task.task_id
     assert wt.exists()
 
     # State marked failed.
@@ -429,22 +455,19 @@ def test_run_folder_agent_failure_marks_failed_and_retains_worktree(tmp_path):
     assert entry.last_error is not None
     assert "boom" in entry.last_error
 
-    # No propagation commit landed on main.
-    log = _log_oneline(repo, "main")
-    assert len(log) == 2  # initial + folder-add
+    # No code commit landed on the project repo (just its initial commit).
+    assert len(_log_oneline(project, "main")) == 1
 
 
 def test_run_folder_stagnant_agent_marks_failed(tmp_path):
-    """Agent returns success but does not tick → marked failed with stagnant message."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Pretend success\n")
+    """Agent returns success but does not tick → failed with stagnant message."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Pretend success\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _StagnantAgent()
-    run_folder(agent, folder, repo, initial_cap=1)
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
 
-    # Still unchecked on main and on the worktree.
+    # Still unchecked on the agent folder.
     assert task_is_checked(folder, task.task_id) is False
 
     state = TaskState.load(folder)
@@ -452,25 +475,21 @@ def test_run_folder_stagnant_agent_marks_failed(tmp_path):
     assert entry.status == "failed"
     assert "stagnant" in entry.last_error.lower()
 
-    # No propagation commit landed.
-    log = _log_oneline(repo, "main")
-    assert len(log) == 2
+    # No code commit landed.
+    assert len(_log_oneline(project, "main")) == 1
 
 
 def test_run_folder_stagnant_exhausts_attempts_then_fails(tmp_path):
     """A stagnant agent is retried up to max_attempts, then the task stays failed."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Pretend success\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Pretend success\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _StagnantAgent()
-    run_folder(agent, folder, repo, initial_cap=1, max_attempts=2)
+    run_folder(agent, folder, agent_root, project, initial_cap=1, max_attempts=2)
 
-    # Still unticked; merge_back never ran so no propagation commit landed.
+    # Still unticked; merge_back never ran so no code commit landed.
     assert task_is_checked(folder, task.task_id) is False
-    log = _log_oneline(repo, "main")
-    assert len(log) == 2  # initial + folder-add
+    assert len(_log_oneline(project, "main")) == 1
 
     state = TaskState.load(folder)
     entry = state.get(task.task_id)
@@ -481,15 +500,13 @@ def test_run_folder_stagnant_exhausts_attempts_then_fails(tmp_path):
 
 def test_run_folder_halts_after_consecutive_stagnant(tmp_path):
     """Five consecutive stagnant attempts halt the folder, sparing later tasks."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
     plan = "".join(f"- [ ] Task {i}\n" for i in range(6))
-    folder = _setup_folder(repo, "agent-folder", plan)
+    project, agent_root, folder = _two_repos(tmp_path, plan)
     tasks = enumerate_tasks(folder)
 
     agent = _StagnantAgent()
     # cap=1 keeps the stagnant attempts strictly sequential and deterministic.
-    run_folder(agent, folder, repo, initial_cap=1, max_attempts=0)
+    run_folder(agent, folder, agent_root, project, initial_cap=1, max_attempts=0)
 
     # The circuit breaker trips at the 5th consecutive stagnant attempt, so
     # only five tasks were ever dispatched; the sixth is left untouched.
@@ -500,8 +517,8 @@ def test_run_folder_halts_after_consecutive_stagnant(tmp_path):
     assert len(pending) == 1
     assert all("stagnant" in state.get(t.task_id).last_error.lower() for t in failed)
 
-    # No propagation commits landed.
-    assert len(_log_oneline(repo, "main")) == 2
+    # No code commits landed.
+    assert len(_log_oneline(project, "main")) == 1
 
 
 def test_run_folder_stagnation_counter_resets_on_progress(tmp_path):
@@ -510,15 +527,13 @@ def test_run_folder_stagnation_counter_resets_on_progress(tmp_path):
     With stagnant tasks interleaved with successes, the consecutive count never
     reaches the threshold, so the folder runs to completion instead of halting.
     """
-    repo = tmp_path / "repo"
-    _init_repo(repo)
     # 4 stagnant + 1 success + 4 stagnant: never 5 consecutive stagnant.
     plan = (
         "".join(f"- [ ] Stagnant {i}\n" for i in range(4))
         + "- [ ] Real work\n"
         + "".join(f"- [ ] Stagnant {i}\n" for i in range(4, 8))
     )
-    folder = _setup_folder(repo, "agent-folder", plan)
+    project, agent_root, folder = _two_repos(tmp_path, plan)
     tasks = enumerate_tasks(folder)
     success_task = tasks[4]
 
@@ -535,7 +550,7 @@ def test_run_folder_stagnation_counter_resets_on_progress(tmp_path):
             return AgentResponse(output="lied", success=True, stats=IterationStats())
 
     agent = _MixedAgent()
-    run_folder(agent, folder, repo, initial_cap=1, max_attempts=0)
+    run_folder(agent, folder, agent_root, project, initial_cap=1, max_attempts=0)
 
     # Every task was attempted (no halt): the success completed, the rest failed.
     state = TaskState.load(folder)
@@ -549,18 +564,17 @@ def test_run_folder_stagnation_counter_resets_on_progress(tmp_path):
 
 def test_run_folder_retries_failed_task_then_succeeds(tmp_path):
     """With max_attempts, a task that fails once is requeued and then completes."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Flaky task\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Flaky task\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _FailThenTickAgent(fail_times=1)
-    run_folder(agent, folder, repo, initial_cap=1, max_attempts=2)
+    run_folder(agent, folder, agent_root, project, initial_cap=1, max_attempts=2)
 
-    # The retry succeeded: ticked on main, artefact landed, worktree gone.
+    # The retry succeeded: ticked on the agent folder, artefact on the project,
+    # worktree gone.
     assert task_is_checked(folder, task.task_id) is True
-    assert (repo / f"file_{task.task_id}.txt").read_text() == task.task_id
-    assert not (folder / ".ola" / "worktrees" / task.task_id).exists()
+    assert (project / f"file_{task.task_id}.txt").read_text() == task.task_id
+    assert not (project / ".ola" / "worktrees" / task.task_id).exists()
 
     state = TaskState.load(folder)
     entry = state.get(task.task_id)
@@ -571,13 +585,11 @@ def test_run_folder_retries_failed_task_then_succeeds(tmp_path):
 
 def test_run_folder_exhausts_max_attempts_then_fails(tmp_path):
     """A task that always fails is retried up to max_attempts, then stays failed."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Always fails\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Always fails\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _FailingAgent()
-    run_folder(agent, folder, repo, initial_cap=1, max_attempts=2)
+    run_folder(agent, folder, agent_root, project, initial_cap=1, max_attempts=2)
 
     # Tried twice total (initial attempt + one retry), never ticked.
     assert task_is_checked(folder, task.task_id) is False
@@ -588,45 +600,42 @@ def test_run_folder_exhausts_max_attempts_then_fails(tmp_path):
     assert entry.attempts == 2
     assert "boom" in entry.last_error
 
-    # Final failed worktree retained for post-mortem; PLAN.md unchanged.
-    assert (folder / ".ola" / "worktrees" / task.task_id).exists()
-    log = _log_oneline(repo, "main")
-    assert len(log) == 2  # initial + folder-add, no propagation
+    # Final failed worktree retained for post-mortem; no code commit landed.
+    assert (project / ".ola" / "worktrees" / task.task_id).exists()
+    assert len(_log_oneline(project, "main")) == 1
 
 
 def test_run_folder_materializes_default_concurrency(tmp_path):
     """A run with no .ola/concurrency writes the default so it is auditable."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Task A\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Task A\n")
     assert not (folder / ".ola" / "concurrency").exists()
 
-    run_folder(_TickingAgent(), folder, repo, initial_cap=DEFAULT_CONCURRENCY)
+    run_folder(
+        _TickingAgent(), folder, agent_root, project, initial_cap=DEFAULT_CONCURRENCY
+    )
 
     assert read_concurrency(folder) == DEFAULT_CONCURRENCY
 
 
 def test_run_folder_does_not_clobber_existing_concurrency(tmp_path):
     """A pre-existing cap (e.g. set by the dashboard slider) is left untouched."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Task A\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Task A\n")
     write_concurrency(folder, 5)
 
-    run_folder(_TickingAgent(), folder, repo, initial_cap=DEFAULT_CONCURRENCY)
+    run_folder(
+        _TickingAgent(), folder, agent_root, project, initial_cap=DEFAULT_CONCURRENCY
+    )
 
     assert read_concurrency(folder) == 5
 
 
 def test_run_folder_default_no_retries(tmp_path):
     """Default max_attempts=0 → a failing task is tried exactly once."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Always fails\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Always fails\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _FailThenTickAgent(fail_times=1)
-    run_folder(agent, folder, repo, initial_cap=1)
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
 
     state = TaskState.load(folder)
     entry = state.get(task.task_id)
@@ -641,13 +650,11 @@ def test_run_folder_writes_parallel_phase_stats(tmp_path):
     """Each attempt appends a STATS.jsonl row with phase ``task-<id>-<attempt>``."""
     import json
 
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Task A\n- [ ] Task B\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Task A\n- [ ] Task B\n")
     tasks = enumerate_tasks(folder)
 
     agent = _TickingAgent()
-    run_folder(agent, folder, repo, initial_cap=2)
+    run_folder(agent, folder, agent_root, project, initial_cap=2)
 
     stats_file = folder / "STATS.jsonl"
     assert stats_file.exists()
@@ -666,13 +673,11 @@ def test_run_folder_failure_still_writes_stats(tmp_path):
     """A failed attempt still appends a stats row (delta 0, agent recorded)."""
     import json
 
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Will fail\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Will fail\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _FailingAgent()
-    run_folder(agent, folder, repo, initial_cap=1)
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
 
     records = [
         json.loads(line)
@@ -689,9 +694,7 @@ def test_run_folder_failure_still_writes_stats(tmp_path):
 
 def test_run_folder_rate_limit_sleeps_then_resumes(tmp_path):
     """A rate_limited response sleeps then re-runs the same task to completion."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Build the thing\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
     task = enumerate_tasks(folder)[0]
 
     resets_at = int(time.time()) + 3
@@ -699,7 +702,7 @@ def test_run_folder_rate_limit_sleeps_then_resumes(tmp_path):
 
     slept: list[float] = []
     with patch("ola.scheduler.time.sleep", side_effect=lambda d: slept.append(d)):
-        run_folder(agent, folder, repo, initial_cap=1)
+        run_folder(agent, folder, agent_root, project, initial_cap=1)
 
     # Slept once (does not burn a retry attempt), then resumed and completed.
     assert len(slept) == 1
@@ -716,9 +719,7 @@ def test_run_folder_rate_limit_sleeps_then_resumes(tmp_path):
 
 def test_run_folder_rate_limit_too_far_fails(tmp_path):
     """A reset beyond the wait cap fails the task without sleeping."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Build the thing\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
     task = enumerate_tasks(folder)[0]
 
     resets_at = int(time.time()) + 9 * 3600  # beyond the 8h cap
@@ -726,7 +727,7 @@ def test_run_folder_rate_limit_too_far_fails(tmp_path):
 
     slept: list[float] = []
     with patch("ola.scheduler.time.sleep", side_effect=lambda d: slept.append(d)):
-        run_folder(agent, folder, repo, initial_cap=1)
+        run_folder(agent, folder, agent_root, project, initial_cap=1)
 
     assert slept == []  # never slept
     assert agent.calls == 1
@@ -742,11 +743,9 @@ def test_run_folder_rate_limit_too_far_fails(tmp_path):
 
 
 def test_run_folder_respects_initial_cap(tmp_path):
-    """With cap=1, two workers never overlap; with cap=2, they can."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(
-        repo, "agent-folder", "- [ ] T1\n- [ ] T2\n- [ ] T3\n- [ ] T4\n"
+    """With cap=1, two workers never overlap; with cap=2+, they can."""
+    project, agent_root, folder = _two_repos(
+        tmp_path, "- [ ] T1\n- [ ] T2\n- [ ] T3\n- [ ] T4\n"
     )
 
     # Custom agent that records concurrent overlap window.
@@ -772,14 +771,16 @@ def test_run_folder_respects_initial_cap(tmp_path):
                     overlap["current"] -= 1
 
     agent = _SlowAgent()
-    run_folder(agent, folder, repo, initial_cap=1)
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
     assert overlap["max"] == 1
 
-    # Reset and run again at cap=4. (Fresh folder to start clean.)
-    repo2 = tmp_path / "repo2"
-    _init_repo(repo2)
+    # Reset and run again at cap=4. (Fresh repos to start clean.)
+    project2 = tmp_path / "project2"
+    _init_repo(project2)
+    agent_root2 = tmp_path / "agent2"
+    _init_repo(agent_root2)
     folder2 = _setup_folder(
-        repo2, "agent-folder", "- [ ] T1\n- [ ] T2\n- [ ] T3\n- [ ] T4\n"
+        agent_root2, "agent-folder", "- [ ] T1\n- [ ] T2\n- [ ] T3\n- [ ] T4\n"
     )
     overlap2: dict[str, int] = {"max": 0, "current": 0}
     lock2 = threading.Lock()
@@ -803,7 +804,7 @@ def test_run_folder_respects_initial_cap(tmp_path):
                     overlap2["current"] -= 1
 
     agent2 = _SlowAgent2()
-    run_folder(agent2, folder2, repo2, initial_cap=4)
+    run_folder(agent2, folder2, agent_root2, project2, initial_cap=4)
     assert overlap2["max"] >= 2
 
 
@@ -825,10 +826,8 @@ def test_run_folder_honours_live_cap_increase(tmp_path):
     requires the pool to grow past its initial max_workers=1). Then releases the
     workers and confirms the folder completes.
     """
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(
-        repo, "agent-folder", "".join(f"- [ ] T{i}\n" for i in range(6))
+    project, agent_root, folder = _two_repos(
+        tmp_path, "".join(f"- [ ] T{i}\n" for i in range(6))
     )
     cap_file = folder / ".ola" / "concurrency"
     cap_file.parent.mkdir(parents=True, exist_ok=True)
@@ -858,7 +857,9 @@ def test_run_folder_honours_live_cap_increase(tmp_path):
 
     agent = _BlockingAgent()
     worker = threading.Thread(
-        target=run_folder, args=(agent, folder, repo), kwargs={"initial_cap": 1}
+        target=run_folder,
+        args=(agent, folder, agent_root, project),
+        kwargs={"initial_cap": 1},
     )
     worker.start()
     try:
@@ -888,28 +889,26 @@ def test_run_folder_honours_live_cap_increase(tmp_path):
 
 def test_run_folder_empty_plan_is_noop(tmp_path):
     """A folder with no pending tasks doesn't spawn any workers and doesn't commit."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [x] Already done\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [x] Already done\n")
 
     agent = _TickingAgent()
-    run_folder(agent, folder, repo, initial_cap=2)
+    run_folder(agent, folder, agent_root, project, initial_cap=2)
 
     assert agent.invocations == []
-    log = _log_oneline(repo, "main")
-    assert len(log) == 2  # initial + folder-add
+    # No code commits on the project repo (just its initial commit).
+    assert len(_log_oneline(project, "main")) == 1
 
 
 # --- Prompt substitution end-to-end ---
 
 
 def test_run_folder_passes_substituted_prompt(tmp_path):
-    """The agent receives a prompt with {{task_text}} and {{task_id}} resolved."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Build the widget\n")
+    """The agent receives a prompt with task/id/plan_path placeholders resolved."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the widget\n")
     task = enumerate_tasks(folder)[0]
-    (folder / "TASK-PROMPT.md").write_text("Task: {{task_text}}; id: {{task_id}}")
+    (folder / "TASK-PROMPT.md").write_text(
+        "Task: {{task_text}}; id: {{task_id}}; plan: {{plan_path}}"
+    )
 
     captured = {}
 
@@ -925,12 +924,14 @@ def test_run_folder_passes_substituted_prompt(tmp_path):
             )
 
     agent = _CaptureAgent()
-    run_folder(agent, folder, repo, initial_cap=1)
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
 
     assert "Task: Build the widget" in captured["prompt"]
     assert f"id: {task.task_id}" in captured["prompt"]
-    # Absolute PLAN.md path is appended so the agent can find the file.
-    assert "PLAN.md is located at:" in captured["prompt"]
+    # {{plan_path}} is the absolute path of the staged PLAN.md copy in the
+    # project worktree's .ola/.
+    expected = str(project / ".ola" / "worktrees" / task.task_id / ".ola" / "PLAN.md")
+    assert f"plan: {expected}" in captured["prompt"]
 
 
 # --- Event emission (Phase 6) ---
@@ -975,9 +976,9 @@ def test_run_folder_emits_all_event_types(tmp_path):
     """A trivial parallel run writes started/working/complete/failed to events.jsonl."""
     import json
 
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Will pass\n- [ ] Will fail\n")
+    project, agent_root, folder = _two_repos(
+        tmp_path, "- [ ] Will pass\n- [ ] Will fail\n"
+    )
     tasks = enumerate_tasks(folder)
 
     class _RoutingAgent(_ProgressTickingAgent):
@@ -1008,7 +1009,7 @@ def test_run_folder_emits_all_event_types(tmp_path):
     events_path = folder / ".ola" / "events.jsonl"
     emitter = Emitter([LocalSink(events_path)])
     agent = _RoutingAgent(fail_task_id=tasks[1].task_id)
-    run_folder(agent, folder, repo, initial_cap=2, emitter=emitter)
+    run_folder(agent, folder, agent_root, project, initial_cap=2, emitter=emitter)
     emitter.close()  # flush the LocalSink writer thread
 
     records = [
@@ -1179,14 +1180,18 @@ class _BlockingAgent(Agent):
 
 def test_run_folder_blocked_task_is_terminal_no_retry(tmp_path):
     """A blocked task is marked blocked once and never retried, even with retries left."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Needs a secret\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Needs a secret\n")
     task = enumerate_tasks(folder)[0]
 
     agent = _BlockingAgent(reason="FOO_API_KEY is not available")
     run_folder(
-        agent, folder, repo, initial_cap=1, max_attempts=3, janitor_enabled=False
+        agent,
+        folder,
+        agent_root,
+        project,
+        initial_cap=1,
+        max_attempts=3,
+        janitor_enabled=False,
     )
 
     # Dispatched exactly once despite max_attempts=3.
@@ -1198,28 +1203,32 @@ def test_run_folder_blocked_task_is_terminal_no_retry(tmp_path):
     assert entry.attempts == 1
     assert entry.last_error == "blocked: FOO_API_KEY is not available"
 
-    # Unticked, no propagation commit, and the worktree was cleaned up (the
-    # reason is recorded; nothing in the worktree is worth a post-mortem).
+    # Unticked, no code commit, and the worktree was cleaned up (the reason is
+    # recorded; nothing in the worktree is worth a post-mortem).
     assert task_is_checked(folder, task.task_id) is False
-    assert len(_log_oneline(repo, "main")) == 2
-    assert not (folder / ".ola" / "worktrees" / task.task_id).exists()
+    assert len(_log_oneline(project, "main")) == 1
+    assert not (project / ".ola" / "worktrees" / task.task_id).exists()
 
-    # The marker is retained as the audit record.
+    # The marker is retained as the audit record (in the agent folder).
     assert (folder / ".ola" / "blocked" / f"{task.task_id}.reason").exists()
 
 
 def test_run_folder_blocked_emits_failed_event_with_blocked_flag(tmp_path):
     import json
 
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Needs a secret\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Needs a secret\n")
 
     events_path = folder / ".ola" / "events.jsonl"
     emitter = Emitter([LocalSink(events_path)])
     agent = _BlockingAgent(reason="no key")
     run_folder(
-        agent, folder, repo, initial_cap=1, emitter=emitter, janitor_enabled=False
+        agent,
+        folder,
+        agent_root,
+        project,
+        initial_cap=1,
+        emitter=emitter,
+        janitor_enabled=False,
     )
     emitter.close()
 
@@ -1236,14 +1245,12 @@ def test_run_folder_blocked_emits_failed_event_with_blocked_flag(tmp_path):
 
 def test_run_folder_blocked_does_not_trip_stagnation_breaker(tmp_path):
     """Six consecutive blocked tasks are signal, not stagnation: no halt."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
     plan = "".join(f"- [ ] Task {i}\n" for i in range(6))
-    folder = _setup_folder(repo, "agent-folder", plan)
+    project, agent_root, folder = _two_repos(tmp_path, plan)
     tasks = enumerate_tasks(folder)
 
     agent = _BlockingAgent()
-    run_folder(agent, folder, repo, initial_cap=1, janitor_enabled=False)
+    run_folder(agent, folder, agent_root, project, initial_cap=1, janitor_enabled=False)
 
     # All six were dispatched (a stagnation halt would have stopped at five).
     state = TaskState.load(folder)
@@ -1252,9 +1259,7 @@ def test_run_folder_blocked_does_not_trip_stagnation_breaker(tmp_path):
 
 def test_run_folder_tick_beats_blocked_marker(tmp_path):
     """A task that ticks its checkbox completes even if it also ran ola-blocked."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "agent-folder", "- [ ] Confused task\n")
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Confused task\n")
     task = enumerate_tasks(folder)[0]
 
     class _TickAndBlockAgent(_TickingAgent):
@@ -1274,7 +1279,7 @@ def test_run_folder_tick_beats_blocked_marker(tmp_path):
             )
 
     agent = _TickAndBlockAgent()
-    run_folder(agent, folder, repo, initial_cap=1, janitor_enabled=False)
+    run_folder(agent, folder, agent_root, project, initial_cap=1, janitor_enabled=False)
 
     state = TaskState.load(folder)
     assert state.get(task.task_id).status == "complete"
@@ -1337,13 +1342,13 @@ class _BlockThenJanitorAgent(_TickingAgent):
 
 def test_run_folder_blocked_dispatches_janitor_and_runs_prereq(tmp_path):
     """The janitor's prerequisite task is picked up in the same folder run."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    folder = _setup_folder(repo, "01-api", "- [ ] Call the FOO API\n")
+    project, agent_root, folder = _two_repos(
+        tmp_path, "- [ ] Call the FOO API\n", folder_name="01-api"
+    )
     blocked = enumerate_tasks(folder)[0]
 
     agent = _BlockThenJanitorAgent(blocked.task_id, "Call the FOO API")
-    run_folder(agent, folder, repo, initial_cap=1)
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
 
     # The janitor ran once, in the agent root, labelled as janitor.
     assert len(agent.janitor_invocations) == 1
@@ -1362,10 +1367,10 @@ def test_run_folder_blocked_dispatches_janitor_and_runs_prereq(tmp_path):
     assert state.get(blocked.task_id) is None
     assert "Call the FOO API" not in (folder / "PLAN.md").read_text()
 
-    # The leftovers folder exists with the moved task, and the janitor's
-    # edits were committed by the harness.
-    leftovers = repo / "01a-api-leftovers"
+    # The leftovers folder exists in the agent folder with the moved task, and
+    # the janitor's edits were committed by the harness in the agent folder.
+    leftovers = agent_root / "01a-api-leftovers"
     assert leftovers.is_dir()
     assert "Call the FOO API" in (leftovers / "PLAN.md").read_text()
-    log = _log_oneline(repo, "main")
-    assert any(f"janitor {blocked.task_id}" in ln for ln in log)
+    alog = _log_oneline(agent_root, "main")
+    assert any(f"janitor {blocked.task_id}" in ln for ln in alog)

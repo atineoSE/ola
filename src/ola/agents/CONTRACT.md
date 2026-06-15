@@ -5,12 +5,28 @@ entirely through files**. The harness never asks a human unless every
 automatic escape hatch is exhausted, and it never serializes work that can
 run in parallel.
 
+## Project repo and agent folder
+
+ola is invoked from **inside the project repo** — the process working
+directory is the project being worked on. The **agent folder** is that
+project's sibling, passed as `--agent-folder` (default `../agent`), and is
+owned entirely by ola: it holds the numbered folders, their PLAN.md files,
+the per-task worktrees, and the monitor history. The project repo holds the
+code under change; the agent folder is the orchestration database (below).
+
+Per-task git worktrees spawn from the **project** repo, so a task agent's
+working directory is a project worktree that contains only project code. The
+agent never sees the agent folder and never needs to: whatever it must know
+arrives in its prompt or is recoverable from the project's current state.
+Finished code changes cherry-pick back onto the project repo, and ola
+reconciles each task's checkbox tick onto the agent-folder PLAN.md on the
+agent's behalf.
+
 ## File-driven orchestration
 
-The agent folder (a sibling of the project being worked on) is the database.
-Everything the harness and its agents need to coordinate lives in plain files
-and folders — auditable, diffable, and easy for both humans and agents to
-inspect and edit.
+The agent folder is the database. Everything the harness and its agents need
+to coordinate lives in plain files and folders — auditable, diffable, and easy
+for both humans and agents to inspect and edit.
 
 - **Numbered folders run in order.** Subfolders named `NN-description/`
   (e.g. `01-init/`, `02-setup/`) are processed in lexicographic order, one
@@ -19,9 +35,9 @@ inspect and edit.
   `- [ ]` checkbox line in a folder's `PLAN.md` is one task that can be
   worked on in isolation, in any order, concurrently. Work that depends on
   other work belongs in a *later folder*, never in the same plan.
-- **Fresh context per task.** Each task runs in its own git worktree with a
-  minimal prompt. Whatever context an agent needs it recovers from the
-  current state of the code, not from conversation history.
+- **Fresh context per task.** Each task runs in its own git worktree of the
+  project repo with a minimal prompt. Whatever context an agent needs it
+  recovers from the current state of the code, not from conversation history.
 - **Checkbox is truth.** A ticked `- [x]` in PLAN.md is the only completion
   signal the harness accepts. Work that is not reflected in a tick did not
   happen, no matter what the agent claims.
@@ -65,10 +81,13 @@ moving without a human. The janitor produces exactly one of two outcomes:
    unchecked checkboxes to the *current* folder's PLAN.md (so it is picked
    up in the same run), removes the blocked task's line, and moves the
    blocked task into a new sibling **leftovers folder** named
-   `<NN><letter>-<base>-leftovers/` containing a PLAN.md with a short note
-   (the task was blocked, why, and that prerequisites are assumed complete
-   by the time the folder runs) followed by the task as an unchecked
-   checkbox.
+   `<NN><letter>-<base>-leftovers/`. That folder's PLAN.md is minimal — the
+   task as an unchecked checkbox plus only its genuine dependencies or
+   policies — and says nothing about why it was blocked or that a janitor
+   produced it; the next agent to pick it up reads it as an ordinary task.
+   The blocked reason, the janitor's verification, and the task's provenance
+   go into a separate `JANITOR-NOTES.md` sidecar in the same folder, written
+   for human review only — the harness never feeds it to an agent.
 2. **Escalate (last resort).** If a human or an unobtainable resource is
    genuinely required, the janitor creates a sibling **blockers folder**
    named `<NN><letter>-<base>-blockers/` containing a `BLOCKERS.md` — *not*

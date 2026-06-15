@@ -32,6 +32,7 @@ from .harness import (
     build_agent_repo,
     build_example_repo,
     git_log_subjects,
+    project_repo,
     read_events,
     read_stats,
     read_tasks,
@@ -297,13 +298,14 @@ def test_source_edit_merges_back(tmp_path):
     run_pipeline(agent, agent_path)
 
     # The file each task wrote in its worktree was cherry-picked onto the
-    # agent branch (PLAN.md tick excluded from the cherry-pick, applied
-    # separately) and is present + committed. Tasks run sequentially, so the
-    # last task's edit is the surviving content.
-    merged = folder / "widget.py"
+    # project repo and is present + committed there. Tasks run sequentially, so
+    # the last task's edit is the surviving content. (The tick lands separately
+    # on the agent folder, never on the project repo.)
+    merged = project_repo(agent_path) / "widget.py"
     assert merged.exists()
     assert "implemented by" in merged.read_text()
 
+    # Each task's tick was committed on the agent folder.
     tracked = git_log_subjects(agent_path)
     assert any(s.startswith("ola: 01-find-date ") for s in tracked)
 

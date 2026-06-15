@@ -193,14 +193,25 @@ def _load_agent_env(plan_path: Path) -> None:
 def run_outer_loop(
     agent: Agent,
     plan_path: Path,
+    project_path: Path,
     limit: int | None = None,
     max_attempts: int = 0,
     janitor_enabled: bool = True,
 ) -> None:
-    """Run the outer loop over plan subfolders."""
+    """Run the outer loop over plan subfolders.
+
+    *plan_path* is the agent folder: it holds the numbered plan subfolders and
+    receives the checkbox ticks. *project_path* is the project repo (the
+    process cwd): per-task worktrees spawn from its HEAD and the agent edits
+    the project there. Both must be git repositories.
+    """
     _load_agent_env(plan_path)
 
+    # The agent folder is committed to for checkbox ticks; the project repo is
+    # the worktree source. Both need to be initialised and have their .ola/
+    # runtime artifacts excluded from git.
     _ensure_git(plan_path)
+    _ensure_git(project_path)
 
     # One folder per discovery pass: a janitor may create a letter-suffixed
     # sibling (e.g. 01a-init-leftovers) while 01-init is running, and it must
@@ -219,7 +230,15 @@ def run_outer_loop(
                 logger.info("No subfolders found in %s. Nothing to do.", plan_path)
             break
         logger.info("Processing: %s", folder.name)
-        _process_folder(agent, folder, limit, plan_path, max_attempts, janitor_enabled)
+        _process_folder(
+            agent,
+            folder,
+            limit,
+            plan_path,
+            project_path,
+            max_attempts,
+            janitor_enabled,
+        )
 
         # Completeness gate. _process_folder has drained the folder (its tasks
         # all ticked, relocated to a leftovers/blockers sibling, or exhausted
@@ -265,6 +284,7 @@ def _process_folder(
     folder: Path,
     limit: int | None,
     agent_root: Path,
+    project_path: Path,
     max_attempts: int = 0,
     janitor_enabled: bool = True,
 ) -> None:
@@ -310,6 +330,7 @@ def _process_folder(
             agent,
             folder,
             agent_root,
+            project_path,
             cap,
             emitter=emitter,
             max_attempts=max_attempts,

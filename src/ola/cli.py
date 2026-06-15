@@ -50,6 +50,11 @@ def _env_command(argv: list[str]) -> int:
 
 
 def main() -> None:
+    # The process cwd is the *project* repo: per-task worktrees spawn from it
+    # and the agent edits the project there. The agent folder (``-f``) only
+    # carries the plan and the checkbox ticks. Capture cwd before any chdir.
+    project_path = Path.cwd()
+
     if sys.argv[1:2] == ["env"]:
         sys.exit(_env_command(sys.argv[2:]))
 
@@ -154,6 +159,7 @@ def main() -> None:
         run_outer_loop(
             agent,
             plan_path,
+            project_path,
             limit=args.limit,
             max_attempts=args.max_attempts,
             janitor_enabled=not args.no_janitor,
