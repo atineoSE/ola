@@ -19,9 +19,15 @@ from rich.text import Text
 
 from ola.monitor.data import FolderStatus, read_agent_folder
 
-# Terminal lines reserved for table chrome (title, borders, header, separator,
-# bottom border, caption, plus a small safety margin for wrapped title text).
-_TABLE_CHROME_ROWS = 8
+# Terminal lines reserved for table chrome:
+# - title (1)
+# - top border (1)
+# - header row (1)
+# - separator between header and data (1)
+# - bottom border (1)
+# - caption (1)
+# - blank line before caption (1)
+_TABLE_CHROME_ROWS = 7
 
 
 class ViewMode(Enum):
