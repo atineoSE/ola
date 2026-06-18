@@ -28,6 +28,8 @@ ola-top has two column layouts, toggled with `m`:
 * **Task view** (default) — folder/task progress: agent, model, tasks done, turns, wall time.
 * **Metrics view** — token economics: input/output tokens, average and max context, cache hit rate, in/out ratio, LLM-vs-tool time, TTFT, tokens/sec.
 
+In a parallel folder the **Agent** fills from the `started` event the moment a task begins (mnemonic only — the agent version arrives with the first `STATS.jsonl` row). **Model** is not in the event stream, so it stays blank until that first `STATS.jsonl` row lands.
+
 ## Sequential vs parallel folders
 
 ola-top adapts what it shows when you expand a folder, based on whether the folder runs in [parallel mode](./parallel.md) (i.e. it has a `.ola/` sidecar):

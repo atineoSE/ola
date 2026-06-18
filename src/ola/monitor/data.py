@@ -108,6 +108,12 @@ class FolderStatus:
     # present; ``task_rows`` is the per-task spine for the expanded view.
     concurrency_cap: int | None = None
     task_rows: list[TaskRow] = field(default_factory=list)
+    # Agent mnemonic ("cc"/"oh"/"cx"/"ct") from the latest event that carries
+    # one, so the agent shows from task start — events land a ``started`` event
+    # immediately, whereas STATS.jsonl (which also carries the agent *version*)
+    # is only written at iteration end. Empty for sequential folders (no events)
+    # and before the first event lands. See :attr:`agent_display`.
+    event_agent_backend: str = ""
     # Parallel-mode wall-clock span across all events (earliest→latest ts),
     # recomputed each read. 0.0 for sequential folders or before two events
     # land. See :attr:`display_wall_ms`.
@@ -163,9 +169,19 @@ class FolderStatus:
 
     @property
     def agent_display(self) -> str:
-        """Agent display from the most recent iteration."""
+        """Agent display, e.g. 'Claude Code 1.2.3'.
+
+        Prefers the most recent STATS.jsonl iteration, which carries the agent
+        version. Before the first iteration is written, falls back to the agent
+        mnemonic from the latest event (no version available there) so the agent
+        shows from task start rather than only once the first iteration ends.
+        """
         if self.iterations:
             return self.iterations[-1].agent_display
+        if self.event_agent_backend:
+            return _AGENT_FULL_NAMES.get(
+                self.event_agent_backend, self.event_agent_backend
+            )
         return ""
 
     @property
@@ -299,6 +315,7 @@ def read_folder_status(folder: Path) -> FolderStatus:
         status.concurrency_cap = read_concurrency(folder)
         status.task_rows = read_task_rows(folder, status.iterations)
         status.events_elapsed_s = _events_elapsed_s(folder)
+        status.event_agent_backend = _latest_event_backend(folder)
 
     return status
 
@@ -421,6 +438,21 @@ def _events_elapsed_s(folder: Path) -> float:
     if len(timestamps) < 2:
         return 0.0
     return _worked_seconds(timestamps)
+
+
+def _latest_event_backend(folder: Path) -> str:
+    """Agent mnemonic from the latest event that carries one, or ``""``.
+
+    ``agent_backend`` is in every event (incl. ``started``), so this surfaces
+    the agent as soon as the first event lands — before any STATS.jsonl row.
+    The latest event carrying one wins, matching how the dashboard derives the
+    folder's running backend.
+    """
+    backend = ""
+    for ev in _read_events(folder):
+        if ev.get("agent_backend"):
+            backend = ev["agent_backend"]
+    return backend
 
 
 def _read_events_by_task(folder: Path) -> dict[str, list[dict]]:

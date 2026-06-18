@@ -151,6 +151,30 @@ def test_folder_agent_display_empty():
     assert fs.agent_display == ""
 
 
+def test_folder_agent_display_from_event_before_stats():
+    # Before the first STATS.jsonl row, the agent shows from the event backend
+    # (mnemonic only — events don't carry the version).
+    fs = FolderStatus(name="test", event_agent_backend="cc")
+    assert fs.agent_display == "Claude Code"
+
+
+def test_folder_agent_display_iterations_win_over_event():
+    # Once a STATS.jsonl iteration exists it wins (it carries the version).
+    fs = FolderStatus(
+        name="test",
+        iterations=[
+            IterationStatus(phase="task-t1-1", agent="cc", agent_version="1.1")
+        ],
+        event_agent_backend="cc",
+    )
+    assert fs.agent_display == "Claude Code 1.1"
+
+
+def test_folder_agent_display_unknown_event_backend():
+    fs = FolderStatus(name="test", event_agent_backend="zz")
+    assert fs.agent_display == "zz"
+
+
 def test_parse_stats_jsonl_empty():
     assert parse_stats_jsonl("") == []
     assert parse_stats_jsonl("  \n  ") == []
@@ -859,6 +883,32 @@ def test_read_folder_status_parallel_elapsed_from_events(tmp_path: Path):
     # span = 14:00:00 → 14:01:40 = 100s, wider than either task's own elapsed.
     assert status.events_elapsed_s == 100.0
     assert status.display_wall_ms == 100_000
+
+
+def test_read_folder_status_agent_from_events_before_stats(tmp_path: Path):
+    """The agent shows from the event stream before any STATS.jsonl row lands."""
+    folder = tmp_path / "01-task"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-aaa", "text": "A", "line_no": 1, "status": "running"}],
+    )
+    _write_events_jsonl(
+        folder,
+        [
+            {
+                "task_id": "t-aaa",
+                "status": "started",
+                "agent_backend": "cc",
+                "ts": "2026-05-27T14:00:00.000Z",
+            },
+        ],
+    )
+    status = read_folder_status(folder)
+    # No STATS.jsonl yet, but the agent is already known from the started event.
+    assert status.iterations == []
+    assert status.event_agent_backend == "cc"
+    assert status.agent_display == "Claude Code"
 
 
 def test_display_wall_ms_prefers_events_span_over_stale_stats():
