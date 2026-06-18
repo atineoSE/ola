@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 1.0.1
+version: 1.0.2
 ---
 
 # Create an ola plan
@@ -127,10 +127,21 @@ For each stage folder, write a `PLAN.md`:
 
 Optional, per folder, when it helps:
 
-- **`TASK-PROMPT.md`** — a per-task prompt template with `{{task_text}}` and
-  `{{task_id}}` placeholders, used to drive each task reliably (e.g. project
-  conventions, "run the test suite before ticking", how to signal blocked). If
-  omitted, ola uses a sensible default. Recommended for non-trivial projects.
+- **`TASK-PROMPT.md`** — a per-task prompt template used to drive each task
+  reliably (e.g. project conventions, "run the test suite before ticking", how to
+  signal blocked). If omitted, ola uses a sensible default. Recommended for
+  non-trivial projects. A folder-local file **fully replaces** the default — ola
+  does not merge them — so it must itself carry every placeholder it needs:
+  - `{{task_text}}`, `{{task_id}}` — the task and its id.
+  - `{{plan_path}}` — the per-task PLAN.md path the agent must tick. This is
+    load-bearing: a ticked checkbox is the **only** completion signal ola reads,
+    and the agent works in a project worktree that does not contain PLAN.md, so
+    an override that omits `{{plan_path}}` leaves the agent unable to find the
+    file to check off. Every task then reads back as *stagnant* (work done, never
+    ticked) and the folder stalls on the consecutive-stagnant breaker. **Always
+    include `{{plan_path}}` and the tick instruction in a custom override.**
+  - `{{blocked_cmd}}` — the command a task runs to self-report BLOCKED; include
+    it so the janitor escape hatch still works.
 - **`.ola/concurrency`** — a single integer: how many tasks in this folder run
   at once (default 1). Set it (e.g. `4`) when a stage has many independent tasks
   worth running in parallel. The cap is re-read live during the run.
