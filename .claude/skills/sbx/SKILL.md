@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 1.0.0
+version: 1.1.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -13,6 +13,10 @@ version: 1.0.0
 > in favour of `--resource`/`--id`). After upgrading sbx, run `sbx version` and
 > re-verify with `sbx <cmd> --help` before trusting this doc. A script that
 > discards stderr/exit codes will silently do nothing when an arg shape changes.
+>
+> **Resource limits & swap (below) re-verified against sbx `v0.32.0`** — the
+> memory default and the no-swap hard-wall behavior were confirmed empirically
+> on that version (the rest of this doc is still pinned to `v0.31.3`).
 
 ## Quick Reference
 
@@ -32,6 +36,36 @@ Resource flags on `create`/`run`: `-m`/`--memory` (e.g. `8g`, default 50% host m
 `--cpus` (0 = auto: N-1 host CPUs), `--profile <governance-profile>`.
 
 Agents for `create`/`run`: claude, codex, copilot, cursor, docker-agent, droid, gemini, kiro, opencode, shell.
+
+### Resource limits & swap (verified v0.32.0)
+
+A sandbox is its **own micro-VM**, not a cgroup-limited container sharing the
+host Docker VM's memory pool: inside, `/proc/meminfo` `MemTotal` equals the
+sandbox's `-m` value (e.g. 8 GiB), **not** the Docker Desktop VM total. So each
+sandbox is sized independently, and there are only two resource knobs —
+`-m`/`--memory` and `--cpus`. There is **no swap flag and no global config for
+one.**
+
+- **The `-m` default is half the VM, silently.** `--memory` defaults to *50% of
+  host memory, capped at 32 GiB*. On a 16 GiB Docker Desktop VM that hands the
+  sandbox **8 GiB** unless you override it. Nobody picks 8 GiB — it's the
+  unconfigured default. Set it explicitly (`sbx run -m 14g …`, leaving headroom
+  for the VM itself). The VM ceiling is the Docker Desktop *Resources* slider.
+- **There is NO swap, and you cannot add it.** Inside a sandbox
+  `/proc/meminfo` shows `SwapTotal: 0`, and swap **cannot be enabled at all**:
+  the root filesystem is `overlay`, and `swapon` of a swapfile fails with
+  `EINVAL` even though `mkswap` succeeds and the kernel has `CONFIG_SWAP=y` —
+  overlayfs (like tmpfs/virtiofs) cannot back a swap area, and no real block
+  device is exposed to host a swap partition. The Docker Desktop VM-level *Swap*
+  setting does **not** propagate to sbx micro-VMs. A custom template can't fix
+  it (the template *is* the overlay rootfs).
+- **Consequence: the sandbox is a hard RAM wall with no cushion.** Crossing `-m`
+  triggers an **immediate OOM kill** (SIGKILL) — no thrash-and-recover grace
+  period, so an overshoot looks like an abrupt, silent process death rather than
+  a slowdown. Size for it: keep *peak* usage **well under** `-m`, not just under
+  it (`target_workload_peak ≪ -m`), because nothing absorbs a spike. For ola's
+  parallel runs this is the binding constraint — `concurrency × peak_RAM_per_agent`
+  must sit comfortably below `-m`.
 
 ### Network Policies
 **Scope is mandatory for allow/deny:** every `policy allow network` and
