@@ -15,6 +15,8 @@ Instruments (the *how*): this directory.
 | Check | Action |
 |---|---|
 | **Server up** | `curl -sf https://code.adriantineo.com/v1/models` returns 200 (not TLS EOF). |
+| **sbx authenticated** | `sbx login` (interactive Docker auth) — required before `ola` can create the sandbox or before `sbx exec` can inject the in-sandbox sampler. |
+| **SSH to GPU host** | `ssh -i ~/.ssh/serenity_coding.pem substrate@code.adriantineo.com` works. Server is 8× H100 80GB; Prometheus on loopback `:9090` already scrapes vLLM + DCGM GPU. |
 | **Docker VM RAM** | Docker Desktop → Settings → Resources: set the VM to **≥ 44 GiB** so a 40 GiB sandbox can be backed. (`ola` sizes the sandbox at 80% of the VM, capped at 32 GiB, *unless* `OLA_SBX_MEMORY` is set — which bypasses the cap.) |
 | **Sandbox RAM** | Export `OLA_SBX_MEMORY=40g` before `ola` so the sandbox gets 40 GiB (room for 80 agents — see math below). |
 | **Malformed env** | The workspace env file is named `agent/.env\` (trailing backslash) — `ola` will not find it. Rename: `mv 'agent/.env\' agent/.env` |
@@ -40,12 +42,14 @@ the staircase before proceeding.
 
 ## 2. Launch order (start the clocks before the load)
 
-**(a) GPU host — server sampler** (start first, runs on the inference box):
+**(a) Server half — Prometheus over SSH (preferred).** Nothing needs to run on
+the GPU host during the run; Prometheus stores the history. Open a tunnel now so
+the clock is shared, and pull the window in step 3:
 ```bash
-python3 server-sampler.py \
-  --metrics-url http://localhost:8000/metrics \
-  --out server-samples.jsonl --interval 2
-# smoke test first:  python3 server-sampler.py --metrics-url … --once
+ssh -fNL 9090:127.0.0.1:9090 -i ~/.ssh/serenity_coding.pem \
+    substrate@code.adriantineo.com        # background tunnel to Prometheus
+# (fallback, only if Prometheus is unreachable: run server-sampler.py on the
+#  GPU host with --metrics-url http://localhost:8000/metrics)
 ```
 
 **(b) Mac — start the ola run** on the workspace at a low cap:
@@ -82,11 +86,16 @@ python3 staircase.py \
 
 ## 3. Analyze (offline, after the run)
 
-Bring `server-samples.jsonl` over from the GPU host next to the workspace, then:
+Pull the server half from Prometheus for the exact staircase window (derives the
+window from the step markers), then analyze:
 ```bash
+python3 prometheus-pull.py --prom-url http://localhost:9090 \
+  --steps ~/Downloads/ola-tests/yt-dlp-demo-01/agent/01-unit-tests/.ola/staircase-steps.jsonl \
+  --out server-samples.jsonl
+
 python3 analyze.py \
   --folder ~/Downloads/ola-tests/yt-dlp-demo-01/agent/01-unit-tests \
-  --server /path/to/server-samples.jsonl --json
+  --server server-samples.jsonl --json
 ```
 Prints the per-step table, the **knee** (and which resource saturated there), the
 **demo-claim check** (server GPU < 80% + queue empty at the local knee), and the

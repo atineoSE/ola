@@ -11,7 +11,8 @@ zero-dependency rule). No pip installs.
 | Script | Runs where | Does |
 |---|---|---|
 | `local-sampler.py` | inside the sbx sandbox | RAM (cgroup + `oom_kill`), per-core CPU (GIL detector), disk util, ola process-tree RSS, heartbeat freshness → JSONL |
-| `server-sampler.py` | on the GPU host | `nvidia-smi` GPU% + mem, vLLM `/metrics` (queue depth, throughput) → JSONL |
+| `prometheus-pull.py` | host, via SSH tunnel | **preferred remote half**: range-queries the server's Prometheus (`:9090`, already scrapes vLLM + GPU/DCGM) for GPU%, queue depth, server tok/s → JSONL. Nothing runs on the server; full history. |
+| `server-sampler.py` | on the GPU host | fallback remote half: `nvidia-smi` GPU% + mem, vLLM `/metrics` (queue depth, throughput) → JSONL |
 | `staircase.py` | on the host driving the run | writes `.ola/concurrency` through N=2…80 with a dwell per step; logs UTC step markers |
 | `analyze.py` | offline, after the run | aligns all sources by UTC into per-step windows; prints the staircase table, the knee + saturated resource, the demo-claim check, and the Q1 kill-vs-stall verdict |
 
