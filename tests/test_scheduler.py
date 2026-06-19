@@ -9,12 +9,17 @@ the agent, so stub agents tick *that* copy.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import signal
 import subprocess
 import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from ola.agents.base import Agent, AgentResponse
 from ola.events.client import Emitter, LocalSink
@@ -22,6 +27,7 @@ from ola.plan import enumerate_tasks, set_task_checked, task_is_checked
 from ola.scheduler import (
     DEFAULT_CONCURRENCY,
     _DEFAULT_TASK_PROMPT,
+    RunInterrupted,
     _load_task_prompt,
     _substitute,
     read_concurrency,
@@ -193,6 +199,37 @@ class _RateLimitedThenTicksAgent(_TickingAgent):
             return AgentResponse(output="rate limited", success=False, stats=stats)
         return super().run(
             prompt, workdir, state_dir=state_dir, labels=labels, on_progress=on_progress
+        )
+
+    def version(self):
+        return "0.0.0"
+
+
+class _SignalingAgent(Agent):
+    """On first run, sends ``signum`` to this process, then blocks without ticking.
+
+    Simulates a worker caught mid-flight: the signal reaches the scheduler's
+    main-thread handler, and this run stays parked (so its task is still
+    ``running``) until the test releases ``gate``.
+    """
+
+    mnemonic = "stub"
+    state_dir_name = ""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__()
+        self._signum = signum
+        self.gate = threading.Event()
+        self.entered = threading.Event()
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        self.entered.set()
+        os.kill(os.getpid(), self._signum)
+        # Stay running until released so the scheduler reacts to the signal
+        # while this task is still in flight.
+        self.gate.wait(timeout=10)
+        return AgentResponse(
+            output="interrupted", success=False, stats=IterationStats()
         )
 
     def version(self):
@@ -431,6 +468,69 @@ def test_run_folder_three_independent_tasks_integration(tmp_path):
 
 
 # --- run_folder failure paths ---
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_run_folder_flushes_in_flight_tasks_on_signal(tmp_path, signum):
+    """A SIGINT/SIGTERM mid-run records in-flight tasks as interrupted.
+
+    Without the signal handler a killed scheduler leaves the task frozen at
+    ``running`` with no terminal event. We assert it instead lands as ``failed``
+    in tasks.json and emits a terminal ``failed`` event carrying
+    ``data.interrupted = true`` — and that the run raises RunInterrupted.
+    """
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] do a thing\n")
+    task = enumerate_tasks(folder)[0]
+    events_path = folder / ".ola" / "events.jsonl"
+    emitter = Emitter([LocalSink(events_path)])
+
+    agent = _SignalingAgent(signum)
+    try:
+        # run_folder shuts the pool down with wait=False on interrupt, so it
+        # raises while the worker is still parked on the gate — letting us
+        # assert the flushed snapshot before the worker can re-mark its task.
+        with pytest.raises(RunInterrupted) as excinfo:
+            run_folder(
+                agent, folder, agent_root, project, initial_cap=1, emitter=emitter
+            )
+
+        assert excinfo.value.signum == signum
+
+        # tasks.json: the in-flight task is recorded as interrupted, not frozen.
+        state = TaskState.load(folder)
+        entry = state.get(task.task_id)
+        assert entry.status == "failed"
+        assert "interrupted" in (entry.last_error or "")
+        assert signal.Signals(signum).name in (entry.last_error or "")
+
+        # events.jsonl: a terminal failed event with the interrupted flag.
+        emitter.close()
+        events = [
+            json.loads(line)
+            for line in events_path.read_text().splitlines()
+            if line.strip()
+        ]
+        interrupted_failures = [
+            e
+            for e in events
+            if e["status"] == "failed" and e["data"].get("interrupted") is True
+        ]
+        assert len(interrupted_failures) == 1
+        assert interrupted_failures[0]["task_id"] == task.task_id
+    finally:
+        # Release the parked worker so the pool thread can exit.
+        agent.gate.set()
+
+
+def test_run_folder_restores_signal_handlers_after_clean_run(tmp_path):
+    """run_folder leaves the prior SIGINT/SIGTERM handlers in place on exit."""
+    before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] task\n")
+    run_folder(_TickingAgent(), folder, agent_root, project, initial_cap=1)
+
+    after = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    assert after == before
 
 
 def test_run_folder_agent_failure_marks_failed_and_retains_worktree(tmp_path):
@@ -885,6 +985,85 @@ def test_run_folder_honours_live_cap_increase(tmp_path):
     assert all(
         tstate.get(t.task_id).status == "complete" for t in enumerate_tasks(folder)
     )
+
+
+# --- heartbeat / liveness ---
+
+
+def _read_heartbeat(folder: Path) -> dict:
+    return json.loads((folder / ".ola" / "heartbeat.json").read_text())
+
+
+def test_run_folder_writes_heartbeat_on_clean_run(tmp_path):
+    """A completed run leaves a heartbeat with the terminal (drained) snapshot."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] one\n- [ ] two\n")
+
+    run_folder(_TickingAgent(), folder, agent_root, project, initial_cap=2)
+
+    hb = _read_heartbeat(folder)
+    # Terminal beat: everything drained, nothing in flight or pending.
+    assert hb["running"] == 0
+    assert hb["pending"] == 0
+    assert hb["in_flight"] == []
+    assert hb["folder"] == folder.name
+    assert hb["cap"] == 2
+    # ts is the documented ISO-8601 millisecond-Z shape.
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", hb["ts"])
+
+
+def test_run_folder_heartbeat_reflects_in_flight_tasks(tmp_path):
+    """While workers are mid-flight the heartbeat names them; the final beat clears.
+
+    This is the post-mortem signal the original stall lacked: a durable, on-disk
+    record of which tasks were live the instant the scheduler last ticked.
+    """
+    project, agent_root, folder = _two_repos(
+        tmp_path, "".join(f"- [ ] T{i}\n" for i in range(3))
+    )
+
+    release = threading.Event()
+
+    class _BlockingAgent(_TickingAgent):
+        def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+            release.wait(timeout=30)
+            return super().run(
+                prompt,
+                workdir,
+                state_dir=state_dir,
+                labels=labels,
+                on_progress=on_progress,
+            )
+
+    agent = _BlockingAgent()
+    worker = threading.Thread(
+        target=run_folder,
+        args=(agent, folder, agent_root, project),
+        kwargs={"initial_cap": 2},
+    )
+    worker.start()
+    try:
+        # Two workers block under cap 2; the heartbeat names exactly those two.
+        def _two_in_flight() -> bool:
+            try:
+                return _read_heartbeat(folder)["running"] == 2
+            except (FileNotFoundError, json.JSONDecodeError):
+                return False
+
+        assert _wait_until(_two_in_flight)
+        hb = _read_heartbeat(folder)
+        assert hb["pending"] == 1  # third task not yet dispatched
+        ids = {entry["task_id"] for entry in hb["in_flight"]}
+        running_ids = {
+            e.task_id for e in TaskState.load(folder).all() if e.status == "running"
+        }
+        assert ids == running_ids
+        assert all("elapsed_s" in entry for entry in hb["in_flight"])
+    finally:
+        release.set()
+        worker.join(timeout=30)
+
+    # Final forced beat after the loop drains: nothing left in flight.
+    assert _read_heartbeat(folder)["running"] == 0
 
 
 def test_run_folder_empty_plan_is_noop(tmp_path):

@@ -9,7 +9,7 @@ from pathlib import Path
 from ola.agents import create_agent
 from ola.loop import run_outer_loop
 from ola.sandbox import is_sandbox, sanitize_proxy_env
-from ola.scheduler import FolderIncompleteError
+from ola.scheduler import FolderIncompleteError, RunInterrupted
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +175,17 @@ def main() -> None:
             exc.folder_name,
         )
         sys.exit(1)
+    except RunInterrupted as exc:
+        # Operator stopped the run (Ctrl-C / SIGTERM). The scheduler already
+        # flushed a terminal snapshot for the in-flight tasks, so this is a
+        # clean stop, not a crash. Exit 128+signum (130 for SIGINT) per the
+        # shell convention. Re-running ola re-derives state from PLAN.md.
+        logger.warning(
+            "%s In-flight tasks were recorded as interrupted; re-run ola to "
+            "resume from PLAN.md.",
+            exc,
+        )
+        sys.exit(128 + exc.signum if exc.signum else 130)
 
 
 if __name__ == "__main__":

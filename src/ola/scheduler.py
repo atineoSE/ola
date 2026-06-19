@@ -19,18 +19,29 @@ value spawns new workers up to the new cap on the next tick, lowering it
 gates new starts. When an ``Emitter`` is supplied each worker emits an
 event stream (``started`` → ``working*`` → ``complete``/``failed``); an
 ``emitter`` of ``None`` disables events entirely.
+
+A SIGINT/SIGTERM mid-run is caught (see :class:`RunInterrupted`): the
+scheduler flushes a terminal snapshot for every in-flight task — tasks.json
+plus a ``failed``/``interrupted`` event — before stopping, so a killed run
+is observable rather than a silent freeze at ``running``. Catchable signals
+aside, the main loop also refreshes a ``.ola/heartbeat.json`` liveness file
+every tick (see :func:`write_heartbeat`), so even an *uncatchable* kill
+(SIGKILL/OOM) leaves a durable last-alive timestamp and in-flight snapshot.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
+import signal
 import subprocess
 import threading
 import time
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +82,13 @@ _MAX_RATE_LIMIT_WAIT_SEC = 8 * 3600  # 8 hours
 # the monitors always have a number to show rather than a placeholder.
 DEFAULT_CONCURRENCY = 2
 
+# How often the scheduler refreshes its liveness heartbeat (see
+# ``write_heartbeat``). The main loop ticks at ~1s; this throttles the file
+# write to keep disk churn low while staying fine-grained enough that a stall is
+# obvious (a heartbeat older than a small multiple of this means the loop is no
+# longer ticking).
+HEARTBEAT_INTERVAL_SEC = 5.0
+
 # Worker outcomes reported back to the main loop, which folds them into the
 # folder-wide stagnation counter. ``STAGNANT`` (agent reported success but did
 # not tick its checkbox) advances the counter; anything else resets it.
@@ -101,6 +119,37 @@ class FolderIncompleteError(RuntimeError):
             f"{folder_name}: {remaining} task(s) could not be completed or "
             f"relocated to leftovers/blockers. Stopping."
         )
+
+
+class RunInterrupted(RuntimeError):
+    """The scheduler was stopped by a SIGINT/SIGTERM partway through a folder.
+
+    Raised only *after* the in-flight snapshot has been flushed — every
+    ``running`` task recorded as ``failed`` in tasks.json with an
+    ``interrupted: …`` reason and a terminal ``failed`` event (carrying
+    ``data.interrupted = true``) emitted for it — so the interruption is
+    observable rather than a silent freeze. This is distinct from
+    :class:`FolderIncompleteError`, which means the folder genuinely could not
+    be driven to completion: an interrupt is the operator stopping the run, not
+    a stuck plan. It propagates through the outer loop to the CLI, which logs a
+    clean message and exits; the next ``ola`` invocation re-derives every task
+    from PLAN.md, so the ``failed`` snapshot never gates the re-run.
+    """
+
+    def __init__(self, folder_name: str, signum: int | None) -> None:
+        self.folder_name = folder_name
+        self.signum = signum
+        super().__init__(f"{folder_name}: run interrupted by {_signame(signum)}.")
+
+
+def _signame(signum: int | None) -> str:
+    """Human-readable name for a signal number (``SIGTERM``), tolerant of junk."""
+    if not signum:
+        return "a signal"
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return str(signum)
 
 
 @dataclass
@@ -271,6 +320,33 @@ def write_concurrency(folder: Path, value: int) -> None:
     tmp = cap_file.with_name(cap_file.name + ".tmp")
     tmp.write_text(f"{value}\n")
     tmp.replace(cap_file)
+
+
+def _utc_now_iso() -> str:
+    """UTC timestamp as ``YYYY-MM-DDThh:mm:ss.sssZ`` (matches the event ``ts``)."""
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def write_heartbeat(folder: Path, payload: dict[str, Any]) -> None:
+    """Atomically write the scheduler liveness heartbeat to ``.ola/heartbeat.json``.
+
+    Distinct from the ``events.jsonl`` stream: an event is task-attempt-scoped
+    and reaches disk through a queued writer thread, so an in-flight event can
+    be lost if the process is hard-killed. The heartbeat is *scheduler*-scoped
+    and written synchronously from the main loop (tmp + rename), so the last
+    value is always on disk — it survives even an uncatchable SIGKILL (an OOM
+    kill being the motivating case). A consumer detects a stall by comparing
+    ``now`` against the file's ``ts`` while tasks are still ``running``; the
+    ``in_flight`` snapshot then names exactly which tasks were live when the
+    scheduler went silent — the post-mortem signal a frozen ``tasks.json``
+    (everything stuck at ``running``) cannot give.
+    """
+    path = folder / ".ola" / "heartbeat.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    tmp.replace(path)
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
@@ -718,9 +794,108 @@ def run_folder(
             state.save()
         return ok
 
+    # Graceful, observable shutdown on SIGINT/SIGTERM. A scheduler killed
+    # mid-run otherwise leaves every in-flight worker frozen at ``running``
+    # with its last event a mid-stream ``working`` — the silent-death signature
+    # that makes a stall undiagnosable. We instead catch the signal, flush a
+    # terminal snapshot the instant it arrives, and raise RunInterrupted.
+    interrupted = threading.Event()
+    interrupt_signum: dict[str, int] = {}
+
+    def _on_signal(signum: int, _frame: Any) -> None:
+        # Minimal and async-signal-safe: record the first signal and set the
+        # flag. The real flush runs on the main loop's next tick (≤1s), where
+        # taking locks and touching disk is safe.
+        interrupt_signum.setdefault("signum", signum)
+        interrupted.set()
+
+    prev_handlers: dict[int, Any] = {}
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            prev_handlers[_sig] = signal.signal(_sig, _on_signal)
+        except ValueError:
+            # signal.signal only works in the main thread of the main
+            # interpreter; when run_folder is driven from a worker thread (some
+            # tests, embedders) we skip custom handling and behave as before.
+            pass
+
+    def _flush_interrupt() -> None:
+        """Record every in-flight task as interrupted, synchronously.
+
+        Runs the moment a signal is observed, *before* the executor drains, so
+        the on-disk snapshot (tasks.json) and the event stream both record the
+        interruption even if the operator follows up with a SIGKILL. A worker
+        that genuinely completes after this still wins — it re-marks its own
+        task under ``state_lock`` — so this only ever rescues the truly
+        abandoned ones from a frozen ``running``.
+        """
+        signame = _signame(interrupt_signum.get("signum"))
+        reason = f"interrupted: scheduler received {signame}"
+        with state_lock:
+            for job in in_flight.values():
+                entry = state.get(job.task_id)
+                if entry is not None and entry.status == "running":
+                    state.mark(job.task_id, "failed", last_error=reason)
+                if emitter is not None:
+                    emitter.failed(
+                        agent_id=f"agent-{job.task_id}",
+                        attempt=job.attempt,
+                        folder=folder.name,
+                        task_id=job.task_id,
+                        task_text=entry.text if entry else job.task_id,
+                        agent_backend=agent.mnemonic,
+                        data={"error": reason, "interrupted": True},
+                    )
+            state.save()
+        logger.warning(
+            "Scheduler received %s — recorded %d in-flight task(s) as "
+            "interrupted in %s and stopping.",
+            signame,
+            len(in_flight),
+            folder.name,
+        )
+
+    # Liveness heartbeat: a small sidecar the main loop refreshes every tick
+    # (throttled to HEARTBEAT_INTERVAL_SEC) so a stalled or hard-killed run is
+    # detectable from disk — the gap a frozen tasks.json leaves open.
+    current_cap = live_default
+    last_heartbeat = 0.0
+
+    def _write_heartbeat(*, force: bool = False) -> None:
+        nonlocal last_heartbeat
+        now_m = time.monotonic()
+        if not force and now_m - last_heartbeat < HEARTBEAT_INTERVAL_SEC:
+            return
+        last_heartbeat = now_m
+        with state_lock:
+            pending = sum(1 for e in state.all() if e.status == "pending")
+        snapshot = [
+            {
+                "task_id": job.task_id,
+                "attempt": job.attempt,
+                "elapsed_s": round(now_m - job.started, 1),
+            }
+            for job in in_flight.values()
+        ]
+        write_heartbeat(
+            folder,
+            {
+                "ts": _utc_now_iso(),
+                "folder": folder.name,
+                "cap": current_cap,
+                "running": len(snapshot),
+                "pending": pending,
+                "in_flight": snapshot,
+            },
+        )
+
     try:
         while True:
+            if interrupted.is_set():
+                _flush_interrupt()
+                raise RunInterrupted(folder.name, interrupt_signum.get("signum"))
             cap = read_concurrency(folder, default=live_default)
+            current_cap = cap
             if cap > executor_cap:
                 # Live increase past the current ceiling: retire the old pool
                 # (its in-flight workers finish on it) and grow.
@@ -767,6 +942,12 @@ def run_folder(
                 janitor_future = janitor_pool.submit(
                     _janitor_job, record, blocked_text, blocked_attempt
                 )
+
+            # Beat after dispatch so the snapshot reflects the just-started
+            # workers; throttled internally. Runs on every path below — the
+            # active wait and the cap-0 paused sleep — so a paused-but-alive
+            # scheduler still beats.
+            _write_heartbeat()
 
             wait_set: list[Future] = list(in_flight.keys())
             if janitor_future is not None:
@@ -845,7 +1026,25 @@ def run_folder(
                 halted = True
                 break
     finally:
-        executor.shutdown(wait=True)
+        # Final beat records the terminal state (running 0 on a clean drain;
+        # the still-parked workers on an interrupt). A consumer reads "loop
+        # stopped here" rather than a stale mid-run snapshot.
+        _write_heartbeat(force=True)
+        for _sig, _prev in prev_handlers.items():
+            try:
+                signal.signal(_sig, _prev)
+            except (ValueError, TypeError):
+                # Best-effort restore: the prior handler may be a C-level one
+                # getsignal reports as None, which signal.signal refuses.
+                pass
+        # On a clean drain we wait for in-flight workers. On interrupt we don't
+        # stack a blocking join on top of the signal — the snapshot is already
+        # flushed. (The interpreter's concurrent.futures atexit hook still joins
+        # live worker threads, so a hung in-process worker — e.g. the oh backend
+        # mid-call — can keep the process alive until a SIGKILL; by then
+        # tasks.json already records the interruption.)
+        drain = not interrupted.is_set()
+        executor.shutdown(wait=drain)
         for retired in retired_executors:
-            retired.shutdown(wait=True)
-        janitor_pool.shutdown(wait=True)
+            retired.shutdown(wait=drain)
+        janitor_pool.shutdown(wait=drain)

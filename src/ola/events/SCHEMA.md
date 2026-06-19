@@ -67,7 +67,7 @@ tolerate the absence of keys marked optional.
 | `started` | `{"role"?: string}` — `role` is `"janitor"` for janitor runs (see below); absent for ordinary task attempts. |
 | `working` | `{"message": string, "metrics"?: Metrics}` — `message` is a short progress string (e.g. current tool name or message snippet). |
 | `complete` | `{"metrics"?: Metrics}` — `metrics` carries the attempt's final totals. |
-| `failed` | `{"error"?: string, "blocked"?: boolean, "metrics"?: Metrics}` — `error` is a short human-readable failure reason; `blocked: true` marks an attempt that ended because the task self-reported as blocked via the `ola-blocked` escape hatch (the `error` then starts with `blocked:`); `metrics` carries totals up to the failure. |
+| `failed` | `{"error"?: string, "blocked"?: boolean, "interrupted"?: boolean, "metrics"?: Metrics}` — `error` is a short human-readable failure reason; `blocked: true` marks an attempt that ended because the task self-reported as blocked via the `ola-blocked` escape hatch (the `error` then starts with `blocked:`); `interrupted: true` marks an in-flight attempt the scheduler terminated when it caught a SIGINT/SIGTERM (the `error` then starts with `interrupted:`), emitted so a killed run leaves a terminal event instead of a frozen `working`; `metrics` carries totals up to the failure. |
 
 ### Janitor runs
 
