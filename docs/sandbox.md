@@ -58,7 +58,7 @@ This will:
 1. Extract Claude OAuth credentials from macOS Keychain (`cc-credentials`)
 2. Resolve & validate `agent/.env` on the host (`ola env`) — **fails fast** if a mandatory `${VAR}` is unset
 3. Apply the network policy from `agent/allowlist.txt` **and** the resolved `.env` endpoints (additive to default policy)
-4. Create a sandbox with the workspace root (parent of the project repo) as workspace — both the project repo and `agent/` are writable
+4. Create a sandbox with the workspace root (parent of the project repo) as workspace — both the project repo and `agent/` are writable, sized to **80% of the Docker VM** (see [Sandbox memory](#sandbox-memory) below)
 5. Copy credentials into the sandbox, write the resolved env snapshot to `~/.ola/agent.env`, and set the shell to land in the project repo
 
 > Claude Code config: ola injects its own **minimal** `~/.claude/settings.json`
@@ -76,13 +76,38 @@ Inside the sandbox:
 ola -a cc -l 5
 ```
 
+## Sandbox memory
+
+`sbx` defaults a sandbox to **50% of the Docker VM's memory** (capped at 32 GiB).
+`ola-sandbox` overrides this to **80%** at create time, because parallel agent
+runs are memory-hungry and the 50% default leaves the box half-idle. The 80% is
+computed off `docker info`'s `MemTotal` (the Docker VM size set by the Docker
+Desktop *Resources* slider — **not** the Mac's physical RAM) and capped at sbx's
+32 GiB ceiling.
+
+This only takes effect on **create**; the limit is fixed for the life of the
+sandbox, so to resize, `sbx rm` it and re-create. To set an exact value, export
+`OLA_SBX_MEMORY` (any sbx `-m` value, e.g. `OLA_SBX_MEMORY=24g ola-sandbox …`);
+the override bypasses the 32 GiB cap.
+
+> **No swap, hard wall.** An sbx sandbox is its own micro-VM with **zero swap**,
+> and swap *cannot* be added (the overlay rootfs can't back a swap area; there is
+> no sbx flag for it). Crossing the memory limit is an **instant OOM kill**
+> (SIGKILL), not a slowdown — which is exactly how a past 20-agent run died
+> silently. So size for *peak* usage with real headroom: keep
+> `concurrency × peak_RAM_per_agent` comfortably below the limit. The 80% target
+> deliberately leaves ~20% for the VM itself. See `.claude/skills/sbx/SKILL.md`
+> for the underlying findings.
+
 ## Manual usage
 
 If you prefer not to use the helper:
 
 ```bash
 cd project
-sbx create shell --name my-sandbox --template ghcr.io/$(whoami)/ola:latest .
+# -m mirrors what ola-sandbox sets automatically (80% of the Docker VM here);
+# omit it and sbx falls back to its 50% default.
+sbx create shell --name my-sandbox --template ghcr.io/$(whoami)/ola:latest -m 12g .
 sbx run my-sandbox
 ```
 

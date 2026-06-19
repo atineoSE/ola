@@ -388,6 +388,33 @@ EOF
     "echo '$data' | base64 -d >> \$HOME/.bashrc" 2>/dev/null
 }
 
+# Target sandbox memory: 80% of the Docker VM, overriding sbx's 50% default so
+# parallel agent runs get more headroom. 80% is computed off the same base sbx
+# uses for its own "% of host" default — `docker info`'s MemTotal (the Docker VM
+# size, not the Mac's physical RAM) — and capped at sbx's documented 32 GiB
+# ceiling. The sandbox is a hard RAM wall with NO swap (overlay rootfs; see
+# .claude/skills/sbx/SKILL.md), so leaving ~20% headroom matters: an overshoot
+# is an instant OOM kill, not a slowdown. Echoes an sbx `-m` value (e.g.
+# "12777m"), or nothing (non-zero) if the VM size can't be read, in which case
+# the caller lets sbx apply its own default. Override with OLA_SBX_MEMORY (any
+# sbx -m value, e.g. "24g"); the override bypasses the 32 GiB cap.
+_ola_sbx_memory() {
+  if [ -n "$OLA_SBX_MEMORY" ]; then
+    printf '%s' "$OLA_SBX_MEMORY"
+    return 0
+  fi
+  local total_bytes
+  total_bytes="$(docker info --format '{{.MemTotal}}' 2>/dev/null)"
+  case "$total_bytes" in
+    ''|*[!0-9]*) return 1 ;;  # docker unavailable / unexpected format
+  esac
+  local mb=$(( total_bytes * 8 / 10 / 1048576 ))  # 80%, in MiB
+  local cap=$(( 32 * 1024 ))                        # sbx's documented 32 GiB ceiling
+  [ "$mb" -gt "$cap" ] && mb=$cap
+  [ "$mb" -lt 1 ] && return 1
+  printf '%dm' "$mb"
+}
+
 ola-sandbox() {
   local name="${1:?Usage: ola-sandbox <sandbox_name>}"
   local code_dir="$(pwd)"
@@ -461,9 +488,20 @@ ola-sandbox() {
     fi
   fi
 
+  # Size the sandbox at 80% of the Docker VM (vs sbx's 50% default); see
+  # _ola_sbx_memory. Built as an array so an unreadable VM size cleanly omits
+  # -m and falls back to the sbx default rather than passing a broken flag.
+  local -a mem_arg
+  local _mem
+  if _mem="$(_ola_sbx_memory)"; then
+    mem_arg=(-m "$_mem")
+    echo "ola-sandbox: memory -m $_mem (80% of Docker VM; override with OLA_SBX_MEMORY)" >&2
+  fi
+
   sbx create shell \
     --name "$name" \
     --template "$image" \
+    "${mem_arg[@]}" \
     -q \
     "$project_dir" || {
     echo "Error: failed to create sandbox '$name'" >&2

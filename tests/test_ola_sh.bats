@@ -503,6 +503,10 @@ LLM_BASE_URL="https://10.9.8.7/v1"'
 _mock_sbx_new_sandbox() {
   security() { echo '{"oauth_token":"fake"}'; }
   export -f security
+  # Deterministic Docker VM size so the computed 80% memory cap is stable:
+  # 16748113920 bytes (15.6 GiB) → 80% = 12777 MiB → `-m 12777m`.
+  docker() { [ "$1" = "info" ] && echo "16748113920"; }
+  export -f docker
   eval "
   sbx() {
     echo \"sbx \$*\" >> \"$SBX_LOG\"
@@ -523,7 +527,7 @@ _mock_sbx_new_sandbox() {
 
   grep -q 'sbx ls' "$SBX_LOG"
   grep -q "sbx policy allow network -g docs.docker.com" "$SBX_LOG"
-  grep -q "sbx create shell --name new-sandbox --template ghcr.io/$(whoami)/ola:latest -q" "$SBX_LOG"
+  grep -q "sbx create shell --name new-sandbox --template ghcr.io/$(whoami)/ola:latest -m 12777m -q" "$SBX_LOG"
   grep -q "sbx_new$" "$SBX_LOG"
   ! grep -q 'agent:ro' "$SBX_LOG"
   grep -q "sbx exec new-sandbox bash" "$SBX_LOG"
@@ -541,6 +545,41 @@ _mock_sbx_new_sandbox() {
 
   grep -q '\--template myregistry.io/custom:v2' "$SBX_LOG"
   grep -q 'sbx create shell' "$SBX_LOG"
+}
+
+@test "sandbox: OLA_SBX_MEMORY override sets -m verbatim (bypasses cap)" {
+  mkdir -p "$TMPDIR_TEST/sbx_mem/agent" "$TMPDIR_TEST/sbx_mem/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_mem/agent/allowlist.txt"
+
+  _mock_sbx_new_sandbox
+
+  cd "$TMPDIR_TEST/sbx_mem/code"
+  OLA_SBX_MEMORY="24g" ola-sandbox mem-sandbox
+
+  # Override wins over the computed 80% (12777m), passed through verbatim.
+  grep -q "sbx create shell --name mem-sandbox --template ghcr.io/$(whoami)/ola:latest -m 24g -q" "$SBX_LOG"
+}
+
+@test "sandbox: omits -m when Docker VM size is unreadable (sbx default applies)" {
+  mkdir -p "$TMPDIR_TEST/sbx_nomem/agent" "$TMPDIR_TEST/sbx_nomem/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_nomem/agent/allowlist.txt"
+
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  # docker info fails → _ola_sbx_memory returns non-zero → no -m flag.
+  docker() { return 1; }
+  export -f docker
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    if [ "$1" = "ls" ]; then echo 'other-sandbox  running  1h'; return 0; fi
+  }
+  export -f sbx
+
+  cd "$TMPDIR_TEST/sbx_nomem/code"
+  ola-sandbox nomem-sandbox
+
+  grep -q "sbx create shell --name nomem-sandbox --template ghcr.io/$(whoami)/ola:latest -q" "$SBX_LOG"
+  ! grep -qE 'sbx create .* -m ' "$SBX_LOG"
 }
 
 @test "sandbox: prefers local ola:dev image when present in template store" {
