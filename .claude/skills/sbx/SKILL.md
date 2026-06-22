@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 1.1.0
+version: 1.2.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -14,9 +14,11 @@ version: 1.1.0
 > re-verify with `sbx <cmd> --help` before trusting this doc. A script that
 > discards stderr/exit codes will silently do nothing when an arg shape changes.
 >
-> **Resource limits & swap (below) re-verified against sbx `v0.32.0`** — the
-> memory default and the no-swap hard-wall behavior were confirmed empirically
-> on that version (the rest of this doc is still pinned to `v0.31.3`).
+> **Resource limits & swap (below) re-verified against sbx `v0.33.0`** — the
+> memory default (`50% of host, max 32 GiB`, unchanged in the v0.33.0 `--help`),
+> the **75%-of-host hard ceiling on `-m`**, and the no-swap hard-wall behavior
+> were confirmed empirically (the latter two on a 48 GB host; the rest of this
+> doc is still pinned to `v0.31.3`).
 
 ## Quick Reference
 
@@ -32,12 +34,26 @@ version: 1.1.0
 - `sbx diagnose` — diagnose common installation/connectivity issues
 - `sbx reset [--force] [--preserve-secrets]` — nuclear: stop all, clear ALL state/secrets/policies
 
-Resource flags on `create`/`run`: `-m`/`--memory` (e.g. `8g`, default 50% host max 32 GiB),
+Resource flags on `create`/`run`: `-m`/`--memory` (e.g. `8g`, default 50% host max 32 GiB; hard ceiling 75% of host — above it `create` fails),
 `--cpus` (0 = auto: N-1 host CPUs), `--profile <governance-profile>`.
+
+### Stopping a process *inside* a sandbox
+A process launched with `sbx exec <name> CMD` keeps running in the sandbox after
+the launching client/terminal exits — **killing the host-side `sbx exec` (or a
+harness `TaskStop`/Ctrl-C) does NOT stop it.** There is no per-command sbx stop.
+To actually stop a long-running in-sandbox process, kill it *inside*:
+```
+sbx exec <name> pkill -f bin/ola        # e.g. stop an ola run; -9 if it ignores SIGTERM
+```
+This matters for ola: relaunching without first killing the previous in-sandbox
+`ola` leaves **orphaned `ola`/agent processes** that pile up and can thrash the
+micro-VM until `sbx exec`/`sbx stop` themselves wedge (recover with
+`sbx rm --force <name>`, or restart Docker Desktop). `sbx stop <name>` is the
+blunt alternative — it tears down the whole sandbox (all processes), not one.
 
 Agents for `create`/`run`: claude, codex, copilot, cursor, docker-agent, droid, gemini, kiro, opencode, shell.
 
-### Resource limits & swap (verified v0.32.0)
+### Resource limits & swap (verified v0.33.0)
 
 A sandbox is its **own micro-VM**, not a cgroup-limited container sharing the
 host Docker VM's memory pool: inside, `/proc/meminfo` `MemTotal` equals the
@@ -51,6 +67,14 @@ one.**
   sandbox **8 GiB** unless you override it. Nobody picks 8 GiB — it's the
   unconfigured default. Set it explicitly (`sbx run -m 14g …`, leaving headroom
   for the VM itself). The VM ceiling is the Docker Desktop *Resources* slider.
+- **`-m` has a hard ceiling at 75% of host RAM — overshoot fails the create.**
+  Setting `-m` above *75% of the host machine's physical RAM* does not clamp; it
+  **rejects the command**: `create`/`run` exits non-zero with
+  `invalid memory "40g": memory 40g exceeds the maximum of 36GiB (75% of host
+  memory)` (observed on a 48 GB Mac → 36 GiB ceiling; `36g` was accepted, `40g`
+  rejected). So the *settable* range is `default 50% (≤32 GiB)` up to a hard
+  `75% of host`. For ola, `OLA_SBX_MEMORY` is subject to this ceiling — a value
+  above it aborts the sandbox creation rather than silently shrinking.
 - **There is NO swap, and you cannot add it.** Inside a sandbox
   `/proc/meminfo` shows `SwapTotal: 0`, and swap **cannot be enabled at all**:
   the root filesystem is `overlay`, and `swapon` of a swapfile fails with
