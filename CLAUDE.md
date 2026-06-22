@@ -29,6 +29,27 @@ timings (TTFT, decode-isolated tok/sec), which are never written to disk, and
 nothing for a session too short to flush. Use `cc` when you need live timing;
 use `ct` to drive the interactive UI with post-hoc token economics.
 
+### Claude Code credentials (`cc`/`ct`)
+
+`cc`/`ct` authenticate with the host's Claude subscription. Credential handling
+goes through the **`cc-credentials`** shell function (in `ola.sh`): it extracts
+the live OAuth token from the macOS Keychain (`security find-generic-password -s
+"Claude Code-credentials"`) into `~/.claude/.credentials.json`. `ola-sandbox`
+runs `cc-credentials` on every sandbox create/reconnect, then injects the result;
+the `cc` backend copies the bootstrap files into a per-task `CLAUDE_CONFIG_DIR`.
+**Keep credentials fresh via `cc-credentials` — do not "fix" auth by pointing
+`CLAUDE_CONFIG_DIR` at the live `~/.claude`; the per-task isolation is
+intentional.**
+
+Gotcha: the subscription OAuth **refresh token rotates** on every refresh, so a
+copied credential snapshot is invalidated the moment any *other* client sharing
+the account refreshes. Running `ola -a cc` **from inside an active Claude Code
+session** (which is itself refreshing that token) therefore yields spurious
+`401 authentication_failed` (every task fails in ~1s). This is an environment
+artifact, not a `cc` bug; the fix is to re-run `cc-credentials` (reconnect the
+sandbox) and/or run ola outside a live `claude` session — not to bypass the
+isolated config dir.
+
 ### Layout
 
 - `ola.sh` — the harness entrypoint (installed as the `ola` CLI via `uv tool install .`).
