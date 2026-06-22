@@ -178,8 +178,13 @@ def summarize_step(w: dict, local: list[dict], server: list[dict], events: list[
             waiting.append(srv["num_requests_waiting"])
 
     peak_mem = _max([m for m in mem_cur if m is not None])
+    # True headroom against the no-swap wall is the minimum MemAvailable seen in
+    # the window (VM physical RAM, SwapTotal=0). Fall back to cgroup max-current.
+    avail = [r.get("mem_available") for r in lw if r.get("mem_available") is not None]
     headroom_gb = None
-    if peak_mem is not None and mem_max:
+    if avail:
+        headroom_gb = round(min(avail) / 1e9, 2)
+    elif peak_mem is not None and mem_max:
         headroom_gb = round((mem_max - peak_mem) / 1e9, 2)
 
     return {

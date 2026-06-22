@@ -42,14 +42,6 @@ def _utc_now_iso() -> str:
 
 # ---------------------------------------------------------------- cgroup (RAM) --
 
-def _cgroup_v2_root() -> Path | None:
-    # Unified hierarchy: controllers file exists at the cgroup root mount.
-    root = Path("/sys/fs/cgroup")
-    if (root / "cgroup.controllers").exists() or (root / "memory.current").exists():
-        return root
-    return None
-
-
 def _read_int(path: Path) -> int | None:
     try:
         txt = path.read_text().strip()
@@ -58,17 +50,59 @@ def _read_int(path: Path) -> int | None:
         return None
 
 
+def _self_cgroup_v2_dir() -> Path | None:
+    """Resolve THIS process's cgroup-v2 dir (e.g. /sys/fs/cgroup/docker/<id>).
+
+    The container is not in a private cgroup namespace, so the v2 *root* has no
+    memory.current — the real files live under the per-container subtree named in
+    /proc/self/cgroup. Walk up until a dir with memory.current is found.
+    """
+    try:
+        for line in Path("/proc/self/cgroup").read_text().splitlines():
+            parts = line.split(":")
+            if parts[0] == "0":  # v2 unified hierarchy
+                cur = Path("/sys/fs/cgroup") / parts[2].lstrip("/")
+                while True:
+                    if (cur / "memory.current").exists():
+                        return cur
+                    if cur.parent == cur or str(cur) == "/sys/fs/cgroup":
+                        break
+                    cur = cur.parent
+    except OSError:
+        pass
+    root = Path("/sys/fs/cgroup")
+    return root if (root / "memory.current").exists() else None
+
+
+def _meminfo() -> dict:
+    """/proc/meminfo MemTotal/MemAvailable in bytes — the true no-swap wall."""
+    out: dict = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            k, _, v = line.partition(":")
+            if k in ("MemTotal", "MemAvailable", "SwapTotal"):
+                out[k] = int(v.strip().split()[0]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return out
+
+
 def sample_memory() -> dict:
-    """cgroup memory: current, max, and the oom_kill counter (the Q1 smoking gun)."""
-    out: dict = {"cgroup": None}
-    v2 = _cgroup_v2_root()
-    if v2 is not None:
-        out["cgroup"] = "v2"
-        out["mem_current"] = _read_int(v2 / "memory.current")
-        mx = (v2 / "memory.max").read_text().strip() if (v2 / "memory.max").exists() else ""
+    """Memory: cgroup usage + the real VM wall (MemTotal, no swap) + oom_kill.
+
+    On this sbx micro-VM the cgroup is unlimited (memory.max=max) and the ceiling
+    is the VM's physical RAM with SwapTotal=0 — so MemAvailable is the live
+    distance to an instant SIGKILL. mem_max falls back to MemTotal when the
+    cgroup imposes no limit.
+    """
+    out: dict = {"cgroup": "v2"}
+    d = _self_cgroup_v2_dir()
+    if d is not None:
+        out["mem_current"] = _read_int(d / "memory.current")
+        mx = (d / "memory.max").read_text().strip() if (d / "memory.max").exists() else ""
         out["mem_max"] = None if mx in ("", "max") else int(mx)
         oom_kill = oom = None
-        ev = v2 / "memory.events"
+        ev = d / "memory.events"
         if ev.exists():
             for line in ev.read_text().splitlines():
                 k, _, v = line.partition(" ")
@@ -78,14 +112,12 @@ def sample_memory() -> dict:
                     oom = int(v)
         out["oom_kill"] = oom_kill
         out["oom"] = oom
-        return out
-    # cgroup v1 fallback
-    base = Path("/sys/fs/cgroup/memory")
-    if base.exists():
-        out["cgroup"] = "v1"
-        out["mem_current"] = _read_int(base / "memory.usage_in_bytes")
-        out["mem_max"] = _read_int(base / "memory.limit_in_bytes")
-        out["oom_kill"] = _read_int(base / "memory.failcnt")  # not identical, best available
+    mi = _meminfo()
+    out["mem_total"] = mi.get("MemTotal")
+    out["mem_available"] = mi.get("MemAvailable")
+    out["swap_total"] = mi.get("SwapTotal")
+    if not out.get("mem_max"):
+        out["mem_max"] = mi.get("MemTotal")  # cgroup unlimited -> wall is VM RAM
     return out
 
 
