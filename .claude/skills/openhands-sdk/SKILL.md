@@ -1,7 +1,7 @@
 ---
 name: openhands-sdk
 description: How to configure LLM and Agent classes with the OpenHands SDK
-version: 1.1.0
+version: 1.2.0
 ---
 
 
@@ -474,3 +474,54 @@ The same applies to any process-global setup the SDK path performs
 do it once here rather than per worker. Telemetry that must initialise
 *before* the SDK import (e.g. Laminar's HTTP exporter) goes at the top of the
 warm-up, ahead of the `import openhands.sdk` line.
+
+## In-process concurrency: the SDK serializes every LLM call
+
+**The SDK does not run concurrent completions within one process.** `LLM`
+guards every model call with a **class-level lock held across the entire network
+round-trip** (verified in `openhands-sdk` v1.22.0):
+
+```python
+# openhands/sdk/llm/llm.py
+class LLM(...):
+    _litellm_modify_params_lock: ClassVar[threading.RLock] = threading.RLock()  # shared by ALL LLM instances
+
+    @contextmanager
+    def _litellm_modify_params_ctx(self, flag):
+        with self._litellm_modify_params_lock:        # held for the whole call below
+            old = litellm.modify_params
+            litellm.modify_params = flag
+            try:
+                yield                                  # ← the actual completion / streaming happens here
+            finally:
+                litellm.modify_params = old
+```
+
+The transport path wraps each completion in this context manager, so the lock is
+held for the full request. Because it is a `ClassVar`, it is shared across *every*
+`LLM` instance in the process. **Threads (multiple agents in one process) all
+queue on it → at most one in-flight LLM request regardless of how many agents
+you run.** A subprocess-per-agent model is unaffected (each process has its own
+`litellm` globals and its own lock).
+
+Why the lock exists: `litellm.modify_params` is **process-global** mutable state
+that the SDK toggles per call, so the lock prevents one thread changing the
+global mid-flight of another. It is *correctness* machinery, not a throughput
+knob.
+
+How to confirm you've hit it: a `py-spy dump` shows every worker thread parked at
+`_litellm_modify_params_ctx`; server-side concurrency (e.g. vLLM
+`num_requests_running`) sits at ~1 while local CPU/RAM are idle and throughput is
+flat as you raise the agent count. (Measured exactly this on a 2→80 staircase
+against a self-hosted vLLM.)
+
+Clean ways to get real in-process concurrency:
+- **Run agents in separate processes** (the robust option) — no shared lock.
+- **If, and only if, every `LLM` in the process uses the same `modify_params`
+  value** (typical for a single uniform config), the per-call toggle is
+  redundant: set `litellm.modify_params` once in `warm_up()` and neutralize the
+  context manager (e.g. monkeypatch `LLM._litellm_modify_params_ctx` to a no-op).
+  This is a **private-API monkeypatch** — guard it with `hasattr` so an SDK
+  rename fails safe back to the serialized path, and re-verify on every SDK bump.
+- **Upstream fix:** scope the lock to the brief global toggle only (not the
+  `yield`/network call), or set the global once at `LLM` init. Prefer this.
