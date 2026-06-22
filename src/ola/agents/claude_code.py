@@ -88,6 +88,12 @@ def _self_hosted_env_overlay(model: str | None) -> dict[str, str]:
         "ANTHROPIC_MODEL": effective_model,
         "ANTHROPIC_SMALL_FAST_MODEL": effective_model,
     }
+    # Claude Code asks for 32000 output tokens by default, which alone overflows
+    # a small self-hosted context window (e.g. 32768). Let LLM_MAX_OUTPUT_TOKENS
+    # — the same knob oh/cx read — cap it via CLAUDE_CODE_MAX_OUTPUT_TOKENS.
+    max_output = os.getenv("LLM_MAX_OUTPUT_TOKENS")
+    if max_output:
+        overlay["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = max_output
     if os.getenv("LLM_SKIP_TLS_VERIFY", "").lower() == "true":
         overlay["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     return overlay

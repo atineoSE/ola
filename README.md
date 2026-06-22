@@ -117,7 +117,7 @@ For OpenHands:
 For Claude Code:
 * If using an Anthropic subscription, install Claude Code and login. This will store credentials in your keychain.
 * If using an API key, define it in your `.env` in the agent folder.
-* For a self-hosted Anthropic-compatible endpoint, set `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` in `.env` — the same vars used by OpenHands and Codex. cc translates them to `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` (and mirrors the model into `ANTHROPIC_SMALL_FAST_MODEL`). When self-hosted, OAuth credentials are not copied into the per-phase state dir. Add `LLM_SKIP_TLS_VERIFY=true` if the server uses a self-signed certificate.
+* For a self-hosted Anthropic-compatible endpoint, set `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` in `.env` — the same vars used by OpenHands and Codex. cc translates them to `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` (and mirrors the model into `ANTHROPIC_SMALL_FAST_MODEL`). When self-hosted, OAuth credentials are not copied into the per-phase state dir. Add `LLM_SKIP_TLS_VERIFY=true` if the server uses a self-signed certificate. If the model has a small context window, set `LLM_MAX_OUTPUT_TOKENS` (e.g. `8192`) — cc passes it through as `CLAUDE_CODE_MAX_OUTPUT_TOKENS` to keep Claude Code's default 32000-token output request from overflowing the window.
 
 For Codex:
 

@@ -1190,6 +1190,20 @@ class TestSelfHostedEndpoint:
         captured = self._popen_kwargs(monkeypatch, tmp_path)
         assert "NODE_TLS_REJECT_UNAUTHORIZED" not in captured["env"]
 
+    def test_max_output_tokens_caps_claude_code(self, monkeypatch, tmp_path):
+        """LLM_MAX_OUTPUT_TOKENS sets CLAUDE_CODE_MAX_OUTPUT_TOKENS."""
+        captured = self._popen_kwargs(
+            monkeypatch,
+            tmp_path,
+            extra_env={"LLM_MAX_OUTPUT_TOKENS": "8192"},
+        )
+        assert captured["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "8192"
+
+    def test_max_output_tokens_unset_by_default(self, monkeypatch, tmp_path):
+        """Without LLM_MAX_OUTPUT_TOKENS, CLAUDE_CODE_MAX_OUTPUT_TOKENS is unset."""
+        captured = self._popen_kwargs(monkeypatch, tmp_path)
+        assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in captured["env"]
+
     def test_self_hosted_skips_credential_copy(self, monkeypatch, tmp_path):
         """Self-hosted path must NOT copy ~/.claude/.credentials.json."""
         # Set up a fake home with a credentials file
