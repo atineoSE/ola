@@ -63,6 +63,17 @@ def _log_oneline(repo: Path, ref: str = "main") -> list[str]:
     return [ln for ln in out.splitlines() if ln.strip()]
 
 
+def _staged(repo: Path) -> list[str]:
+    """Paths staged in *repo*'s index relative to HEAD (sorted)."""
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=str(repo),
+        capture_output=True,
+        check=True,
+    ).stdout.decode()
+    return sorted(p for p in out.splitlines() if p.strip())
+
+
 class TestCreate:
     def test_creates_worktree_dir_and_branch(self, tmp_path):
         project, _agent_root, folder = _two_repos(tmp_path, "- [ ] One task\n")
@@ -212,6 +223,93 @@ class TestMergeBack:
         _git(project, "commit", "-C", sha)
         log = _log_oneline(project, "main")
         assert any("agent: solo" in line for line in log)
+
+    def test_identical_add_is_noop(self, tmp_path):
+        """An incoming add of a path another task already landed *identically*
+        is no diff against HEAD, so it drops out of the merge — only the task's
+        own new file is staged. This is the shared empty ``__init__.py`` case."""
+        project, _agent_root, folder = _two_repos(
+            tmp_path, "- [ ] Task A\n- [ ] Task B\n"
+        )
+        task_a, task_b = enumerate_tasks(folder)
+
+        # Task B branches off the original HEAD and adds an empty package
+        # marker plus its own module.
+        wt_b = worktree.create(project, folder, task_b.task_id)
+        (wt_b / "pkg").mkdir()
+        (wt_b / "pkg" / "__init__.py").write_text("")
+        (wt_b / "pkg" / "b.py").write_text("b\n")
+        sha_b = worktree.commit(wt_b, "agent: task B")
+
+        # Task A has already landed an identical empty __init__.py (tracked) on
+        # the project repo.
+        (project / "pkg").mkdir()
+        (project / "pkg" / "__init__.py").write_text("")
+        (project / "pkg" / "a.py").write_text("a\n")
+        _git(project, "add", "-A")
+        _git(project, "commit", "-m", "task A landed pkg")
+
+        # Merging B back: the identical __init__.py add is a no-op; only b.py
+        # is staged. The old cherry-pick apply would have had nothing to add for
+        # __init__.py either, but a 3-way merge makes that explicit and robust.
+        assert worktree.merge_back(wt_b, project) == sha_b
+        assert _staged(project) == ["pkg/b.py"]
+        _git(project, "commit", "-C", sha_b)
+        assert (project / "pkg" / "b.py").read_text() == "b\n"
+        assert (project / "pkg" / "a.py").read_text() == "a\n"
+
+    def test_identical_add_untracked_collision_does_not_abort(self, tmp_path):
+        """An incoming add whose path already exists *untracked* in the project
+        working tree reconciles instead of aborting — the exit-128 case the old
+        ``cherry-pick -n`` apply died on."""
+        project, _agent_root, folder = _two_repos(tmp_path, "- [ ] Task B\n")
+        task_b = enumerate_tasks(folder)[0]
+
+        wt_b = worktree.create(project, folder, task_b.task_id)
+        (wt_b / "pkg").mkdir()
+        (wt_b / "pkg" / "__init__.py").write_text("")
+        (wt_b / "pkg" / "b.py").write_text("b\n")
+        sha_b = worktree.commit(wt_b, "agent: task B")
+
+        # A byte-identical __init__.py sits *untracked* in the project working
+        # tree (e.g. left by a sibling task's rolled-back attempt). cherry-pick
+        # would refuse with "untracked working tree files would be overwritten".
+        (project / "pkg").mkdir()
+        (project / "pkg" / "__init__.py").write_text("")
+
+        # The 3-way merge ignores the working tree and reconciles cleanly.
+        assert worktree.merge_back(wt_b, project) == sha_b
+        _git(project, "commit", "-C", sha_b)
+        assert (project / "pkg" / "b.py").read_text() == "b\n"
+        assert (project / "pkg" / "__init__.py").read_text() == ""
+
+    def test_auto_resolves_disjoint_edits_to_shared_file(self, tmp_path):
+        """Non-overlapping edits to the *same* file are 3-way auto-merged rather
+        than treated as a conflict — git already knows how to reconcile them."""
+        project, _agent_root, folder = _two_repos(
+            tmp_path, "- [ ] Task A\n- [ ] Task B\n"
+        )
+        (project / "shared.txt").write_text("l1\nl2\nl3\nl4\nl5\n")
+        _git(project, "add", "-A")
+        _git(project, "commit", "-m", "add shared")
+
+        task_a, task_b = enumerate_tasks(folder)
+        wt_a = worktree.create(project, folder, task_a.task_id)
+        wt_b = worktree.create(project, folder, task_b.task_id)
+
+        # A edits the top line, B edits the bottom line — disjoint hunks.
+        (wt_a / "shared.txt").write_text("TOP\nl2\nl3\nl4\nl5\n")
+        sha_a = worktree.commit(wt_a, "agent: A edits top")
+        (wt_b / "shared.txt").write_text("l1\nl2\nl3\nl4\nBOTTOM\n")
+        sha_b = worktree.commit(wt_b, "agent: B edits bottom")
+
+        worktree.merge_back(wt_a, project)
+        _git(project, "commit", "-C", sha_a)
+        # B's disjoint edit auto-merges on top of A's already-landed change.
+        worktree.merge_back(wt_b, project)
+        _git(project, "commit", "-C", sha_b)
+
+        assert (project / "shared.txt").read_text() == "TOP\nl2\nl3\nl4\nBOTTOM\n"
 
     def test_conflict_raises(self, tmp_path):
         project, _agent_root, folder = _two_repos(

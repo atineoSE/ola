@@ -87,6 +87,21 @@ def provision_blocked_script(worktree_path: Path, folder: Path, task_id: str) ->
     return script
 
 
+def write_blocked_record(folder: Path, task_id: str, reason: str) -> None:
+    """Write a blocked marker for *task_id* directly from the harness.
+
+    The same marker the agent's ``ola-blocked`` script writes, but recorded by
+    the scheduler itself for a blockage it detects out-of-band — a merge-back
+    conflict that survived every retry. Routing it through the marker file means
+    the existing janitor escalation (read the record, relocate to a blockers
+    folder) handles a durable merge collision exactly like an agent-reported
+    block, with no separate code path.
+    """
+    marker = _marker_path(folder, task_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(reason)
+
+
 def read_blocked_record(folder: Path, task_id: str) -> BlockedRecord | None:
     """Return the blocked record for *task_id*, or ``None`` if no marker exists."""
     marker = _marker_path(folder, task_id)

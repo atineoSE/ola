@@ -705,6 +705,127 @@ def test_run_folder_exhausts_max_attempts_then_fails(tmp_path):
     assert len(_log_oneline(project, "main")) == 1
 
 
+class _ConflictOnceAgent(_TickingAgent):
+    """First attempt collides on merge-back; the retry lands a disjoint file.
+
+    On attempt 1 this worktree edits ``shared.txt`` while a *rival* lands a
+    conflicting edit on the same line of the project HEAD mid-flight, so the
+    merge-back 3-way collides. The retry — re-branched by ``create`` off the
+    now-updated HEAD — instead writes a unique file that merges cleanly.
+    """
+
+    def __init__(self, project_repo: Path) -> None:
+        super().__init__()
+        self._project = project_repo
+        self.attempts_seen: list[int] = []
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        task_id = labels["task_id"]
+        attempt = int(labels["attempt"])
+        with self._lock:
+            self.attempts_seen.append(attempt)
+        wt = Path(workdir)
+        if attempt == 1:
+            (wt / "shared.txt").write_text("worker line\n")
+            (self._project / "shared.txt").write_text("rival line\n")
+            _git(self._project, "add", "shared.txt")
+            _git(self._project, "commit", "-m", "rival landed mid-flight")
+        else:
+            (wt / f"file_{task_id}.txt").write_text("clean")
+        set_task_checked(_plan_copy(workdir), task_id, True)
+        return AgentResponse(output="ok", success=True, stats=IterationStats())
+
+    def version(self):
+        return "0.0.0"
+
+
+def test_run_folder_merge_conflict_retries_then_lands(tmp_path):
+    """A merge-back conflict is a non-stagnant failed attempt: the task is
+    requeued and the retry, re-branched off the updated project HEAD, lands."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Edit shared\n")
+    (project / "shared.txt").write_text("base\n")
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "add shared")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _ConflictOnceAgent(project)
+    run_folder(agent, folder, agent_root, project, initial_cap=1, max_attempts=2)
+
+    # Completed on the second attempt, ticked on the agent folder.
+    assert task_is_checked(folder, task.task_id) is True
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "complete"
+    assert entry.attempts == 2
+    assert agent.attempts_seen == [1, 2]
+
+    # The rival's content survived and the retry's disjoint file landed on top.
+    assert (project / "shared.txt").read_text() == "rival line\n"
+    assert (project / f"file_{task.task_id}.txt").read_text() == "clean"
+
+
+class _AlwaysConflictAgent(_TickingAgent):
+    """Every attempt collides on merge-back (a rival keeps editing the line)."""
+
+    def __init__(self, project_repo: Path) -> None:
+        super().__init__()
+        self._project = project_repo
+        self.calls = 0
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        task_id = labels["task_id"]
+        with self._lock:
+            self.calls += 1
+            n = self.calls
+        wt = Path(workdir)
+        (wt / "shared.txt").write_text(f"worker {n}\n")
+        (self._project / "shared.txt").write_text(f"rival {n}\n")
+        _git(self._project, "add", "shared.txt")
+        _git(self._project, "commit", "-m", f"rival {n}")
+        set_task_checked(_plan_copy(workdir), task_id, True)
+        return AgentResponse(output="ok", success=True, stats=IterationStats())
+
+    def version(self):
+        return "0.0.0"
+
+
+def test_run_folder_merge_conflict_escalates_after_attempts(tmp_path):
+    """A merge-back conflict that survives the whole --max-attempts budget is
+    recorded as blocked, so the existing janitor escalation can relocate it —
+    durable coupling, not stagnation."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Edit shared\n")
+    (project / "shared.txt").write_text("base\n")
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "add shared")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _AlwaysConflictAgent(project)
+    # janitor_enabled=False keeps the escalation to its terminal state (blocked
+    # + marker) without spawning a real janitor agent.
+    run_folder(
+        agent,
+        folder,
+        agent_root,
+        project,
+        initial_cap=1,
+        max_attempts=2,
+        janitor_enabled=False,
+    )
+
+    # Initial attempt + one retry, then escalation (no third dispatch).
+    assert agent.calls == 2
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "blocked"
+    assert entry.attempts == 2
+    assert "merge-back conflict" in entry.last_error
+
+    # The blocked marker is recorded for the janitor / human audit, and the task
+    # was never ticked.
+    assert (folder / ".ola" / "blocked" / f"{task.task_id}.reason").exists()
+    assert task_is_checked(folder, task.task_id) is False
+
+
 def test_run_folder_materializes_default_concurrency(tmp_path):
     """A run with no .ola/concurrency writes the default so it is auditable."""
     project, agent_root, folder = _two_repos(tmp_path, "- [ ] Task A\n")

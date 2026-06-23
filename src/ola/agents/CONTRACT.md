@@ -18,9 +18,29 @@ Per-task git worktrees spawn from the **project** repo, so a task agent's
 working directory is a project worktree that contains only project code. The
 agent never sees the agent folder and never needs to: whatever it must know
 arrives in its prompt or is recoverable from the project's current state.
-Finished code changes cherry-pick back onto the project repo, and ola
-reconciles each task's checkbox tick onto the agent-folder PLAN.md on the
-agent's behalf.
+Finished code changes merge back onto the project repo, and ola reconciles each
+task's checkbox tick onto the agent-folder PLAN.md on the agent's behalf.
+
+## Merging code back is reconciliation, not a hard gate
+
+A task's worktree branched off the project HEAD at *its* start; by the time it
+finishes, sibling tasks may have landed. Folding its commit back is therefore a
+**3-way merge** (`git merge-tree` in the object store), not a brittle apply: git
+auto-resolves non-overlapping edits, and a collision with a path that already
+exists in the project tree — even an untracked, byte-identical one such as a
+shared empty `__init__.py` another task just added — reconciles instead of
+aborting. An identical add is no diff against HEAD, so it simply drops out.
+
+A merge that still conflicts is **not** a hard failure — it is the same
+non-stagnant failed attempt as any other, and is **retried within the run**.
+Because the retry re-branches off the *now-updated* project HEAD, it sees the
+winner's already-landed files and usually merges cleanly; most collisions
+self-heal this way with no new state (intra-run only — a fresh run still
+re-derives from PLAN.md). Only a conflict that survives the whole
+`--max-attempts` budget is treated as durable coupling (a plan-independence
+violation): it is recorded as blocked and **escalated through the ordinary
+janitor/blockers path** for a human, never smart-merged by a model in the hot
+path.
 
 ## File-driven orchestration
 

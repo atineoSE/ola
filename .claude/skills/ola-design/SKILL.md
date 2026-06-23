@@ -1,7 +1,11 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.2.0
+version: 1.3.0
+# 1.3.0: add the merge-back-is-reconciliation principle — 3-way merge,
+#         identical-add no-op, conflict → intra-run retry → janitor escalation,
+#         no smart-merge in the hot path (minor: new compatible guidance, defers
+#         to CONTRACT.md for the load-bearing detail).
 # 1.2.0: add the project-repo/agent-folder separation, Ralph-minimal PLAN.md +
 #         JANITOR-NOTES.md provenance, and explicit per-task tick-surface
 #         principles to the philosophy and the change-checklist (minor: new
@@ -28,6 +32,17 @@ project's current state. ola gives each task its **tick surface as an explicit
 per-task path** — a per-task PLAN.md copy injected into the worktree — and
 reconciles the tick back onto the agent-folder PLAN.md itself, so the agent
 checks off a file it was handed rather than one it has to discover.
+
+**Merging code back is reconciliation, not a hard gate.** A worktree branched
+off an older project HEAD; folding it back is a 3-way merge (object-store
+`git merge-tree`), so non-overlapping edits auto-resolve and a collision with an
+already-present path — even an untracked, byte-identical one like a shared empty
+`__init__.py` — reconciles instead of aborting the apply. A merge that still
+conflicts is a non-stagnant *failed attempt*, retried within the run: the retry
+re-branches off the updated HEAD and usually merges cleanly, so collisions
+self-heal without new state. Only a conflict that outlasts `--max-attempts` is
+durable coupling, and it escalates through the ordinary janitor/blockers path —
+never a model-driven smart-merge in the hot path. (See CONTRACT.md.)
 
 **PLAN.md stays Ralph-minimal.** A task is its description plus its genuine
 dependencies and policies — never ola internals or self-referential priming.
@@ -82,3 +97,7 @@ the answer is wrong:
   does it branch on a specific backend?
 - Does it scale with parallelism (locks around shared PLAN.md/git state,
   live-read concurrency cap), or does it silently serialize work?
+- Does it keep merging code back a **reconciliation** (3-way merge, identical-add
+  no-op, conflict → intra-run retry → janitor escalation), or does it make a
+  recoverable collision a hard failure — or worse, smart-merge with a model in
+  the hot path?

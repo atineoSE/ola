@@ -50,6 +50,7 @@ from ola.blocked import (
     clear_blocked_record,
     provision_blocked_script,
     read_blocked_record,
+    write_blocked_record,
 )
 from ola.blocked import BlockedRecord
 from ola.events.schema import metrics_block
@@ -57,7 +58,7 @@ from ola.janitor import run_janitor
 from ola.loop import _append_stats, _exclude_ola_artifacts, per_task_state_dir
 from ola.plan import count_tasks, set_task_checked, task_is_checked
 from ola.taskstate import TaskState
-from ola.worktree import cleanup, commit, create, merge_back
+from ola.worktree import MergeBackConflict, cleanup, commit, create, merge_back
 
 logger = logging.getLogger(__name__)
 
@@ -410,7 +411,18 @@ def _propagate(
     sha = commit(worktree_path, f"ola: {folder.name} {task_id}")
     if sha != base_sha:
         merge_back(worktree_path, project_path)
-        _git(project_path, "commit", "-C", sha)
+        # The merge can net to nothing new on the project repo when a sibling
+        # task already landed identical content (e.g. a shared empty
+        # __init__.py): an identical add is no diff against HEAD. Only commit
+        # when the index actually advances, so `commit -C` never fails on an
+        # empty index — the identical-add-only task is a clean no-op here.
+        staged = (
+            _git(project_path, "diff", "--cached", "--name-only")
+            .stdout.decode()
+            .strip()
+        )
+        if staged:
+            _git(project_path, "commit", "-C", sha)
     set_task_checked(folder, task_id, True)
     plan_rel = f"{folder.name}/PLAN.md"
     _git(agent_root, "add", plan_rel)
@@ -448,6 +460,67 @@ def _fail_or_requeue(
             attempt,
             max_attempts,
         )
+
+
+def _handle_merge_conflict(
+    conflict: MergeBackConflict,
+    folder: Path,
+    task_id: str,
+    attempt: int,
+    max_attempts: int,
+    state: TaskState,
+    state_lock: threading.Lock,
+    prog: _ProgressEmitter,
+    stats: Any | None,
+) -> str:
+    """Resolve a merge-back collision: retry within the run, else escalate.
+
+    A :class:`~ola.worktree.MergeBackConflict` is a *reconciliation* collision,
+    not a hard failure — a sibling task changed overlapping lines after this
+    worktree branched. It is never stagnation, so the returned outcome resets
+    the folder's stagnation breaker.
+
+    While attempts remain it is a non-stagnant failed attempt: the task is
+    requeued (``_OUTCOME_FAILED``), and because :func:`worktree.create` re-anchors
+    the next worktree on the *current* project HEAD, the retry sees the winner's
+    already-landed files and usually merges cleanly — most collisions (e.g. the
+    shared empty ``__init__.py``) self-heal this way with no new state, intra-run
+    only. A task that still conflicts after its whole ``--max-attempts`` budget
+    is genuine coupling (a plan-independence violation); it is recorded as
+    blocked (``_OUTCOME_BLOCKED``) so the existing janitor escalation relocates
+    it to a blockers folder for a human, rather than smart-merging in the hot
+    path.
+    """
+    paths = ", ".join(conflict.conflicted_paths)
+    if attempt < max_attempts:
+        logger.warning(
+            "task %s (attempt %d) merge-back conflicted on %s; requeuing.",
+            task_id,
+            attempt,
+            paths,
+        )
+        _fail_or_requeue(
+            state,
+            state_lock,
+            task_id,
+            attempt,
+            max_attempts,
+            f"merge-back conflict: {paths}",
+        )
+        prog.failed(f"merge-back conflict: {paths}", stats=stats)
+        return _OUTCOME_FAILED
+
+    reason = (
+        f"merge-back conflict persisted after {attempt} attempt(s) on {paths} "
+        f"— likely real coupling between tasks (a plan-independence violation)."
+    )
+    logger.warning("task %s exhausted retries on merge-back conflict: %s", task_id, reason)
+    write_blocked_record(folder, task_id, reason)
+    with state_lock:
+        state.mark(task_id, "blocked", last_error=f"blocked: {reason}")
+        state.save()
+    prog.blocked(reason, stats=stats)
+    return _OUTCOME_BLOCKED
 
 
 def _run_with_rate_limit_resume(
@@ -602,14 +675,27 @@ def _run_one_task(
         if ticked and response.success:
             # Checkbox is truth: a tick wins even over a stray blocked marker.
             clear_blocked_record(folder, task_id)
-            with plan_lock:
-                _propagate(
-                    worktree_path,
+            try:
+                with plan_lock:
+                    _propagate(
+                        worktree_path,
+                        folder,
+                        agent_root,
+                        project_path,
+                        task_id,
+                        base_sha,
+                    )
+            except MergeBackConflict as conflict:
+                return _handle_merge_conflict(
+                    conflict,
                     folder,
-                    agent_root,
-                    project_path,
                     task_id,
-                    base_sha,
+                    attempt,
+                    max_attempts,
+                    state,
+                    state_lock,
+                    prog,
+                    response.stats,
                 )
             with state_lock:
                 state.mark(task_id, "complete", last_error=None)
