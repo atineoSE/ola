@@ -321,14 +321,15 @@ _ola_inject_credentials() {
 }
 
 # Patch the host OpenHands CLI settings with the resolved LLM endpoint and
-# inject them into the sandbox. ola's OpenHands *SDK* path reads LLM_* from
-# the environment (it ignores agent_settings.json by design), but the
-# standalone `openhands` CLI inside the sandbox reads agent_settings.json —
-# whose host copy carries a stale base_url/key (the substrate IP rotates).
-# Only the rotating identity fields are patched; the user's tools/condenser/
-# prompt config in the template is preserved verbatim. Non-fatal: on any
-# gap (no jq, no template, missing values) the verbatim host copy from
-# _ola_inject_credentials plus the exported shell env remain as fallback.
+# inject them into the sandbox. ola's `oh` backend drives the openhands CLI and
+# writes its *own* per-task agent_settings.json under a per-task persistence
+# dir (OPENHANDS_PERSISTENCE_DIR), so this host-level ~/.openhands copy is for
+# *manual/interactive* `openhands` runs in the sandbox — whose host copy
+# carries a stale base_url/key (the substrate IP rotates). Only the rotating
+# identity fields are patched; the user's tools/condenser/prompt config in the
+# template is preserved verbatim. Non-fatal: on any gap (no jq, no template,
+# missing values) the verbatim host copy from _ola_inject_credentials plus the
+# exported shell env remain as fallback.
 _ola_inject_oh_settings() {
   local name="$1" blob="$2"
   local tmpl="$HOME/.openhands/agent_settings.json"
@@ -368,8 +369,8 @@ _ola_inject_oh_settings() {
 
 # Set up the sandbox login shell: export the resolved env snapshot so every
 # tool in the sandbox (the openhands CLI, manual litellm/curl probes, codex)
-# sees the same LLM_* values ola's SDK loads — they otherwise live only in
-# ~/.ola/agent.env, which only ola's Python reads. Mirrors the SDK's
+# sees the same LLM_* values ola's backends load — they otherwise live only in
+# ~/.ola/agent.env, which only ola's Python reads. Mirrors the backend's
 # LLM_SKIP_TLS_VERIFY → SSL_VERIFY translation (see agents/openhands.py) so
 # self-signed substrate certs work for env-driven tools too. Sourced by path
 # so a reconnect that refreshes the sidecar is picked up with no rc rewrite.

@@ -3,9 +3,11 @@ name = "ola"
 version = "0.1.0"
 description = "Outer Loop of Agents"
 requires-python = ">=3.12"
+# The OpenHands backend (`oh`) shells out to the standalone `openhands` CLI
+# (installed separately via `uv tool install openhands`), so the SDK is no
+# longer a library dependency — that subprocess isolation is the whole point of
+# the redesign (it sidesteps the SDK's in-process LLM serialization lock).
 dependencies = [
-    "openhands-sdk>=1.14.0",
-    "openhands-tools>=1.14.0",
     "pydantic>=2.0",
     "python-dotenv>=1.0.0",
     "rich>=13.0",

@@ -13,8 +13,22 @@ the tasks inside one `PLAN.md` are independent and parallel-safe, each task runs
 with a fresh context in its own worktree, and a ticked checkbox is the only
 completion signal the harness accepts.
 
-Four agent backends are supported: **Claude Code** (`cc`), the **OpenHands SDK**
+Four agent backends are supported: **Claude Code** (`cc`), the **OpenHands CLI**
 (`oh`), **Codex** (`cx`), and **Claude Code TUI** (`ct`).
+
+`oh` drives the standalone `openhands` CLI headlessly
+(`openhands --headless --json --override-with-envs -f <task>`) in a subprocess —
+one process per task, like `cc`/`cx`. This replaced an in-process OpenHands
+**SDK** backend whose class-level lock serialized every LLM call to one in-flight
+request per process (killing parallelism); subprocess isolation makes the fan-out
+real. ola writes a per-task `agent_settings.json` (a serialized SDK `Agent`, full
+LLM-knob fidelity) under a per-task `OPENHANDS_PERSISTENCE_DIR`, parses the CLI's
+`--JSON Event-` stream for progress and the final message, and recovers token
+economics post-hoc from the persisted `base_state.json`. Like `ct`, it has **no**
+streaming-only timings (TTFT, decode-isolated tok/sec) — headless `--json`
+carries no token-level chunks; it does get real per-call LLM latency. The CLI is
+installed separately (`uv tool install openhands`), not as a Python dependency.
+See `src/ola/agents/openhands.py` and the `openhands-cli` skill.
 
 `ct` is an alternative Claude Code backend that drives the *interactive* `claude`
 UI inside a pseudo-terminal instead of the headless `claude -p` stream. It exists
@@ -70,7 +84,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-dashboard` | 1.2.0 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 1.0.2 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
-| `openhands-sdk` | 1.2.0 | Configure the OpenHands SDK `LLM` and `Agent` classes; incl. the class-level lock that serializes in-process LLM calls (no in-process concurrency). |
+| `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
 | `sbx` | 1.2.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy, secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall). Contract version-pinned; re-verify on sbx upgrade. |
 
 ## Treat skills as code

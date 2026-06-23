@@ -1,21 +1,44 @@
+import json
 import logging
 import os
+import subprocess
 import time
-from collections.abc import Callable
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse, ProgressCallback
-from ola.events.schema import metrics_block
 from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
 
-_lmnr_initialized = False
+# The OpenHands CLI's --json mode (openhands_cli.utils.json_callback) does NOT
+# emit clean JSONL. It prints this marker line, then a *pretty-printed,
+# multi-line* JSON dump of one SDK event, repeated per event. The parser splits
+# on the marker and accumulates the multi-line block in between.
+_JSON_EVENT_MARKER = "--JSON Event--"
+
+# LLM_* env knobs → agent_settings.json llm fields. Mirrors the surface the old
+# SDK backend exposed; only set values are written, so SDK defaults fill the
+# rest. (model/api_key/base_url are handled separately as required/identity
+# fields and also re-applied via --override-with-envs.)
+_ENV_LLM_OPTS: list[tuple[str, str, type]] = [
+    ("timeout", "LLM_TIMEOUT", int),
+    ("temperature", "LLM_TEMPERATURE", float),
+    ("top_p", "LLM_TOP_P", float),
+    ("max_input_tokens", "LLM_MAX_INPUT_TOKENS", int),
+    ("max_output_tokens", "LLM_MAX_OUTPUT_TOKENS", int),
+    ("reasoning_effort", "LLM_REASONING_EFFORT", str),
+    ("num_retries", "LLM_NUM_RETRIES", int),
+    ("extended_thinking_budget", "LLM_EXTENDED_THINKING_BUDGET", int),
+    ("prompt_cache_retention", "LLM_PROMPT_CACHE_RETENTION", str),
+]
 
 
 def _resolve_localhost(url: str) -> str:
     """If *url* points to localhost and we're inside a sandbox, swap to
-    ``host.docker.internal`` so the request can reach the host machine."""
+    ``host.docker.internal`` so the request can reach the host machine.
+
+    Kept here (rather than moved) because ``ola.agents.codex`` imports it.
+    """
     from urllib.parse import urlparse
 
     from ola.sandbox import is_sandbox
@@ -28,167 +51,105 @@ def _resolve_localhost(url: str) -> str:
     return url.replace(parsed.hostname, "host.docker.internal", 1)
 
 
-def _init_laminar():
-    """Initialize Laminar with HTTP transport before OpenHands SDK is imported.
+def _build_llm_config(model: str, api_key: str, base_url: str | None, usage_id: str) -> dict:
+    """Build the ``llm`` block for agent_settings.json from LLM_* env vars.
 
-    Must be called before any ``from openhands.sdk import …`` so that the
-    SDK's auto-instrumentation inherits the HTTP exporter instead of setting
-    up a gRPC exporter to api.lmnr.ai (which fails behind the sbx proxy).
-    The key is popped from the environment so the SDK doesn't re-initialize.
+    The on-disk ``agent_settings.json`` is a serialized OpenHands SDK ``Agent``
+    (``Agent.model_validate_json``); its ``llm`` field is a full ``LLM`` model.
+    We populate only the fields ola configures and let the SDK default the rest.
+    The api_key is written in plaintext — the per-task state dir is private, and
+    this mirrors what ``_ola_inject_oh_settings`` in ola.sh already does.
     """
-    global _lmnr_initialized
-    if _lmnr_initialized:
-        return
-    _lmnr_initialized = True
-    try:
-        from lmnr import Laminar
-
-        _lmnr_key = os.environ.pop("LMNR_PROJECT_API_KEY", None)
-        if _lmnr_key:
-            base_url = os.getenv("LMNR_BASE_URL")
-            if not base_url:
-                logger.debug("LMNR_BASE_URL not set; skipping Laminar init")
-                return
-            base_url = _resolve_localhost(base_url)
-            Laminar.initialize(
-                project_api_key=_lmnr_key,
-                base_url=base_url,
-                http_port=int(os.getenv("LMNR_HTTP_PORT", "8000")),
-                force_http=True,
-            )
-    except ImportError:
-        pass
+    llm: dict = {
+        "model": model,
+        "api_key": api_key,
+        "usage_id": usage_id,
+        "stream": False,
+        "drop_params": True,
+    }
+    if base_url:
+        llm["base_url"] = base_url
+    for key, envvar, typ in _ENV_LLM_OPTS:
+        val = os.getenv(envvar)
+        if val:
+            llm[key] = typ(val)
+    enc = os.getenv("LLM_ENABLE_ENCRYPTED_REASONING")
+    if enc is not None:
+        llm["enable_encrypted_reasoning"] = enc.lower() == "true"
+    return llm
 
 
-_POLICY_FILE = Path(__file__).resolve().parent / "NETWORK-POLICY.md"
+def _build_agent_settings(model: str, api_key: str, base_url: str | None) -> dict:
+    """Render the agent_settings.json the headless CLI loads from the
+    persistence dir.
 
-
-def _live_metrics(conversation: object, tracker: "_TTFTTracker | None") -> dict | None:
-    """Cumulative throughput so far, for a mid-run ``working`` event.
-
-    Reads the same ``conversation.state.stats`` source as :meth:`_extract_stats`,
-    so the live numbers and the terminal totals come from one place. Returns
-    ``None`` until the first turn has produced tokens — the ``metrics`` block is
-    optional in the schema, so absence beats a row of zeros. ``decode_ms`` is
-    only available when streaming (the tracker is wired); a non-streaming run
-    reports ``output_tokens`` with ``decode_ms == 0`` and ``metrics_block``
-    yields ``tokens_per_sec == 0`` rather than dividing by zero.
+    Minimal but complete: ``kind`` + ``llm`` + an ``LLMSummarizingCondenser``
+    (so long-horizon runs get context summarization — the CLI only wires a
+    condenser if one is already present in the persisted agent). Tools and
+    agent-context are injected by the CLI's runtime config, so they are omitted
+    here. Validated against the installed ``Agent`` schema.
     """
-    try:
-        usage_to_metrics = conversation.state.stats.usage_to_metrics  # type: ignore[attr-defined]
-        output_tokens = sum(
-            m.accumulated_token_usage.completion_tokens
-            for m in usage_to_metrics.values()
-        )
-        decode_ms = tracker.total_decode_ms() if tracker is not None else 0
-    except Exception:
-        return None
-    if not output_tokens and not decode_ms:
-        return None
-    return metrics_block(output_tokens=output_tokens, decode_ms=decode_ms)
+    return {
+        "kind": "Agent",
+        "llm": _build_llm_config(model, api_key, base_url, "agent"),
+        "condenser": {
+            "kind": "LLMSummarizingCondenser",
+            "llm": _build_llm_config(model, api_key, base_url, "condenser"),
+        },
+    }
 
 
-def _make_event_progress_callback(
-    on_progress: ProgressCallback,
-    metrics_provider: Callable[[], dict | None] | None = None,
-) -> Callable[[object], None]:
-    """Build a Conversation `callbacks` entry that funnels OpenHands events
-    into the harness ``on_progress`` callback, rate-limited to one call per
-    second per worker.
+def _event_text(event: dict) -> str | None:
+    """Derive a short human-readable status line from a parsed SDK event dict.
 
-    Recognised events:
-      * ``MessageEvent`` with ``source == "agent"`` — text from the agent.
-      * ``ActionEvent`` — ``[<tool_name>] <summary>`` for tool invocations.
-    All other event types are ignored.
-
-    *metrics_provider*, when supplied, is called on each emitted progress event
-    to attach a cumulative ``Metrics`` block (so the dashboard's live throughput
-    tile updates mid-run instead of only at task completion). It is provided
-    separately from the event because the cumulative usage lives in the
-    conversation's running stats, not on the individual event.
+    Returns agent message text for ``MessageEvent`` (source agent), or
+    ``[tool] summary`` for ``ActionEvent``; ``None`` for anything else.
     """
-    from openhands.sdk.event import ActionEvent, MessageEvent
-    from openhands.sdk.llm import content_to_str
-
-    last_progress_ts: list[float] = [0.0]
-
-    def callback(event: object) -> None:
-        text: str | None = None
-        if (
-            isinstance(event, MessageEvent)
-            and getattr(event, "source", None) == "agent"
-        ):
-            try:
-                parts = content_to_str(event.llm_message.content)
-            except Exception:
-                parts = []
-            joined = " ".join(p for p in parts if p).strip()
-            if joined:
-                text = joined
-        elif isinstance(event, ActionEvent):
-            tool = getattr(event, "tool_name", "?") or "?"
-            summary = (getattr(event, "summary", None) or "").strip()
-            text = f"[{tool}] {summary}".strip()
-        if not text:
-            return
-        now = time.monotonic()
-        if now - last_progress_ts[0] < 1.0:
-            return
-        last_progress_ts[0] = now
-        metrics = metrics_provider() if metrics_provider is not None else None
-        try:
-            on_progress(text, metrics)
-        except Exception:
-            logger.exception("on_progress callback raised; continuing")
-
-    return callback
+    kind = event.get("kind")
+    if kind == "MessageEvent" and event.get("source") == "agent":
+        parts = [
+            c.get("text", "")
+            for c in (event.get("llm_message") or {}).get("content") or []
+            if isinstance(c, dict) and c.get("type") == "text"
+        ]
+        joined = " ".join(p for p in parts if p).strip()
+        return joined or None
+    if kind == "ActionEvent":
+        tool = event.get("tool_name") or "?"
+        summary = (event.get("summary") or "").strip()
+        return f"[{tool}] {summary}".strip()
+    return None
 
 
-class _TTFTTracker:
-    """Track first/last chunk timestamps per response for TTFT calculation.
+def _agent_message_text(event: dict) -> str | None:
+    """Full agent message text from a ``MessageEvent`` (source agent), else None.
 
-    Used as a streaming token callback during ``Conversation.run()`` to derive
-    per-LLM-call TTFT from chunk timing combined with ``response_latencies``.
+    Used to track the conversation's final response; identical extraction to
+    :func:`_event_text`'s message branch but without the action fallback.
     """
-
-    def __init__(self) -> None:
-        self.first_chunk: dict[str, float] = {}  # response_id -> timestamp
-        self.last_chunk: dict[str, float] = {}  # response_id -> timestamp
-
-    def on_token(self, chunk: object) -> None:
-        rid = getattr(chunk, "id", None)
-        if rid is None:
-            return
-        now = time.monotonic()
-        if rid not in self.first_chunk:
-            self.first_chunk[rid] = now
-        self.last_chunk[rid] = now
-
-    def total_ttft_ms(self, response_latencies: list) -> int:
-        """Derive total TTFT from chunk timing + per-call latencies.
-
-        For each call: decode_time ≈ last_chunk - first_chunk,
-        ttft ≈ total_latency - decode_time.
-        """
-        total = 0.0
-        for rl in response_latencies:
-            rid = rl.response_id
-            if rid in self.first_chunk and rid in self.last_chunk:
-                decode_secs = self.last_chunk[rid] - self.first_chunk[rid]
-                ttft_secs = max(0.0, rl.latency - decode_secs)
-                total += ttft_secs
-        return int(total * 1000)
-
-    def total_decode_ms(self) -> int:
-        """Total time spent receiving chunks, summed over all responses."""
-        total = 0.0
-        for rid, first in self.first_chunk.items():
-            total += self.last_chunk.get(rid, first) - first
-        return int(total * 1000)
+    if event.get("kind") == "MessageEvent" and event.get("source") == "agent":
+        parts = [
+            c.get("text", "")
+            for c in (event.get("llm_message") or {}).get("content") or []
+            if isinstance(c, dict) and c.get("type") == "text"
+        ]
+        return " ".join(p for p in parts if p).strip() or None
+    return None
 
 
 class OpenHandsAgent(Agent):
-    """Agent that delegates to OpenHands SDK."""
+    """Agent that delegates to the OpenHands CLI in a subprocess.
+
+    Unlike the former in-process SDK backend, this spawns ``openhands
+    --headless --json`` per task. Subprocess isolation sidesteps the SDK's
+    class-level ``_litellm_modify_params_lock`` (which serialized every LLM
+    call to one in-flight request per process), so tasks run truly in parallel
+    — the same model the ``cc``/``cx`` backends use.
+
+    Headless ``--json`` emits high-level SDK events (not token-level chunks),
+    so streaming timings (TTFT, decode-isolated tok/sec) are unavailable; token
+    economics are recovered post-hoc from the persisted ``base_state.json``.
+    """
 
     state_dir_name = ".openhands"
     mnemonic = "oh"
@@ -196,43 +157,15 @@ class OpenHandsAgent(Agent):
 
     def version(self) -> str:
         try:
-            from importlib.metadata import version
-
-            return version("openhands-sdk")
-        except Exception:
+            result = subprocess.run(
+                ["openhands", "--version"],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1"},
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except FileNotFoundError:
             return ""
-
-    def warm_up(self) -> None:
-        """Import the SDK and configure litellm once, on the main thread.
-
-        ``import litellm`` (pulled in transitively by ``openhands.sdk``) is not
-        safe to run for the first time from several worker threads at once: the
-        concurrent first import trips CPython's import-lock deadlock detector
-        and leaves ``litellm`` half-initialised, so every task that imports it
-        afterwards dies with a ``partially initialized module`` error. Importing
-        it here, serially, before any worker starts makes the per-task imports
-        in :meth:`run` cheap cache hits. Laminar must be initialised before the
-        SDK import (see :func:`_init_laminar`), so that ordering is preserved.
-        """
-        _init_laminar()
-        try:
-            import litellm  # noqa: F401
-            import openhands.sdk  # noqa: F401
-            import openhands.tools  # noqa: F401
-        except ImportError:
-            # Missing deps are surfaced with a friendly message when run()
-            # hits the same import; nothing to do here.
-            return
-
-        # litellm's get_ssl_verify() reads $SSL_VERIFY before its own default,
-        # so translating LLM_SKIP_TLS_VERIFY here disables cert checks for
-        # self-hosted endpoints with self-signed certs — symmetric with the cc
-        # path's NODE_TLS_REJECT_UNAUTHORIZED. Done once here rather than per
-        # worker so the process-global env/module writes don't race.
-        if os.getenv("LLM_SKIP_TLS_VERIFY", "").lower() == "true":
-            os.environ["SSL_VERIFY"] = "False"
-            litellm.ssl_verify = False
-            logger.debug("LLM_SKIP_TLS_VERIFY=true → SSL_VERIFY=False")
 
     def run(
         self,
@@ -242,40 +175,6 @@ class OpenHandsAgent(Agent):
         labels: dict[str, str] | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> AgentResponse:
-        # Initialize Laminar BEFORE importing OpenHands SDK. The SDK
-        # auto-instruments via lmnr at import time — if it sees
-        # LMNR_PROJECT_API_KEY it sets up a gRPC exporter that breaks
-        # behind the sbx proxy. Our init uses force_http=True and pops
-        # the key so the SDK's auto-instrumentation is a no-op.
-        _init_laminar()
-
-        try:
-            from openhands.sdk import (
-                LLM,
-                AgentContext,
-                Conversation,
-            )
-            from openhands.sdk import (
-                Agent as OHAgent,
-            )
-            from openhands.sdk.context import Skill
-            from openhands.sdk.conversation.response_utils import (
-                get_agent_final_response,
-            )
-            from openhands.sdk.logger.logger import setup_logging as oh_setup_logging
-            from openhands.tools import get_default_tools
-            from pydantic import SecretStr
-        except ImportError:
-            logger.error("openhands-sdk or openhands-tools is not installed")
-            return AgentResponse(
-                output="openhands-sdk or openhands-tools is not installed.",
-                success=False,
-            )
-
-        base = Path(state_dir) if state_dir else Path(workdir)
-        base.mkdir(parents=True, exist_ok=True)
-        oh_setup_logging(log_to_file=True, log_dir=str(base / "logs"))
-
         api_key = os.getenv("LLM_API_KEY")
         if not api_key:
             logger.error("LLM_API_KEY environment variable is not set")
@@ -284,190 +183,270 @@ class OpenHandsAgent(Agent):
                 success=False,
             )
 
+        if not state_dir:
+            return AgentResponse(
+                output="state_dir is required for OpenHandsAgent.",
+                success=False,
+            )
+
         model_name = self.model or os.getenv("LLM_MODEL")
+        if not model_name:
+            logger.error("no model configured (set LLM_MODEL or pass --model)")
+            return AgentResponse(
+                output="No model configured. Set LLM_MODEL or pass --model.",
+                success=False,
+            )
+
         base_url = os.getenv("LLM_BASE_URL") or None
         if base_url:
             base_url = _resolve_localhost(base_url)
 
-        # SSL/TLS verification is configured once in warm_up() on the main
-        # thread (LLM_SKIP_TLS_VERIFY → SSL_VERIFY), not here, so the
-        # process-global env/litellm writes don't race across workers.
+        sd = Path(state_dir)
+        sd.mkdir(parents=True, exist_ok=True)
 
-        logger.debug("OpenHands agent using model=%s", model_name)
+        # Per-task agent_settings.json (full LLM config) at the persistence-dir
+        # root the CLI reads (AGENT_SETTINGS_PATH is relative to it).
+        settings = _build_agent_settings(model_name, api_key, base_url)
+        (sd / "agent_settings.json").write_text(json.dumps(settings, indent=2))
 
-        # Build LLM kwargs from .env settings, ignoring unset values so
-        # the SDK defaults apply.  This deliberately does NOT read
-        # ~/.openhands/agent_settings.json — that file is for the
-        # interactive OpenHands CLI only.
-        llm_kwargs: dict = dict(
-            model=model_name,
-            api_key=SecretStr(api_key),
-            base_url=base_url,
-            stream=True,
-            drop_params=True,
-        )
-        _env_llm_opts: list[tuple[str, str, type]] = [
-            ("timeout", "LLM_TIMEOUT", int),
-            ("temperature", "LLM_TEMPERATURE", float),
-            ("top_p", "LLM_TOP_P", float),
-            ("max_input_tokens", "LLM_MAX_INPUT_TOKENS", int),
-            ("max_output_tokens", "LLM_MAX_OUTPUT_TOKENS", int),
-            ("reasoning_effort", "LLM_REASONING_EFFORT", str),
-            ("num_retries", "LLM_NUM_RETRIES", int),
-            ("extended_thinking_budget", "LLM_EXTENDED_THINKING_BUDGET", int),
-            ("prompt_cache_retention", "LLM_PROMPT_CACHE_RETENTION", str),
-            ("usage_id", "LLM_USAGE_ID", str),
+        # Pass the prompt verbatim via -f (dodges argv length limits). Like the
+        # cc/cx/ct backends, no network policy is injected — the sandbox
+        # enforces the real boundary at the proxy.
+        task_file = sd / "task.md"
+        task_file.write_text(prompt)
+
+        cmd = [
+            "openhands",
+            "--headless",
+            "--json",
+            "--override-with-envs",
+            "-f",
+            str(task_file),
         ]
-        for kwarg, envvar, typ in _env_llm_opts:
-            val = os.getenv(envvar)
-            if val:
-                llm_kwargs[kwarg] = typ(val)
-        # Boolean options
-        enc_reasoning = os.getenv("LLM_ENABLE_ENCRYPTED_REASONING")
-        if enc_reasoning is not None:
-            llm_kwargs["enable_encrypted_reasoning"] = enc_reasoning.lower() == "true"
 
-        network_policy = Skill(
-            name="network-policy",
-            content=_POLICY_FILE.read_text(),
-            trigger=None,  # always active
-        )
-        tools = get_default_tools(enable_browser=False)
-        persistence_dir = str(base / "trajectories")
+        env = {
+            **os.environ,
+            "OPENHANDS_PERSISTENCE_DIR": str(sd),
+            "OPENHANDS_WORK_DIR": workdir,
+            "OPENHANDS_SUPPRESS_BANNER": "1",
+            # --override-with-envs reads these three; ensure the live identity
+            # always wins (sandbox substrate IP/key rotates between runs) and
+            # that LLM_MODEL is present even when the model came from --model.
+            "LLM_MODEL": model_name,
+            "LLM_API_KEY": api_key,
+        }
+        if base_url:
+            env["LLM_BASE_URL"] = base_url
+        # Self-signed self-hosted endpoints: litellm reads $SSL_VERIFY. Set
+        # per-subprocess (no shared-process race, unlike the old warm_up path).
+        if os.getenv("LLM_SKIP_TLS_VERIFY", "").lower() == "true":
+            env["SSL_VERIFY"] = "False"
 
-        # The cumulative usage the live ``metrics`` block needs lives on the
-        # conversation, which doesn't exist until the loop below. Hand the
-        # callback a provider that reads through this mutable cell, populated
-        # once the conversation/tracker for the active attempt are created.
-        live: dict[str, object | None] = {"conversation": None, "tracker": None}
-        progress_callbacks = (
-            [
-                _make_event_progress_callback(
-                    on_progress,
-                    lambda: (
-                        _live_metrics(live["conversation"], live["tracker"])  # type: ignore[arg-type]
-                        if live["conversation"] is not None
-                        else None
-                    ),
-                )
-            ]
-            if on_progress is not None
-            else []
-        )
+        logger.debug("Running: %s", " ".join(cmd))
+        logger.debug("OPENHANDS_PERSISTENCE_DIR=%s model=%s", sd, model_name)
 
-        # Try streaming first; fall back to non-streaming if the
-        # provider doesn't support it (the SDK raises AssertionError
-        # when litellm returns a non-streaming response for stream=True).
-        for attempt, use_stream in enumerate((True, False)):
-            llm_kwargs["stream"] = use_stream
-            llm = LLM(**llm_kwargs)
-
-            agent = OHAgent(
-                llm=llm,
-                tools=tools,
-                agent_context=AgentContext(skills=[network_policy]),
-            )
-
-            tracker = _TTFTTracker() if use_stream else None
-            conversation = Conversation(
-                agent=agent,
-                workspace=workdir,
-                persistence_dir=persistence_dir,
-                token_callbacks=[tracker.on_token] if tracker else [],
-                callbacks=progress_callbacks,
-            )
-            # Expose this attempt's conversation/tracker to the live-metrics
-            # provider closed over by the progress callback above.
-            live["conversation"] = conversation
-            live["tracker"] = tracker
-
-            conversation.send_message(prompt)
-            try:
-                conversation.run()
-            except Exception as exc:
-                cause = exc.__cause__ if exc.__cause__ else exc
-                if isinstance(cause, AssertionError) and attempt == 0:
-                    logger.warning(
-                        "Streaming not supported by provider, retrying "
-                        "without streaming"
-                    )
-                    continue
-                logger.error("Conversation failed: %s", exc)
-                return AgentResponse(
-                    output=str(exc),
-                    success=False,
-                )
-            break
-
-        output = get_agent_final_response(conversation.state.events) or ""
-        stats = self._extract_stats(conversation, model_name, tracker)
-        return AgentResponse(output=output, success=True, stats=stats)
-
-    def _extract_stats(
-        self, conversation, model: str = "", tracker: _TTFTTracker | None = None
-    ) -> IterationStats:
-        """Extract token usage and timing stats from conversation state."""
         try:
-            usage_to_metrics = conversation.state.stats.usage_to_metrics
-            total_input = 0
-            total_output = 0
-            total_cache_read = 0
-            total_cache_write = 0
-            total_llm_secs = 0.0
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=workdir,
+                env=env,
+            )
+        except FileNotFoundError:
+            logger.error("'openhands' CLI not found")
+            return AgentResponse(
+                output=(
+                    "'openhands' CLI not found. "
+                    "Install with `uv tool install openhands`."
+                ),
+                success=False,
+            )
+
+        return self._stream(proc, sd, model_name, on_progress=on_progress)
+
+    def _stream(
+        self,
+        proc: subprocess.Popen,
+        state_dir: Path,
+        model_name: str,
+        on_progress: ProgressCallback | None = None,
+    ) -> AgentResponse:
+        from ola.agents.codex import _StatusDisplay
+
+        status = _StatusDisplay()
+        last_progress_ts: float = 0.0  # monotonic; throttle on_progress to 1/s
+
+        def _emit(text: str) -> None:
+            nonlocal last_progress_ts
+            status.update(text)
+            if on_progress is None:
+                return
+            now = time.monotonic()
+            if now - last_progress_ts < 1.0:
+                return
+            last_progress_ts = now
+            try:
+                on_progress(text)
+            except Exception:
+                logger.exception("on_progress callback raised; continuing")
+
+        last_agent_message: str | None = None
+        # Only a ConversationErrorEvent is fatal: the run loop moved to an ERROR
+        # state (e.g. the LLM endpoint is unreachable, auth failed, rate limited).
+        # An AgentErrorEvent is a recoverable tool observation, so it is ignored.
+        fatal_error: str | None = None
+        error_code: str | None = None
+
+        for event in self._iter_events(proc.stdout):
+            if event.get("kind") == "ConversationErrorEvent":
+                error_code = event.get("code") or error_code
+                # detail/code always populated on this event, so fatal_error is
+                # never left falsy when one is seen (the bug that masked a dead
+                # endpoint as success).
+                fatal_error = (
+                    event.get("detail")
+                    or event.get("code")
+                    or "conversation error"
+                )
+            msg = _agent_message_text(event)
+            if msg:
+                last_agent_message = msg
+            line = _event_text(event)
+            if line:
+                _emit(line)
+
+        status.clear()
+        proc.wait()
+
+        stats = self._extract_stats(state_dir, model_name)
+        success = proc.returncode == 0 and fatal_error is None
+        if not success:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            error_message = fatal_error or (stderr[:500] if stderr else None)
+            stats.error_type = error_code or (
+                "conversation_error" if fatal_error else "nonzero_exit"
+            )
+            stats.error_message = error_message
+            if error_message:
+                low = error_message.lower()
+                if "rate" in low and "limit" in low or "429" in low:
+                    stats.error_type = "rate_limit"
+            return AgentResponse(
+                output=last_agent_message or fatal_error or stderr,
+                success=False,
+                stats=stats,
+            )
+
+        return AgentResponse(
+            output=last_agent_message or "",
+            success=True,
+            stats=stats,
+        )
+
+    @staticmethod
+    def _iter_events(stdout):
+        """Yield parsed event dicts from the CLI's ``--JSON Event--`` stream.
+
+        Events are pretty-printed multi-line JSON blocks separated by marker
+        lines. We accumulate the lines of one block and parse it when the next
+        marker (or EOF) arrives.
+
+        ``raw_decode`` (not ``json.loads``) is essential: the CLI interleaves
+        Rich console output (the "CONVERSATION SUMMARY" box, "Goodbye",
+        "Conversation ID:") *after* the final event's JSON, in the same block.
+        ``raw_decode`` parses the leading JSON object and ignores that trailing
+        text; ``json.loads`` would choke on it and silently drop the last
+        event (which is often the ConversationErrorEvent or final message).
+        """
+        decoder = json.JSONDecoder()
+        buf: list[str] = []
+
+        def flush(buf: list[str]):
+            text = "".join(buf).strip()
+            if not text or not text.startswith("{"):
+                return None
+            try:
+                obj, _ = decoder.raw_decode(text)
+                return obj
+            except json.JSONDecodeError:
+                return None
+
+        for line in stdout:
+            if line.strip() == _JSON_EVENT_MARKER:
+                event = flush(buf)
+                buf = []
+                if event is not None:
+                    yield event
+            else:
+                buf.append(line)
+        event = flush(buf)
+        if event is not None:
+            yield event
+
+    def _extract_stats(self, state_dir: Path, model_name: str) -> IterationStats:
+        """Recover token/turn/model/latency stats from the persisted
+        ``base_state.json``.
+
+        The CLI persists the full (non-snapshot) ``ConversationStats`` — the
+        same ``usage_to_metrics`` structure the old in-process backend read,
+        just from JSON now. Streaming-only timings are unavailable in headless
+        ``--json`` (no token-level callback), so ``ttft_ms`` stays 0 and
+        ``streamed`` is False. We do have real per-call ``response_latencies``,
+        so ``llm_ms`` is exact; ``decode_ms`` reuses it as a conservative
+        throughput basis (it includes prefill/TTFT, so tok/sec is a lower
+        bound rather than a fabricated number).
+        """
+        try:
+            matches = sorted(state_dir.glob("conversations/*/base_state.json"))
+            if not matches:
+                logger.warning("no base_state.json under %s; stats unavailable", state_dir)
+                return IterationStats()
+            # A per-task persistence dir holds one conversation; if more, the
+            # newest by name is the one we just ran.
+            data = json.loads(matches[-1].read_text())
+            usage_to_metrics = (data.get("stats") or {}).get("usage_to_metrics") or {}
+
+            input_tokens = output_tokens = cache_read = cache_write = 0
+            llm_secs = 0.0
             num_turns = 0
             max_input_tokens = 0
+            models: list[str] = []
 
             for metrics in usage_to_metrics.values():
-                acc = metrics.accumulated_token_usage
-                total_input += acc.prompt_tokens
-                total_output += acc.completion_tokens
-                total_cache_read += acc.cache_read_tokens
-                total_cache_write += acc.cache_write_tokens
-                # Sum LLM round-trip latencies (seconds) and count calls
-                for rl in metrics.response_latencies:
-                    total_llm_secs += rl.latency
+                acc = metrics.get("accumulated_token_usage") or {}
+                input_tokens += int(acc.get("prompt_tokens", 0) or 0)
+                output_tokens += int(acc.get("completion_tokens", 0) or 0)
+                cache_read += int(acc.get("cache_read_tokens", 0) or 0)
+                cache_write += int(acc.get("cache_write_tokens", 0) or 0)
+                for rl in metrics.get("response_latencies") or []:
+                    llm_secs += float(rl.get("latency", 0) or 0)
                     num_turns += 1
-                # Track max input context from per-call token usage
-                for tu in metrics.token_usages:
-                    turn_input = tu.prompt_tokens
-                    if turn_input > max_input_tokens:
-                        max_input_tokens = turn_input
+                for tu in metrics.get("token_usages") or []:
+                    max_input_tokens = max(
+                        max_input_tokens, int(tu.get("prompt_tokens", 0) or 0)
+                    )
+                mn = metrics.get("model_name")
+                if mn and mn not in models:
+                    models.append(mn)
 
-            # ola configures a single LLM, so the usage key is just a label
-            # (the SDK default "default", or whatever LLM_USAGE_ID is set to)
-            # and never the model name. Report the configured model; only
-            # empty if the model could not be resolved at all.
-            models = [model] if model else []
-
-            # Derive tool time: wall_ms is not known here yet (computed by
-            # the outer loop), so we store the LLM time and let the caller
-            # compute tool_ms = wall_ms - llm_ms after timing completes.
-            # For now we store llm_ms and the loop will derive tool_ms.
-            llm_ms = int(total_llm_secs * 1000)
-
-            # Derive TTFT and decode time from streaming chunk timing
-            ttft_ms = 0
-            decode_ms = 0
-            if tracker is not None:
-                all_latencies = []
-                for metrics in usage_to_metrics.values():
-                    all_latencies.extend(metrics.response_latencies)
-                ttft_ms = tracker.total_ttft_ms(all_latencies)
-                decode_ms = tracker.total_decode_ms()
+            if not models and model_name:
+                models = [model_name]
+            llm_ms = int(llm_secs * 1000)
 
             return IterationStats(
-                # prompt_tokens already includes cache reads in OH
-                input_tokens=total_input,
-                output_tokens=total_output,
-                cache_read_tokens=total_cache_read,
-                cache_creation_tokens=total_cache_write,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_write,
                 num_turns=num_turns,
                 models=models,
                 llm_ms=llm_ms,
-                decode_ms=decode_ms,
+                decode_ms=llm_ms,
                 max_input_tokens=max_input_tokens,
-                ttft_ms=ttft_ms,
-                streamed=tracker is not None,
+                ttft_ms=0,
+                streamed=False,
             )
         except Exception as e:
             logger.warning("Could not extract OH stats: %s", e)

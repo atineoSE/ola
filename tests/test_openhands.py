@@ -1,21 +1,20 @@
-"""Tests for openhands agent helpers and sandbox utilities."""
+"""Tests for the OpenHands CLI subprocess backend and sandbox utilities."""
 
 import inspect
-import logging
+import json
 import os
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from ola.agents.openhands import (
     OpenHandsAgent,
-    _TTFTTracker,
-    _live_metrics,
-    _make_event_progress_callback,
+    _agent_message_text,
+    _build_agent_settings,
+    _build_llm_config,
+    _event_text,
 )
 from ola.sandbox import is_sandbox
-from ola.stats import IterationStats
 
 
 class TestRunSignature:
@@ -26,8 +25,7 @@ class TestRunSignature:
         assert "on_progress" in sig.parameters
         assert sig.parameters["on_progress"].default is None
 
-    def test_run_missing_api_key_with_on_progress(self, tmp_path):
-        """run() accepts on_progress at the early LLM_API_KEY error path."""
+    def test_run_missing_api_key(self, tmp_path):
         agent = OpenHandsAgent()
         with patch.dict(os.environ, {}, clear=True):
             resp = agent.run(
@@ -39,162 +37,228 @@ class TestRunSignature:
         assert resp.success is False
         assert "LLM_API_KEY" in resp.output
 
+    def test_run_requires_state_dir(self, tmp_path):
+        agent = OpenHandsAgent()
+        with patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_MODEL": "m"}):
+            resp = agent.run(prompt="hi", workdir=str(tmp_path), state_dir=None)
+        assert resp.success is False
+        assert "state_dir" in resp.output
 
-# ---------------------------------------------------------------------------
-# on_progress event callback tests
-# ---------------------------------------------------------------------------
-
-
-def _msg_only(seen: list):
-    """on_progress recorder that records the message, ignoring the metrics arg."""
-    return lambda msg, metrics=None: seen.append(msg)
-
-
-def _fake_message_event(text: str, source: str = "agent"):
-    """Return a MagicMock that satisfies isinstance(.., MessageEvent)."""
-    from openhands.sdk.event import MessageEvent
-    from openhands.sdk.llm import TextContent
-
-    ev = MagicMock(spec=MessageEvent)
-    ev.source = source
-    ev.llm_message = SimpleNamespace(content=[TextContent(text=text)])
-    return ev
+    def test_run_requires_model(self, tmp_path):
+        agent = OpenHandsAgent()
+        with patch.dict(os.environ, {"LLM_API_KEY": "k"}, clear=True):
+            resp = agent.run(
+                prompt="hi",
+                workdir=str(tmp_path),
+                state_dir=str(tmp_path / ".openhands"),
+            )
+        assert resp.success is False
+        assert "model" in resp.output.lower()
 
 
-def _fake_action_event(tool_name: str, summary: str | None = None):
-    """Return a MagicMock that satisfies isinstance(.., ActionEvent)."""
-    from openhands.sdk.event import ActionEvent
+class TestBuildAgentSettings:
+    """The agent_settings.json the headless CLI loads from the persistence dir."""
 
-    ev = MagicMock(spec=ActionEvent)
-    ev.tool_name = tool_name
-    ev.summary = summary
-    return ev
+    def test_required_fields(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = _build_agent_settings("claude-x", "sk-real", "https://h/v1")
+        assert settings["kind"] == "Agent"
+        assert settings["llm"]["model"] == "claude-x"
+        assert settings["llm"]["api_key"] == "sk-real"  # plaintext, per-task private dir
+        assert settings["llm"]["base_url"] == "https://h/v1"
+        assert settings["llm"]["usage_id"] == "agent"
 
+    def test_condenser_present_with_own_usage_id(self):
+        """A condenser is included so long-horizon runs get summarization
+        (the CLI only wires one if it is already in the persisted agent)."""
+        with patch.dict(os.environ, {}, clear=True):
+            settings = _build_agent_settings("m", "k", None)
+        assert settings["condenser"]["kind"] == "LLMSummarizingCondenser"
+        assert settings["condenser"]["llm"]["usage_id"] == "condenser"
 
-class TestEventProgressCallback:
-    def test_agent_message_invokes_on_progress_with_text(self):
-        seen: list[str] = []
-        cb = _make_event_progress_callback(_msg_only(seen))
-        # last_progress_ts initialises at 0.0 and now=1000.0 ⇒ diff > 1s, emit.
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            cb(_fake_message_event("Hello world"))
-        assert seen == ["Hello world"]
+    def test_no_base_url_omitted(self):
+        with patch.dict(os.environ, {}, clear=True):
+            llm = _build_llm_config("m", "k", None, "agent")
+        assert "base_url" not in llm
 
-    def test_user_message_is_ignored(self):
-        seen: list[str] = []
-        cb = _make_event_progress_callback(_msg_only(seen))
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            cb(_fake_message_event("user text", source="user"))
-        assert seen == []
-
-    def test_action_event_invokes_on_progress_with_tool_marker(self):
-        seen: list[str] = []
-        cb = _make_event_progress_callback(_msg_only(seen))
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            cb(_fake_action_event(tool_name="terminal", summary="run ls"))
-        assert seen == ["[terminal] run ls"]
-
-    def test_action_event_no_summary_still_shows_tool(self):
-        seen: list[str] = []
-        cb = _make_event_progress_callback(_msg_only(seen))
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            cb(_fake_action_event(tool_name="file_editor", summary=None))
-        assert seen == ["[file_editor]"]
-
-    def test_unknown_event_is_ignored(self):
-        seen: list[str] = []
-        cb = _make_event_progress_callback(_msg_only(seen))
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            cb(SimpleNamespace(source="agent"))  # not a MessageEvent/ActionEvent
-        assert seen == []
-
-    def test_rate_limited_to_one_per_second(self):
-        """Multiple events within 1s collapse to a single on_progress call."""
-        seen: list[str] = []
-        cb = _make_event_progress_callback(_msg_only(seen))
-        # All three fire at t=1000.0 → only the first should pass.
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            cb(_fake_message_event("A"))
-            cb(_fake_message_event("B"))
-            cb(_fake_message_event("C"))
-        assert seen == ["A"]
-
-    def test_fires_again_after_one_second(self):
-        seen: list[str] = []
-        cb = _make_event_progress_callback(_msg_only(seen))
-        # First at t=1000, second at t=1002 (>1s later).
-        with patch("ola.agents.openhands.time.monotonic", side_effect=[1000.0, 1002.0]):
-            cb(_fake_message_event("first"))
-            cb(_fake_message_event("second"))
-        assert seen == ["first", "second"]
-
-    def test_callback_exception_is_swallowed(self, caplog):
-        def bad(_msg: str, _metrics=None) -> None:
-            raise RuntimeError("nope")
-
-        cb = _make_event_progress_callback(bad)
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            with caplog.at_level(logging.ERROR, logger="ola.agents.openhands"):
-                cb(_fake_message_event("boom"))
-        assert any("on_progress" in r.message for r in caplog.records)
-
-    def test_metrics_provider_attaches_metrics(self):
-        """The provider's metrics block rides along to on_progress."""
-        seen: list[tuple[str, dict | None]] = []
-        block = {"output_tokens": 42, "decode_ms": 1000, "tokens_per_sec": 42.0}
-        cb = _make_event_progress_callback(
-            lambda msg, metrics=None: seen.append((msg, metrics)),
-            metrics_provider=lambda: block,
-        )
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            cb(_fake_message_event("working"))
-        assert seen == [("working", block)]
-
-    def test_no_metrics_provider_passes_none(self):
-        """With no provider, the metrics arg is None (string-only backends)."""
-        seen: list[tuple[str, dict | None]] = []
-        cb = _make_event_progress_callback(
-            lambda msg, metrics=None: seen.append((msg, metrics))
-        )
-        with patch("ola.agents.openhands.time.monotonic", return_value=1000.0):
-            cb(_fake_message_event("working"))
-        assert seen == [("working", None)]
-
-
-class TestLiveMetrics:
-    """Tests for the mid-run cumulative metrics block (_live_metrics)."""
-
-    def test_sums_output_tokens_and_reads_decode_ms(self):
-        conv = _make_conversation(
-            {
-                "a": _make_metrics(_make_accumulated(completion_tokens=300)),
-                "b": _make_metrics(_make_accumulated(completion_tokens=150)),
-            }
-        )
-        tracker = SimpleNamespace(total_decode_ms=lambda: 10000)
-        block = _live_metrics(conv, tracker)
-        assert block == {
-            "output_tokens": 450,
-            "decode_ms": 10000,
-            "tokens_per_sec": 45.0,
+    def test_optional_env_knobs_typed(self):
+        env = {
+            "LLM_TEMPERATURE": "0.2",
+            "LLM_MAX_OUTPUT_TOKENS": "4096",
+            "LLM_NUM_RETRIES": "0",
+            "LLM_TOP_P": "0.9",
+            "LLM_ENABLE_ENCRYPTED_REASONING": "true",
         }
+        with patch.dict(os.environ, env, clear=True):
+            llm = _build_llm_config("m", "k", None, "agent")
+        assert llm["temperature"] == 0.2
+        assert llm["max_output_tokens"] == 4096
+        assert llm["num_retries"] == 0
+        assert llm["top_p"] == 0.9
+        assert llm["enable_encrypted_reasoning"] is True
 
-    def test_none_until_first_tokens(self):
-        conv = _make_conversation(
-            {"a": _make_metrics(_make_accumulated(completion_tokens=0))}
+    def test_unset_knobs_absent(self):
+        with patch.dict(os.environ, {}, clear=True):
+            llm = _build_llm_config("m", "k", None, "agent")
+        assert "temperature" not in llm
+        assert "max_output_tokens" not in llm
+
+
+class TestEventText:
+    """Status-line and final-message extraction from parsed event dicts."""
+
+    def test_agent_message(self):
+        ev = {
+            "kind": "MessageEvent",
+            "source": "agent",
+            "llm_message": {"content": [{"type": "text", "text": "hello world"}]},
+        }
+        assert _event_text(ev) == "hello world"
+        assert _agent_message_text(ev) == "hello world"
+
+    def test_user_message_ignored(self):
+        ev = {
+            "kind": "MessageEvent",
+            "source": "user",
+            "llm_message": {"content": [{"type": "text", "text": "hi"}]},
+        }
+        assert _event_text(ev) is None
+        assert _agent_message_text(ev) is None
+
+    def test_action_event(self):
+        ev = {"kind": "ActionEvent", "tool_name": "terminal", "summary": "ls -la"}
+        assert _event_text(ev) == "[terminal] ls -la"
+        # an action is not a final agent message
+        assert _agent_message_text(ev) is None
+
+    def test_other_event(self):
+        assert _event_text({"kind": "ObservationEvent"}) is None
+
+
+class TestIterEvents:
+    """The --JSON Event-- multi-block stdout parser."""
+
+    def _parse(self, text: str):
+        return list(OpenHandsAgent._iter_events(iter(text.splitlines(keepends=True))))
+
+    def test_two_pretty_blocks(self):
+        stream = (
+            "--JSON Event--\n"
+            '{\n  "kind": "MessageEvent",\n  "source": "agent"\n}\n'
+            "--JSON Event--\n"
+            '{\n  "kind": "ActionEvent",\n  "tool_name": "terminal"\n}\n'
         )
-        assert _live_metrics(conv, SimpleNamespace(total_decode_ms=lambda: 0)) is None
+        events = self._parse(stream)
+        assert [e["kind"] for e in events] == ["MessageEvent", "ActionEvent"]
 
-    def test_non_streaming_reports_zero_rate(self):
-        """No tracker (non-streaming) → decode_ms 0, tokens_per_sec 0, no crash."""
-        conv = _make_conversation(
-            {"a": _make_metrics(_make_accumulated(completion_tokens=99))}
+    def test_trailing_rich_console_after_last_event(self):
+        """The final block is followed by Rich console output in the same
+        block; raw_decode must still recover the JSON object (regression:
+        json.loads would choke and drop the last — often error — event)."""
+        stream = (
+            "--JSON Event--\n"
+            '{\n  "kind": "ConversationErrorEvent",\n  "code": "Boom",\n'
+            '  "detail": "exploded"\n}\n'
+            "\n───── CONVERSATION SUMMARY ─────\n"
+            "Goodbye! 👋\n"
+            "Conversation ID: abc123\n"
         )
-        block = _live_metrics(conv, None)
-        assert block == {"output_tokens": 99, "decode_ms": 0, "tokens_per_sec": 0}
+        events = self._parse(stream)
+        assert len(events) == 1
+        assert events[0]["kind"] == "ConversationErrorEvent"
+        assert events[0]["code"] == "Boom"
 
-    def test_bad_conversation_returns_none(self):
-        assert _live_metrics(object(), None) is None
+    def test_non_json_leading_lines_skipped(self):
+        stream = "some banner line\n--JSON Event--\n{\n  \"kind\": \"X\"\n}\n"
+        events = self._parse(stream)
+        assert [e["kind"] for e in events] == ["X"]
+
+
+def _base_state(usage_to_metrics: dict) -> dict:
+    return {"stats": {"usage_to_metrics": usage_to_metrics}}
+
+
+def _metrics(model, prompt, completion, cache_read=0, cache_write=0, latencies=None, usages=None):
+    return {
+        "model_name": model,
+        "accumulated_token_usage": {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "cache_read_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+        },
+        "response_latencies": [
+            {"latency": v, "response_id": f"r{i}", "model": model}
+            for i, v in enumerate(latencies or [])
+        ],
+        "token_usages": [{"prompt_tokens": p} for p in (usages or [])],
+    }
+
+
+class TestExtractStats:
+    """_extract_stats reads the persisted base_state.json post-hoc."""
+
+    def _write(self, tmp_path, base_state: dict):
+        conv = tmp_path / "conversations" / "deadbeef"
+        conv.mkdir(parents=True)
+        (conv / "base_state.json").write_text(json.dumps(base_state))
+
+    def _extract(self, tmp_path, model="test-model"):
+        agent = OpenHandsAgent()
+        return agent._extract_stats(tmp_path, model)
+
+    def test_single_metric(self, tmp_path):
+        self._write(
+            tmp_path,
+            _base_state(
+                {
+                    "agent": _metrics(
+                        "claude-sonnet", 1000, 200, cache_read=500, cache_write=100,
+                        latencies=[2.5], usages=[1000],
+                    )
+                }
+            ),
+        )
+        stats = self._extract(tmp_path)
+        assert stats.input_tokens == 1000
+        assert stats.output_tokens == 200
+        assert stats.cache_read_tokens == 500
+        assert stats.cache_creation_tokens == 100
+        assert stats.num_turns == 1
+        assert stats.models == ["claude-sonnet"]
+        assert stats.llm_ms == 2500
+        assert stats.decode_ms == 2500  # decode reuses llm_ms (no token-level timing)
+        assert stats.max_input_tokens == 1000
+        assert stats.ttft_ms == 0
+        assert stats.streamed is False
+
+    def test_multi_usage_aggregation(self, tmp_path):
+        self._write(
+            tmp_path,
+            _base_state(
+                {
+                    "agent": _metrics("model-a", 1000, 100, latencies=[1.0, 0.5], usages=[800, 1000]),
+                    "condenser": _metrics("model-a", 2000, 300, latencies=[2.0], usages=[2000]),
+                }
+            ),
+        )
+        stats = self._extract(tmp_path)
+        assert stats.input_tokens == 3000
+        assert stats.output_tokens == 400
+        assert stats.num_turns == 3
+        assert stats.llm_ms == 3500
+        assert stats.max_input_tokens == 2000
+        assert stats.models == ["model-a"]
+
+    def test_model_fallback_when_metrics_blank(self, tmp_path):
+        self._write(tmp_path, _base_state({"agent": _metrics("", 10, 5)}))
+        stats = self._extract(tmp_path, model="configured-model")
+        assert stats.models == ["configured-model"]
+
+    def test_missing_base_state_is_empty_stats(self, tmp_path):
+        stats = self._extract(tmp_path)
+        assert stats.input_tokens == 0
+        assert stats.num_turns == 0
 
 
 class TestIsSandbox:
@@ -241,253 +305,3 @@ class TestResolveLocalhost:
         with patch.dict(os.environ, {}, clear=True):
             url = "http://localhost:11434/v1"
             assert self._resolve(url) == url
-
-    def test_remote_url_outside_sandbox(self):
-        with patch.dict(os.environ, {}, clear=True):
-            url = "https://api.example.com/v1"
-            assert self._resolve(url) == url
-
-
-# ---------------------------------------------------------------------------
-# Helpers for mocking OpenHands SDK structures
-# ---------------------------------------------------------------------------
-
-
-def _make_response_latency(response_id: str, latency: float):
-    return SimpleNamespace(response_id=response_id, latency=latency)
-
-
-def _make_token_usage(prompt_tokens: int, completion_tokens: int = 0):
-    return SimpleNamespace(
-        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
-    )
-
-
-def _make_accumulated(
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    cache_read_tokens: int = 0,
-    cache_write_tokens: int = 0,
-):
-    return SimpleNamespace(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_write_tokens,
-    )
-
-
-def _make_metrics(
-    accumulated,
-    response_latencies=None,
-    token_usages=None,
-):
-    return SimpleNamespace(
-        accumulated_token_usage=accumulated,
-        response_latencies=response_latencies or [],
-        token_usages=token_usages or [],
-    )
-
-
-def _make_conversation(usage_to_metrics: dict):
-    return SimpleNamespace(
-        state=SimpleNamespace(
-            stats=SimpleNamespace(
-                usage_to_metrics=usage_to_metrics,
-            )
-        )
-    )
-
-
-class TestExtractStats:
-    """Tests for OpenHandsAgent._extract_stats."""
-
-    def _extract(self, conversation, model="test-model", tracker=None):
-        agent = OpenHandsAgent.__new__(OpenHandsAgent)
-        return agent._extract_stats(conversation, model=model, tracker=tracker)
-
-    def test_extract_stats_single_metric(self):
-        conv = _make_conversation(
-            {
-                "anthropic/claude-sonnet": _make_metrics(
-                    accumulated=_make_accumulated(
-                        prompt_tokens=1000,
-                        completion_tokens=200,
-                        cache_read_tokens=500,
-                        cache_write_tokens=100,
-                    ),
-                    response_latencies=[_make_response_latency("r1", 2.5)],
-                    token_usages=[_make_token_usage(1000, 200)],
-                ),
-            }
-        )
-        stats = self._extract(conv, model="anthropic/claude-sonnet")
-        assert stats.input_tokens == 1000
-        assert stats.output_tokens == 200
-        assert stats.cache_read_tokens == 500
-        assert stats.cache_creation_tokens == 100
-        assert stats.num_turns == 1
-        assert stats.models == ["anthropic/claude-sonnet"]
-        assert stats.llm_ms == 2500
-        assert stats.max_input_tokens == 1000
-
-    def test_extract_stats_multi_metric_aggregation(self):
-        conv = _make_conversation(
-            {
-                "model-a": _make_metrics(
-                    accumulated=_make_accumulated(
-                        prompt_tokens=1000,
-                        completion_tokens=100,
-                        cache_read_tokens=200,
-                        cache_write_tokens=50,
-                    ),
-                    response_latencies=[
-                        _make_response_latency("r1", 1.0),
-                        _make_response_latency("r2", 0.5),
-                    ],
-                    token_usages=[
-                        _make_token_usage(800),
-                        _make_token_usage(1000),
-                    ],
-                ),
-                "model-b": _make_metrics(
-                    accumulated=_make_accumulated(
-                        prompt_tokens=2000,
-                        completion_tokens=300,
-                        cache_read_tokens=100,
-                        cache_write_tokens=0,
-                    ),
-                    response_latencies=[_make_response_latency("r3", 2.0)],
-                    token_usages=[_make_token_usage(2000)],
-                ),
-            }
-        )
-        stats = self._extract(conv, model="")
-        assert stats.input_tokens == 3000
-        assert stats.output_tokens == 400
-        assert stats.cache_read_tokens == 300
-        assert stats.cache_creation_tokens == 50
-        assert stats.num_turns == 3
-        assert stats.llm_ms == 3500
-        assert stats.max_input_tokens == 2000
-        # No configured model → models is empty (usage keys are not used).
-        assert stats.models == []
-
-    def test_extract_stats_max_input_tokens(self):
-        """max_input_tokens is the max across per-call token_usages, not accumulated."""
-        conv = _make_conversation(
-            {
-                "default": _make_metrics(
-                    accumulated=_make_accumulated(prompt_tokens=5000),
-                    response_latencies=[
-                        _make_response_latency("r1", 1.0),
-                        _make_response_latency("r2", 1.0),
-                        _make_response_latency("r3", 1.0),
-                    ],
-                    token_usages=[
-                        _make_token_usage(1000),
-                        _make_token_usage(3000),
-                        _make_token_usage(2000),
-                    ],
-                ),
-            }
-        )
-        stats = self._extract(conv, model="my-model")
-        assert stats.max_input_tokens == 3000
-
-    def test_extract_stats_default_model_substitution(self):
-        """'default' key in usage_to_metrics is replaced with actual model name."""
-        conv = _make_conversation(
-            {
-                "default": _make_metrics(accumulated=_make_accumulated()),
-            }
-        )
-        stats = self._extract(conv, model="anthropic/claude-sonnet-4-5")
-        assert stats.models == ["anthropic/claude-sonnet-4-5"]
-
-    def test_extract_stats_custom_usage_id_uses_model(self):
-        """A custom usage key (e.g. LLM_USAGE_ID=agent) is still replaced
-        with the configured model, not reported verbatim."""
-        conv = _make_conversation(
-            {
-                "agent": _make_metrics(accumulated=_make_accumulated()),
-            }
-        )
-        stats = self._extract(conv, model="openai/qwen3.5")
-        assert stats.models == ["openai/qwen3.5"]
-
-    def test_extract_stats_no_streaming_no_ttft(self):
-        """When tracker is None, ttft_ms=0 and streamed=False."""
-        conv = _make_conversation(
-            {
-                "default": _make_metrics(
-                    accumulated=_make_accumulated(
-                        prompt_tokens=100, completion_tokens=50
-                    ),
-                    response_latencies=[_make_response_latency("r1", 1.0)],
-                    token_usages=[_make_token_usage(100)],
-                ),
-            }
-        )
-        stats = self._extract(conv, tracker=None)
-        assert stats.ttft_ms == 0
-        assert stats.streamed is False
-
-    def test_extract_stats_with_tracker(self):
-        """When tracker is present, ttft_ms is derived from chunk timing."""
-        tracker = _TTFTTracker()
-        # Simulate chunks: first chunk at t=0.1, last chunk at t=0.4
-        # for a call with total latency 1.0s
-        # decode = 0.5s, ttft = 1.0 - 0.5 = 0.5s = 500ms
-        tracker.first_chunk["r1"] = 10.0
-        tracker.last_chunk["r1"] = 10.5
-        # Second call: decode = 1.0s, ttft = 2.0 - 1.0 = 1.0s = 1000ms
-        tracker.first_chunk["r2"] = 20.0
-        tracker.last_chunk["r2"] = 21.0
-
-        conv = _make_conversation(
-            {
-                "default": _make_metrics(
-                    accumulated=_make_accumulated(
-                        prompt_tokens=500, completion_tokens=100
-                    ),
-                    response_latencies=[
-                        _make_response_latency("r1", 1.0),
-                        _make_response_latency("r2", 2.0),
-                    ],
-                    token_usages=[_make_token_usage(500)],
-                ),
-            }
-        )
-        stats = self._extract(conv, tracker=tracker)
-        assert stats.ttft_ms == 1500  # 500 + 1000
-        assert stats.streamed is True
-
-    def test_extract_stats_handles_exception_gracefully(self):
-        """Bad metrics structure returns empty IterationStats."""
-        # conversation.state.stats.usage_to_metrics will raise AttributeError
-        conv = SimpleNamespace(state=SimpleNamespace(stats=None))
-        stats = self._extract(conv)
-        assert stats == IterationStats()
-
-    def test_extract_stats_num_turns_counts_calls(self):
-        """num_turns equals total response_latencies count across all metrics."""
-        conv = _make_conversation(
-            {
-                "model-a": _make_metrics(
-                    accumulated=_make_accumulated(),
-                    response_latencies=[
-                        _make_response_latency("r1", 0.5),
-                        _make_response_latency("r2", 0.5),
-                    ],
-                ),
-                "model-b": _make_metrics(
-                    accumulated=_make_accumulated(),
-                    response_latencies=[
-                        _make_response_latency("r3", 1.0),
-                    ],
-                ),
-            }
-        )
-        stats = self._extract(conv)
-        assert stats.num_turns == 3

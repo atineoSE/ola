@@ -810,10 +810,11 @@ def run_folder(
     _exclude_ola_artifacts(project_path)
     _exclude_ola_artifacts(agent_root)
 
-    # One-time, thread-unsafe agent setup (e.g. the OpenHands backend's
-    # in-process ``import litellm``) must happen here, on the main thread,
-    # before any worker is dispatched: a concurrent first import from several
-    # workers trips CPython's import-lock deadlock detector. Default is a no-op.
+    # One-time, thread-unsafe agent setup runs here, on the main thread, before
+    # any worker is dispatched, so a backend that initialises process-global
+    # state can do it once, serially. All current backends shell out to a CLI
+    # subprocess (no in-process model imports), so this is a no-op for them —
+    # but the hook stays for backend-agnosticism. Default is a no-op.
     agent.warm_up()
 
     state = TaskState.sync_from_plan(folder)
