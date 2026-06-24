@@ -1,7 +1,7 @@
 ---
 name: ola-dashboard
 description: Design philosophy and scope guardrails for ola-dashboard, the browser monitor. Load whenever changing ola-dashboard — every change must be checked against this philosophy.
-version: 1.3.0
+version: 1.4.0
 ---
 
 # The ola-dashboard design philosophy
@@ -29,6 +29,29 @@ This is the load-bearing rule. The dashboard is driven by **the same files
 - `<folder>/.ola/events.jsonl` — lifecycle stream; envelope pinned to
   `src/ola/events/SCHEMA.md` (authoritative).
 - `<folder>/.ola/concurrency` — the live parallel-agents cap.
+- `<folder>/.ola/metrics.jsonl` — **optional** progress-probe samples. Written by
+  **the harness, not the dashboard** (see below).
+
+### The optional progress probe
+
+The dashboard can surface a project-defined **progress metric** (e.g. tests
+passing, files migrated, a coverage percent) in the hero metrics. The mechanism
+keeps the no-collector / one-write invariants intact:
+
+- The **harness** runs a user-configured probe command on an interval and
+  appends each `{"name": …, "value": <number>}` sample to
+  `<folder>/.ola/metrics.jsonl`. This is another harness-owned `.ola/` file,
+  exactly like `events.jsonl` or `tasks.json` — the dashboard never runs the
+  probe, never spawns a process, and never writes this file.
+- The **dashboard** reads `metrics.jsonl` through `build_snapshot` (folding the
+  samples into each folder's `progress` field — `{value, series}`) and renders a
+  tile + sparkline. It stays a pure-read **view** of file state.
+- When no probe is configured the file simply does not exist; `progress` is
+  empty and the dashboard renders nothing extra, leaving the layout unchanged.
+
+So the feature adds a metric *display* without adding a collector, daemon, or a
+second state store, and without giving the dashboard a second write: the harness
+owns the only producer of `metrics.jsonl`, the dashboard owns only its read.
 
 The prototype routed all of this through a **collector** (a FastAPI service
 aggregating `POST /events` + `/manifest` in memory and re-streaming over SSE).
