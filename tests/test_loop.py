@@ -500,6 +500,103 @@ def test_process_folder_passes_emitter_to_scheduler(tmp_path):
     assert isinstance(emitter, Emitter)
 
 
+def test_process_folder_defaults_metric_params(tmp_path):
+    """With no metric overrides, _process_folder forwards the no-op defaults."""
+    from ola.scheduler import DEFAULT_METRIC_INTERVAL
+
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+
+    agent = _FakeAgent()
+    with patch("ola.scheduler.run_folder") as mock_run:
+        _process_folder(
+            agent, folder, limit=None, agent_root=tmp_path, project_path=tmp_path
+        )
+
+    assert mock_run.call_args.kwargs["metric_cmd"] is None
+    assert mock_run.call_args.kwargs["metric_interval"] == DEFAULT_METRIC_INTERVAL
+
+
+def test_process_folder_forwards_metric_params(tmp_path):
+    """_process_folder threads metric_cmd/metric_interval into run_folder."""
+    folder = tmp_path / "phase"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [ ] Task A\n")
+
+    agent = _FakeAgent()
+    with patch("ola.scheduler.run_folder") as mock_run:
+        _process_folder(
+            agent,
+            folder,
+            limit=None,
+            agent_root=tmp_path,
+            project_path=tmp_path,
+            metric_cmd="echo hi",
+            metric_interval=4.0,
+        )
+
+    assert mock_run.call_args.kwargs["metric_cmd"] == "echo hi"
+    assert mock_run.call_args.kwargs["metric_interval"] == 4.0
+
+
+def test_run_outer_loop_forwards_metric_params(tmp_path):
+    """run_outer_loop threads metric params into _process_folder."""
+    from ola.loop import run_outer_loop
+
+    folder = tmp_path / "01-phase"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [x] Done\n")
+
+    captured: dict = {}
+
+    def fake_process(*args, **kwargs):
+        captured.update(kwargs)
+
+    agent = _FakeAgent()
+    with (
+        patch("ola.loop._load_agent_env"),
+        patch("ola.loop._ensure_git"),
+        patch("ola.loop._process_folder", side_effect=fake_process),
+    ):
+        run_outer_loop(
+            agent,
+            tmp_path,
+            tmp_path,
+            metric_cmd="probe.sh",
+            metric_interval=8.0,
+        )
+
+    assert captured["metric_cmd"] == "probe.sh"
+    assert captured["metric_interval"] == 8.0
+
+
+def test_run_outer_loop_resolves_default_metric_interval(tmp_path):
+    """metric_interval=None resolves to the shared scheduler default."""
+    from ola.loop import run_outer_loop
+    from ola.scheduler import DEFAULT_METRIC_INTERVAL
+
+    folder = tmp_path / "01-phase"
+    folder.mkdir()
+    (folder / "PLAN.md").write_text("- [x] Done\n")
+
+    captured: dict = {}
+
+    def fake_process(*args, **kwargs):
+        captured.update(kwargs)
+
+    agent = _FakeAgent()
+    with (
+        patch("ola.loop._load_agent_env"),
+        patch("ola.loop._ensure_git"),
+        patch("ola.loop._process_folder", side_effect=fake_process),
+    ):
+        run_outer_loop(agent, tmp_path, tmp_path)
+
+    assert captured["metric_cmd"] is None
+    assert captured["metric_interval"] == DEFAULT_METRIC_INTERVAL
+
+
 def test_process_folder_writes_events_jsonl(tmp_path):
     """End-to-end: a real scheduler run produces an events.jsonl audit trail."""
     import subprocess
@@ -718,6 +815,8 @@ def test_run_outer_loop_picks_up_midrun_sibling_before_later_folders(tmp_path):
         project_path,
         max_attempts=0,
         janitor_enabled=True,
+        metric_cmd=None,
+        metric_interval=None,
     ):
         order.append(folder.name)
         if folder.name == "01-init":
@@ -757,6 +856,8 @@ def test_run_outer_loop_bails_when_folder_left_unfinished(tmp_path):
         project_path,
         max_attempts=0,
         janitor_enabled=True,
+        metric_cmd=None,
+        metric_interval=None,
     ):
         # Simulate a stuck folder: run_folder drained but ticked nothing.
         order.append(folder.name)

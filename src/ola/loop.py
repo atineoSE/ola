@@ -197,6 +197,8 @@ def run_outer_loop(
     limit: int | None = None,
     max_attempts: int = 0,
     janitor_enabled: bool = True,
+    metric_cmd: str | None = None,
+    metric_interval: float | None = None,
 ) -> None:
     """Run the outer loop over plan subfolders.
 
@@ -206,6 +208,13 @@ def run_outer_loop(
     the project there. Both must be git repositories.
     """
     _load_agent_env(plan_path)
+
+    # Resolve the metric cadence lazily so the shared scheduler default stays
+    # the single source of truth (mirrors _initial_concurrency / DEFAULT_CONCURRENCY).
+    if metric_interval is None:
+        from ola.scheduler import DEFAULT_METRIC_INTERVAL
+
+        metric_interval = DEFAULT_METRIC_INTERVAL
 
     # The agent folder is committed to for checkbox ticks; the project repo is
     # the worktree source. Both need to be initialised and have their .ola/
@@ -238,6 +247,8 @@ def run_outer_loop(
             project_path,
             max_attempts,
             janitor_enabled,
+            metric_cmd=metric_cmd,
+            metric_interval=metric_interval,
         )
 
         # Completeness gate. _process_folder has drained the folder (its tasks
@@ -287,6 +298,8 @@ def _process_folder(
     project_path: Path,
     max_attempts: int = 0,
     janitor_enabled: bool = True,
+    metric_cmd: str | None = None,
+    metric_interval: float | None = None,
 ) -> None:
     """Process a single plan folder.
 
@@ -297,7 +310,10 @@ def _process_folder(
     """
     # Imported here to avoid a circular import — scheduler imports loop for
     # per_task_state_dir.
-    from ola.scheduler import run_folder
+    from ola.scheduler import DEFAULT_METRIC_INTERVAL, run_folder
+
+    if metric_interval is None:
+        metric_interval = DEFAULT_METRIC_INTERVAL
 
     # Create the folder-level agent state directory. The scheduler clones
     # per-task state dirs alongside it.
@@ -335,6 +351,8 @@ def _process_folder(
             emitter=emitter,
             max_attempts=max_attempts,
             janitor_enabled=janitor_enabled,
+            metric_cmd=metric_cmd,
+            metric_interval=metric_interval,
         )
     finally:
         emitter.close()

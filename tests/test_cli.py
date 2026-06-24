@@ -112,6 +112,87 @@ class TestMaxAttempts:
             assert mock_loop.call_args.kwargs["max_attempts"] == 5
 
 
+class TestMetricProbe:
+    """Verify --metric-cmd/--metric-interval thread into run_outer_loop."""
+
+    def test_defaults(self, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}, clear=True),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop") as mock_loop,
+        ):
+            main()
+            assert mock_loop.call_args.kwargs["metric_cmd"] is None
+            assert mock_loop.call_args.kwargs["metric_interval"] == 15.0
+
+    def test_flags_reach_run_outer_loop(self, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}, clear=True),
+            patch(
+                "sys.argv",
+                [
+                    "ola",
+                    "-f",
+                    str(agent_dir),
+                    "--metric-cmd",
+                    "echo hi",
+                    "--metric-interval",
+                    "3.5",
+                ],
+            ),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop") as mock_loop,
+        ):
+            main()
+            assert mock_loop.call_args.kwargs["metric_cmd"] == "echo hi"
+            assert mock_loop.call_args.kwargs["metric_interval"] == 3.5
+
+    def test_env_fallback_honored(self, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SANDBOX": "1",
+                    "OLA_METRIC_CMD": "probe.sh",
+                    "OLA_METRIC_INTERVAL": "7",
+                },
+                clear=True,
+            ),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop") as mock_loop,
+        ):
+            main()
+            assert mock_loop.call_args.kwargs["metric_cmd"] == "probe.sh"
+            assert mock_loop.call_args.kwargs["metric_interval"] == 7.0
+
+    def test_flag_overrides_env(self, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with (
+            patch.dict(
+                os.environ,
+                {"SANDBOX": "1", "OLA_METRIC_CMD": "from-env"},
+                clear=True,
+            ),
+            patch(
+                "sys.argv",
+                ["ola", "-f", str(agent_dir), "--metric-cmd", "from-flag"],
+            ),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop") as mock_loop,
+        ):
+            main()
+            assert mock_loop.call_args.kwargs["metric_cmd"] == "from-flag"
+
+
 class TestAgentSelection:
     """Verify -a flag routes the requested agent name into create_agent."""
 

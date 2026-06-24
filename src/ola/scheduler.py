@@ -90,6 +90,13 @@ DEFAULT_CONCURRENCY = 2
 # longer ticking).
 HEARTBEAT_INTERVAL_SEC = 5.0
 
+# Default cadence (seconds) for the optional harness metric probe. When a
+# ``metric_cmd`` is configured the main loop runs it no more than once per this
+# interval — its own monotonic gate, independent of the heartbeat — and appends
+# the parsed samples to ``.ola/metrics.jsonl``. With no ``metric_cmd`` the probe
+# never runs and the file is never created (the fallback to current behaviour).
+DEFAULT_METRIC_INTERVAL = 15.0
+
 # Worker outcomes reported back to the main loop, which folds them into the
 # folder-wide stagnation counter. ``STAGNANT`` (agent reported success but did
 # not tick its checkbox) advances the counter; anything else resets it.
@@ -361,6 +368,60 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
         )
         result.check_returncode()
     return result
+
+
+def append_metric_sample(folder: Path, name: str, value: float, ts: str) -> None:
+    """Append one metric sample as a JSON line to ``<folder>/.ola/metrics.jsonl``.
+
+    Mirrors the append idiom of :func:`ola.loop._append_stats`: one
+    ``{"ts", "name", "value"}`` object per line, opened in append mode so
+    concurrent samples never clobber earlier ones. *ts* is the
+    :func:`_utc_now_iso` timestamp of the probe that produced the sample.
+    """
+    path = folder / ".ola" / "metrics.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps({"ts": ts, "name": name, "value": value}) + "\n")
+
+
+def _run_probe(
+    cmd: str, cwd: Path, timeout: float
+) -> list[tuple[str, float]]:
+    """Run a metric probe and parse its stdout JSON into ``(name, value)`` pairs.
+
+    The probe is an arbitrary shell command emitting JSON on stdout: either a
+    single ``{"name", "value"}`` object or an array of them. Every failure mode
+    is swallowed — a timeout, a missing/unrunnable command, a non-zero exit, or
+    malformed/unexpected JSON — and yields an empty list, so a broken probe
+    never crashes, stalls, or error-logs the run (modelled on the version-probe
+    in :mod:`ola.agents.codex`: no ``check_returncode()``, no error log like
+    :func:`_git`).
+    """
+    try:
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    items = parsed if isinstance(parsed, list) else [parsed]
+    pairs: list[tuple[str, float]] = []
+    try:
+        for item in items:
+            pairs.append((item["name"], float(item["value"])))
+    except (KeyError, TypeError, ValueError):
+        return []
+    return pairs
 
 
 def _load_task_prompt(folder: Path) -> str:
@@ -775,6 +836,8 @@ def run_folder(
     emitter: Any | None = None,
     max_attempts: int = 0,
     janitor_enabled: bool = True,
+    metric_cmd: str | None = None,
+    metric_interval: float = DEFAULT_METRIC_INTERVAL,
 ) -> None:
     """Process every pending task in *folder*/PLAN.md in parallel.
 
@@ -797,6 +860,11 @@ def run_folder(
     *janitor_enabled* controls whether a task that self-reports BLOCKED
     dispatches a janitor run (see :mod:`ola.janitor`); when ``False`` the task
     simply stays ``blocked`` in tasks.json.
+    *metric_cmd* is an optional shell command run periodically (throttled to
+    *metric_interval* seconds, its own monotonic gate beside the heartbeat) that
+    emits JSON metric samples appended to ``.ola/metrics.jsonl`` (see
+    :func:`_run_probe`/:func:`append_metric_sample`). When ``None`` the probe is
+    a no-op and no file is written — the fallback to current behaviour.
     """
     folder = Path(folder)
     agent_root = Path(agent_root)
@@ -976,6 +1044,24 @@ def run_folder(
             },
         )
 
+    # Optional harness metric probe: same shape as the heartbeat (own monotonic
+    # gate, throttled by metric_interval). A None metric_cmd makes this a no-op
+    # so no metrics.jsonl is written — the fallback to current behaviour.
+    last_metric = 0.0
+
+    def _sample_probe() -> None:
+        nonlocal last_metric
+        if metric_cmd is None:
+            return
+        now_m = time.monotonic()
+        if now_m - last_metric < metric_interval:
+            return
+        last_metric = now_m
+        pairs = _run_probe(metric_cmd, folder, timeout=min(metric_interval, 10.0))
+        ts = _utc_now_iso()
+        for name, value in pairs:
+            append_metric_sample(folder, name, value, ts)
+
     try:
         while True:
             if interrupted.is_set():
@@ -1035,6 +1121,7 @@ def run_folder(
             # active wait and the cap-0 paused sleep — so a paused-but-alive
             # scheduler still beats.
             _write_heartbeat()
+            _sample_probe()
 
             wait_set: list[Future] = list(in_flight.keys())
             if janitor_future is not None:

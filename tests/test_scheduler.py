@@ -26,10 +26,13 @@ from ola.events.client import Emitter, LocalSink
 from ola.plan import enumerate_tasks, set_task_checked, task_is_checked
 from ola.scheduler import (
     DEFAULT_CONCURRENCY,
+    DEFAULT_METRIC_INTERVAL,
     _DEFAULT_TASK_PROMPT,
     RunInterrupted,
     _load_task_prompt,
+    _run_probe,
     _substitute,
+    append_metric_sample,
     read_concurrency,
     run_folder,
     write_concurrency,
@@ -1674,3 +1677,102 @@ def test_run_folder_blocked_dispatches_janitor_and_runs_prereq(tmp_path):
     assert "Call the FOO API" in (leftovers / "PLAN.md").read_text()
     alog = _log_oneline(agent_root, "main")
     assert any(f"janitor {blocked.task_id}" in ln for ln in alog)
+
+
+# --- Harness metric probe ---
+
+
+def _read_metrics(folder: Path) -> list[dict]:
+    path = folder / ".ola" / "metrics.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+
+
+def test_default_metric_interval_constant():
+    assert DEFAULT_METRIC_INTERVAL == 15.0
+
+
+def test_append_metric_sample_writes_json_line(tmp_path):
+    append_metric_sample(tmp_path, "cpu", 0.5, "2026-06-24T00:00:00.000Z")
+    append_metric_sample(tmp_path, "rss", 12.0, "2026-06-24T00:00:01.000Z")
+    rows = _read_metrics(tmp_path)
+    assert rows == [
+        {"ts": "2026-06-24T00:00:00.000Z", "name": "cpu", "value": 0.5},
+        {"ts": "2026-06-24T00:00:01.000Z", "name": "rss", "value": 12.0},
+    ]
+
+
+def test_run_probe_parses_single_object(tmp_path):
+    pairs = _run_probe('echo \'{"name": "cpu", "value": 0.5}\'', tmp_path, 5.0)
+    assert pairs == [("cpu", 0.5)]
+
+
+def test_run_probe_parses_array(tmp_path):
+    cmd = 'echo \'[{"name": "a", "value": 1}, {"name": "b", "value": 2.5}]\''
+    pairs = _run_probe(cmd, tmp_path, 5.0)
+    assert pairs == [("a", 1.0), ("b", 2.5)]
+
+
+def test_run_probe_swallows_nonzero_exit(tmp_path):
+    assert _run_probe("exit 1", tmp_path, 5.0) == []
+
+
+def test_run_probe_swallows_junk_stdout(tmp_path):
+    assert _run_probe("echo not-json", tmp_path, 5.0) == []
+
+
+def test_run_probe_swallows_missing_keys(tmp_path):
+    assert _run_probe('echo \'{"name": "cpu"}\'', tmp_path, 5.0) == []
+    assert _run_probe('echo \'{"value": "nan"}\'', tmp_path, 5.0) == []
+
+
+def test_run_probe_swallows_timeout(tmp_path):
+    # The probe sleeps far longer than the timeout; the TimeoutExpired is
+    # swallowed and no pairs are returned.
+    assert _run_probe("sleep 5", tmp_path, 0.2) == []
+
+
+def test_run_folder_metric_probe_writes_sample(tmp_path):
+    """A probe that emits a JSON line writes a sample to metrics.jsonl."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
+    run_folder(
+        _TickingAgent(),
+        folder,
+        agent_root,
+        project,
+        initial_cap=1,
+        metric_cmd='echo \'{"name": "cpu", "value": 0.5}\'',
+        metric_interval=0.1,
+    )
+    rows = _read_metrics(folder)
+    assert rows
+    assert rows[0]["name"] == "cpu"
+    assert rows[0]["value"] == 0.5
+    assert "ts" in rows[0]
+
+
+@pytest.mark.parametrize("cmd", ["exit 1", "echo not-json", "sleep 30"])
+def test_run_folder_broken_probe_never_crashes_no_sample(tmp_path, cmd):
+    """A broken probe (non-zero/junk/timeout) leaves the run intact, no sample."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
+    task = enumerate_tasks(folder)[0]
+    run_folder(
+        _TickingAgent(),
+        folder,
+        agent_root,
+        project,
+        initial_cap=1,
+        metric_cmd=cmd,
+        metric_interval=0.2,
+    )
+    # The task still completes — a broken probe never stalls or crashes the run.
+    assert task_is_checked(folder, task.task_id) is True
+    assert _read_metrics(folder) == []
+
+
+def test_run_folder_no_metric_cmd_writes_no_file(tmp_path):
+    """With no metric_cmd the probe is a no-op and metrics.jsonl is never created."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
+    run_folder(_TickingAgent(), folder, agent_root, project, initial_cap=1)
+    assert not (folder / ".ola" / "metrics.jsonl").exists()

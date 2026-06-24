@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import sys
 from importlib.metadata import version
 from pathlib import Path
@@ -9,9 +10,24 @@ from pathlib import Path
 from ola.agents import create_agent
 from ola.loop import run_outer_loop
 from ola.sandbox import is_sandbox, sanitize_proxy_env
-from ola.scheduler import FolderIncompleteError, RunInterrupted
+from ola.scheduler import (
+    DEFAULT_METRIC_INTERVAL,
+    FolderIncompleteError,
+    RunInterrupted,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float from env *name*, falling back to *default* on absent/junk."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 def _env_command(argv: list[str]) -> int:
@@ -119,6 +135,21 @@ def main() -> None:
         " triggering an automatic unblock/escalate run",
     )
     parser.add_argument(
+        "--metric-cmd",
+        type=str,
+        default=os.getenv("OLA_METRIC_CMD"),
+        help="Shell command run periodically per folder; its JSON stdout "
+        "({name, value} object or array) is appended to .ola/metrics.jsonl. "
+        "Falls back to OLA_METRIC_CMD; disabled when unset.",
+    )
+    parser.add_argument(
+        "--metric-interval",
+        type=float,
+        default=_env_float("OLA_METRIC_INTERVAL", DEFAULT_METRIC_INTERVAL),
+        help="Seconds between metric-probe runs (default: "
+        f"{DEFAULT_METRIC_INTERVAL}). Falls back to OLA_METRIC_INTERVAL.",
+    )
+    parser.add_argument(
         "--skip-sandbox",
         action="store_true",
         help="Allow running outside a Docker sandbox",
@@ -163,6 +194,8 @@ def main() -> None:
             limit=args.limit,
             max_attempts=args.max_attempts,
             janitor_enabled=not args.no_janitor,
+            metric_cmd=args.metric_cmd,
+            metric_interval=args.metric_interval,
         )
     except FolderIncompleteError as exc:
         # A folder could not be driven to completion and its stuck tasks were
