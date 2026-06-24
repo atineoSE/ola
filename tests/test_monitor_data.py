@@ -704,6 +704,14 @@ def _write_events_jsonl(folder: Path, events: list[dict]) -> None:
     (ola_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
 
 
+def _write_metrics_jsonl(folder: Path, samples: list[dict]) -> None:
+    ola_dir = folder / ".ola"
+    ola_dir.mkdir(parents=True, exist_ok=True)
+    (ola_dir / "metrics.jsonl").write_text(
+        "".join(json.dumps(s) + "\n" for s in samples)
+    )
+
+
 def test_read_task_rows_no_ola_returns_empty(tmp_path: Path):
     """A folder without .ola/tasks.json is not in parallel mode → no rows."""
     folder = tmp_path / "01-task"
@@ -1310,3 +1318,83 @@ def test_build_snapshot_missing_agent_dir(tmp_path: Path):
     assert snap["tasks"] == {}
     assert snap["folders"] == {}
     assert snap["activity"] == []
+
+
+def test_build_snapshot_progress_from_metrics(tmp_path: Path):
+    """A started folder's metrics.jsonl feeds folders[name]["progress"]."""
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-a", "text": "A", "line_no": 1, "status": "running"}],
+    )
+    _write_metrics_jsonl(
+        folder,
+        [
+            {"name": "tests_passing", "ts": "2026-05-27T14:00:00.000Z", "value": 1},
+            {"name": "coverage", "ts": "2026-05-27T14:00:01.000Z", "value": 50},
+            {"name": "tests_passing", "ts": "2026-05-27T14:00:02.000Z", "value": 3},
+        ],
+    )
+    progress = build_snapshot(tmp_path)["folders"]["09-par"]["progress"]
+    assert progress["tests_passing"]["value"] == 3
+    assert progress["tests_passing"]["series"] == [
+        ["2026-05-27T14:00:00.000Z", 1],
+        ["2026-05-27T14:00:02.000Z", 3],
+    ]
+    assert progress["coverage"]["value"] == 50
+
+
+def test_build_snapshot_progress_series_capped(tmp_path: Path):
+    """A long metrics.jsonl is capped to the last _PROGRESS_SERIES_CAP points."""
+    from ola.monitor.data import _PROGRESS_SERIES_CAP
+
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-a", "text": "A", "line_no": 1, "status": "running"}],
+    )
+    n = _PROGRESS_SERIES_CAP + 25
+    _write_metrics_jsonl(
+        folder,
+        [
+            {"name": "ticks", "ts": f"2026-05-27T14:{i:02d}:00.000Z", "value": i}
+            for i in range(n)
+        ],
+    )
+    progress = build_snapshot(tmp_path)["folders"]["09-par"]["progress"]["ticks"]
+    assert progress["value"] == n - 1
+    assert len(progress["series"]) == _PROGRESS_SERIES_CAP
+    # Chronological order, holding the tail of the file.
+    assert progress["series"][0][1] == n - _PROGRESS_SERIES_CAP
+    assert progress["series"][-1][1] == n - 1
+
+
+def test_build_snapshot_progress_skips_malformed(tmp_path: Path):
+    """A half-written metrics.jsonl line must not break the snapshot."""
+    folder = tmp_path / "09-par"
+    folder.mkdir()
+    _write_tasks_json(
+        folder,
+        [{"task_id": "t-a", "text": "A", "line_no": 1, "status": "running"}],
+    )
+    ola_dir = folder / ".ola"
+    ola_dir.mkdir(parents=True, exist_ok=True)
+    (ola_dir / "metrics.jsonl").write_text(
+        '{"name": "ok", "ts": "2026-05-27T14:00:00.000Z", "value": 1}\n'
+        "{not valid json\n"
+        '{"name": "ok", "ts": "2026-05-27T14:00:01.000Z", "value": 2}\n'
+    )
+    progress = build_snapshot(tmp_path)["folders"]["09-par"]["progress"]
+    assert progress["ok"]["value"] == 2
+    assert len(progress["ok"]["series"]) == 2
+
+
+def test_build_snapshot_future_folder_progress_empty(tmp_path: Path):
+    """A PLAN.md-only future folder has no metrics file → progress == {}."""
+    future = tmp_path / "01-future"
+    future.mkdir()
+    (future / "PLAN.md").write_text("- [ ] todo\n")
+    snap = build_snapshot(tmp_path)
+    assert snap["folders"]["01-future"]["progress"] == {}

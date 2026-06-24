@@ -422,6 +422,43 @@ def _read_events(folder: Path) -> list[dict]:
     return records
 
 
+def _read_progress(folder: Path) -> dict[str, dict]:
+    """Read ``<folder>/.ola/metrics.jsonl`` into named progress series.
+
+    Each line is one ``{"name", "ts", "value"}`` sample. Samples are grouped by
+    ``name`` and returned as ``{name: {"value": <latest>, "series": [[ts, value],
+    …]}}`` with the series in chronological (file) order, capped to the last
+    :data:`_PROGRESS_SERIES_CAP` points. Malformed lines are skipped (same
+    tolerance as :func:`_read_events`); an absent file returns ``{}``.
+
+    This is a distinct vocabulary from the token-throughput ``metrics`` /
+    ``Metrics`` plumbing — these are arbitrary user-emitted progress counters.
+    """
+    metrics_file = folder / ".ola" / "metrics.jsonl"
+    if not metrics_file.exists():
+        return {}
+    series: dict[str, list[list]] = {}
+    for line in metrics_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            sample = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        name = sample.get("name")
+        if name is None:
+            continue
+        series.setdefault(name, []).append([sample.get("ts"), sample.get("value")])
+    return {
+        name: {
+            "value": points[-1][1],
+            "series": points[-_PROGRESS_SERIES_CAP:],
+        }
+        for name, points in series.items()
+    }
+
+
 def _events_elapsed_s(folder: Path) -> float:
     """Worked time across ``<folder>/.ola/events.jsonl`` (gaps-excluded span).
 
@@ -599,6 +636,11 @@ def read_agent_folder(agent_path: Path) -> list[FolderStatus]:
 # SPA's ACTIVITY_FEED_LIMIT — enough to fill a sidebar without unbounded growth.
 _ACTIVITY_LIMIT = 50
 
+# Per-named-series progress samples retained in the snapshot. Caps the sparkline
+# history so a long-running task's metrics.jsonl can't grow the snapshot without
+# bound; the latest value is always preserved separately.
+_PROGRESS_SERIES_CAP = 60
+
 # tasks.json spine status → dashboard lifecycle status, used only when a task
 # has emitted no events yet (e.g. a checkbox ticked before any run). Once events
 # exist, the latest event's status wins. The dashboard has no ``blocked`` state,
@@ -729,6 +771,7 @@ def build_snapshot(agent_path: Path, now: datetime | None = None) -> dict:
             # (``None`` when currently idle, so the readout freezes).
             "active_elapsed_s": active_elapsed_s,
             "active_anchor_ts": active_anchor_ts,
+            "progress": _read_progress(folder),
         }
         if folder_first is not None and (
             first_started_ts is None or folder_first < first_started_ts
@@ -845,6 +888,8 @@ def _add_future_folder(
         "models": _folder_models(folder),
         "active_elapsed_s": 0.0,
         "active_anchor_ts": None,
+        # A future folder has no metrics file yet, so no progress series.
+        "progress": {},
     }
 
 
