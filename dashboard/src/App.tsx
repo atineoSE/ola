@@ -165,6 +165,7 @@ function App() {
         counters={counters}
         activeElapsedSeconds={clock?.active_elapsed_s ?? null}
         activeAnchorTs={clock?.active_anchor_ts ?? null}
+        progress={clock?.progress}
         agentsTarget={agentsTarget}
         onAgentsTargetChange={concurrencyAvailable ? setAgentsTarget : undefined}
         liveTokensPerSec={liveTokPerSec}

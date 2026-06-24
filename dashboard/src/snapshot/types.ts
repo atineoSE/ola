@@ -26,6 +26,16 @@ export interface Metrics {
 }
 
 /**
+ * A task-defined progress probe surfaced on the folder clock. `value` is the
+ * current reading; `series` is the `[ts, value]` history the dashboard draws
+ * as a sparkline. The metric name is the `progress` map key.
+ */
+export interface ProgressMetric {
+  value: number;
+  series: [string, number][];
+}
+
+/**
  * Dashboard task status: the Ola lifecycle plus `pending` for tasks present
  * in the `.ola/tasks.json` spine that no agent has started yet. `pending`
  * never appears as an event status — only in task state.
@@ -77,6 +87,10 @@ export interface FolderClock {
   /** Ts to extrapolate the still-running tail from while an agent is active;
    * `null`/absent means the run is idle and the elapsed readout is frozen. */
   active_anchor_ts?: string | null;
+  /** Task-defined progress probes for the folder, keyed by metric name. Absent
+   * when no task published a probe — the dashboard then renders no progress
+   * tile and the layout is unchanged. */
+  progress?: Record<string, ProgressMetric>;
 }
 
 /**

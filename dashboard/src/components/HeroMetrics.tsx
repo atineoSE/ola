@@ -11,9 +11,10 @@
  * with task-published metrics surfaced separately in the Metrics panel.
  */
 
-import type { Counters } from "../snapshot";
+import type { Counters, ProgressMetric } from "../snapshot";
 import { formatElapsed, formatMillions, formatTokensPerSec } from "../format";
 import { useActiveElapsed } from "../hooks/useActiveElapsed";
+import { Sparkline } from "./Sparkline";
 
 export interface HeroMetricsProps {
   counters: Counters;
@@ -40,6 +41,10 @@ export interface HeroMetricsProps {
    * millions so the running total can be watched climbing. Also the numerator
    * for the durable average tok/sec (over the active-elapsed clock). */
   totalOutputTokens?: number;
+  /** Task-defined progress probes for the folder, keyed by metric name. The
+   * primary (first) metric renders as an extra tile with a sparkline; absent or
+   * empty renders nothing, leaving the no-probe layout unchanged. */
+  progress?: Record<string, ProgressMetric>;
 }
 
 export function HeroMetrics({
@@ -51,6 +56,7 @@ export function HeroMetrics({
   liveTokensPerSec = null,
   peakTokensPerSec = null,
   totalOutputTokens = 0,
+  progress,
 }: HeroMetricsProps) {
   const { total_tasks, completed, failed, active } = counters;
   // The elapsed tile is a stopwatch that only advances while ≥1 agent is
@@ -72,6 +78,9 @@ export function HeroMetrics({
     elapsedSeconds != null && elapsedSeconds > 0 && totalOutputTokens > 0
       ? totalOutputTokens / elapsedSeconds
       : null;
+  // The primary progress probe is the first entry the task published. Absent or
+  // empty leaves the strip exactly as it was — no extra tile, no layout shift.
+  const primaryProgress = progress ? Object.entries(progress)[0] : undefined;
 
   return (
     <section
@@ -181,6 +190,27 @@ export function HeroMetrics({
           </span>
         }
       />
+
+      {primaryProgress && (
+        <MetricTile
+          label={primaryProgress[0]}
+          value={
+            <span
+              className="font-mono tabular-nums tracking-tight"
+              data-testid="progress-value"
+            >
+              {primaryProgress[1].value.toLocaleString()}
+            </span>
+          }
+          footer={
+            <Sparkline
+              data-testid="progress-sparkline"
+              className="h-6 w-full text-accent"
+              values={primaryProgress[1].series.map(([, v]) => v)}
+            />
+          }
+        />
+      )}
     </section>
   );
 }

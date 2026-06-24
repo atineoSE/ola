@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HeroMetrics } from "./HeroMetrics";
-import type { Counters } from "../snapshot";
+import type { Counters, ProgressMetric } from "../snapshot";
 
 function counters(overrides: Partial<Counters> = {}): Counters {
   return {
@@ -237,5 +237,48 @@ describe("<HeroMetrics /> total output tokens tile", () => {
     expect(screen.getByTestId("total-output-tokens-value").textContent).toBe(
       "0.00",
     );
+  });
+});
+
+describe("<HeroMetrics /> progress tile", () => {
+  const progress: Record<string, ProgressMetric> = {
+    "tests passing": {
+      value: 1234,
+      series: [
+        ["2026-05-27T14:00:00.000Z", 10],
+        ["2026-05-27T14:01:00.000Z", 600],
+        ["2026-05-27T14:02:00.000Z", 1234],
+      ],
+    },
+    // A second probe to prove only the first (primary) one renders.
+    coverage: {
+      value: 88,
+      series: [
+        ["2026-05-27T14:00:00.000Z", 80],
+        ["2026-05-27T14:02:00.000Z", 88],
+      ],
+    },
+  };
+
+  it("renders the primary metric name, value, and a sparkline", () => {
+    render(<HeroMetrics counters={counters()} progress={progress} />);
+    expect(screen.getByText("tests passing")).toBeTruthy();
+    expect(screen.getByTestId("progress-value").textContent).toBe("1,234");
+    expect(screen.getByTestId("progress-sparkline")).toBeTruthy();
+    expect(screen.getByTestId("sparkline-polyline")).toBeTruthy();
+    // Only the first probe surfaces as a tile.
+    expect(screen.queryByText("coverage")).toBeNull();
+  });
+
+  it("renders no progress card when progress is absent", () => {
+    render(<HeroMetrics counters={counters()} />);
+    expect(screen.queryByTestId("progress-value")).toBeNull();
+    expect(screen.queryByTestId("progress-sparkline")).toBeNull();
+  });
+
+  it("renders no progress card when progress is an empty map", () => {
+    render(<HeroMetrics counters={counters()} progress={{}} />);
+    expect(screen.queryByTestId("progress-value")).toBeNull();
+    expect(screen.queryByTestId("progress-sparkline")).toBeNull();
   });
 });

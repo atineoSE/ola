@@ -3,6 +3,7 @@ export type {
   Counters,
   FolderClock,
   Metrics,
+  ProgressMetric,
   Snapshot,
   Status,
   TaskState,
