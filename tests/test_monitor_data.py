@@ -271,8 +271,15 @@ def test_read_agent_folder(tmp_path: Path):
     hidden = tmp_path / ".hidden"
     hidden.mkdir()
 
+    # A directory without a PLAN.md is not a plan folder — it must be skipped
+    # (e.g. a `bin/` of helper scripts living beside the numbered folders).
+    not_a_plan = tmp_path / "bin"
+    not_a_plan.mkdir()
+    (not_a_plan / "probe.sh").write_text("#!/bin/sh\n")
+
     statuses = read_agent_folder(tmp_path)
     assert len(statuses) == 2
+    assert [s.name for s in statuses] == ["01-first", "02-second"]
     assert statuses[0].name == "01-first"
     assert statuses[0].tasks_completed == 1
     assert statuses[0].tasks_total == 2

@@ -1,14 +1,18 @@
 /*
- * Hero Metrics Strip — the four big numbers at the top of the dashboard.
+ * Hero Metrics Strip — the big numbers at the top of the dashboard.
  *
- * Layout target: projector-friendly, single row on wide screens, wraps
- * to a 2x2 grid on narrower ones. Each tile is self-contained so the
- * grid can later be reordered or partially hidden without leaking state
- * between tiles.
+ * Four tiles (a fifth appears when a progress probe is configured), each
+ * folding related figures onto one card so the strip stays compact:
+ *   - Tasks    — completed / total big, with the failed count and a
+ *                completion bar beneath.
+ *   - Agents   — the live concurrency control (actual / target + stepper).
+ *   - Output tok/sec — the live fleet rate, with durable avg / max beneath.
+ *   - Elapsed  — the active-time stopwatch, with the running output-token
+ *                total (millions) beneath.
  *
- * v2 dropped the verifier deltas, so the "errors remaining" tile is gone;
- * the tiles now reflect task lifecycle counts (completed / failed / active)
- * with task-published metrics surfaced separately in the Metrics panel.
+ * Layout target: projector-friendly, a single row on wide screens, wrapping
+ * on narrower ones. Each tile is self-contained so the grid can be reordered
+ * or partially hidden without leaking state between tiles.
  */
 
 import type { Counters, ProgressMetric } from "../snapshot";
@@ -81,14 +85,20 @@ export function HeroMetrics({
   // The primary progress probe is the first entry the task published. Absent or
   // empty leaves the strip exactly as it was — no extra tile, no layout shift.
   const primaryProgress = progress ? Object.entries(progress)[0] : undefined;
+  // The folded strip is four tiles, or five when a progress probe is present —
+  // size the wide-screen grid so it fills one row either way.
+  const xlCols = primaryProgress ? "xl:grid-cols-5" : "xl:grid-cols-4";
+  // A non-zero failure count earns the alarm colour; zero stays muted so a
+  // clean run doesn't draw the eye to a red 0.
+  const failedTone = failed > 0 ? "text-status-failed" : "text-text-muted";
 
   return (
     <section
       aria-label="hero metrics"
-      className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6"
+      className={`grid grid-cols-2 gap-4 md:grid-cols-3 ${xlCols}`}
     >
       <MetricTile
-        label="Tasks completed"
+        label="Tasks"
         value={
           <span
             className="font-mono tabular-nums tracking-tight"
@@ -102,10 +112,20 @@ export function HeroMetrics({
           </span>
         }
         footer={
-          <ProgressBar
-            pct={completionPct}
-            ariaLabel={`${completed} of ${total_tasks} tasks completed`}
-          />
+          <div className="flex flex-col gap-3">
+            {/* Failed attempts return their task to the pool, so they are not
+                finished work — shown beneath the total as a secondary figure. */}
+            <div className="font-mono text-2xl tabular-nums">
+              <span data-testid="failed-value" className={failedTone}>
+                {failed.toLocaleString()}
+              </span>
+              <span className="text-text-muted"> failed</span>
+            </div>
+            <ProgressBar
+              pct={completionPct}
+              ariaLabel={`${completed} of ${total_tasks} tasks completed`}
+            />
+          </div>
         }
       />
 
@@ -165,29 +185,15 @@ export function HeroMetrics({
             {formatElapsed(elapsedSeconds)}
           </span>
         }
-      />
-
-      <MetricTile
-        label="Failed"
-        value={
-          <span
-            className="font-mono tabular-nums tracking-tight"
-            data-testid="failed-value"
-          >
-            {failed.toLocaleString()}
-          </span>
-        }
-      />
-
-      <MetricTile
-        label="Output tokens (M)"
-        value={
-          <span
-            className="font-mono tabular-nums tracking-tight text-accent"
-            data-testid="total-output-tokens-value"
-          >
-            {formatMillions(totalOutputTokens)}
-          </span>
+        footer={
+          // The running output-token total folded beneath the stopwatch: same
+          // accent as before, half the headline size so it reads as secondary.
+          <div className="font-mono text-2xl tabular-nums text-accent">
+            <span data-testid="total-output-tokens-value">
+              {formatMillions(totalOutputTokens)}
+            </span>
+            <span className="text-text-muted"> M output tokens</span>
+          </div>
         }
       />
 

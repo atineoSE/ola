@@ -610,14 +610,21 @@ def read_task_rows(
 
 
 def read_agent_folder(agent_path: Path) -> list[FolderStatus]:
-    """Read all subfolders of an agent directory and return their statuses.
+    """Read every plan subfolder of an agent directory and return their statuses.
 
-    Subfolders are sorted by name. Hidden directories (starting with .) are skipped.
+    Subfolders are sorted by name. Skipped: hidden directories (starting with
+    ``.``) and any directory without a ``PLAN.md`` — a folder with no plan is not
+    a run ola-top can show task/metrics rows for, so it never appears in the list
+    (mirrors the harness, which only drives folders that carry a ``PLAN.md``).
     """
     if not agent_path.is_dir():
         return []
     subfolders = sorted(
-        p for p in agent_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+        p
+        for p in agent_path.iterdir()
+        if p.is_dir()
+        and not p.name.startswith(".")
+        and (p / "PLAN.md").exists()
     )
     return [read_folder_status(f) for f in subfolders]
 

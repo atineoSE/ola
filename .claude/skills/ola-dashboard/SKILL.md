@@ -1,7 +1,7 @@
 ---
 name: ola-dashboard
 description: Design philosophy and scope guardrails for ola-dashboard, the browser monitor. Load whenever changing ola-dashboard — every change must be checked against this philosophy.
-version: 1.5.0
+version: 1.6.0
 ---
 
 # The ola-dashboard design philosophy
@@ -89,17 +89,27 @@ The shape worth keeping from the prototype:
   tells you which agent is running. The model name is **not** in the event
   envelope — it is surfaced from `STATS.jsonl` through the snapshot, a view of
   existing file data, not a new harness emission.
-- **Hero metrics** — counters (total / completed / failed / active), the
-  elapsed clock (an **active-time stopwatch**: it advances only while ≥1 agent
-  is running and freezes during idle gaps, so it reads as time-worked, not
-  wall-clock — `build_snapshot` accumulates the active seconds from the event
-  stream and hands back an anchor ts to tick the open tail), live fleet output
-  tokens/sec (the *current* windowed rate, which blanks to `—` when no agent is
-  decoding; the **avg and peak beneath it are file-derived** — avg = total
-  output tokens over active runtime, peak = the fastest task's lifetime rate —
-  so they persist after the run ends and survive a reload, unlike a client-side
-  session accumulator), total output tokens in millions (a running total to
-  watch climb), and the **parallel-agents slider** (writes `.ola/concurrency`).
+- **Hero metrics** — four tiles (a fifth for the optional progress probe), each
+  **folding related figures onto one card** so the strip stays compact rather
+  than sprawling one number per tile:
+  - **Tasks** — `completed / total` as the headline, with the **failed** count
+    (muted at zero, alarm-coloured above it) and the completion bar beneath.
+    Failed attempts return their task to the pool, so they sit *below* the total
+    as a secondary figure, not as finished work.
+  - **Agents** — the **parallel-agents slider** (actual / target + stepper),
+    the one control that writes `.ola/concurrency`.
+  - **Output tok/sec** — live fleet rate (the *current* windowed rate, which
+    blanks to `—` when no agent is decoding; the **avg and peak beneath it are
+    file-derived** — avg = total output tokens over active runtime, peak = the
+    fastest task's lifetime rate — so they persist after the run ends and
+    survive a reload, unlike a client-side session accumulator).
+  - **Elapsed** — an **active-time stopwatch** (it advances only while ≥1 agent
+    is running and freezes during idle gaps, so it reads as time-worked, not
+    wall-clock — `build_snapshot` accumulates the active seconds from the event
+    stream and hands back an anchor ts to tick the open tail), with **total
+    output tokens in millions** (a running total to watch climb) folded beneath.
+  The folding is presentation only — every figure is still the same view of the
+  same file-derived snapshot field; tiles are merged, never the data.
 - **Work-item heatmap** — space-filling grid, every task visible from the
   start, coloured by status in dispatch order; the signature demo visual.
 - **Activity feed** — scrolling list of completed tasks.

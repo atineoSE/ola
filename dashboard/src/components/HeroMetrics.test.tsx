@@ -101,6 +101,43 @@ describe("<HeroMetrics />", () => {
   });
 });
 
+describe("<HeroMetrics /> folded tiles", () => {
+  it("shows the failed count beneath the tasks total, muted when zero", () => {
+    render(
+      <HeroMetrics
+        counters={counters({ total_tasks: 10, completed: 4, failed: 0 })}
+      />,
+    );
+    const failed = screen.getByTestId("failed-value");
+    expect(failed.textContent).toBe("0");
+    // A clean run keeps the failed figure muted, not alarmed.
+    expect(failed.className).toContain("text-text-muted");
+    expect(screen.getByText("failed")).toBeTruthy();
+  });
+
+  it("colours the failed count when non-zero", () => {
+    render(
+      <HeroMetrics
+        counters={counters({ total_tasks: 10, completed: 4, failed: 3 })}
+      />,
+    );
+    const failed = screen.getByTestId("failed-value");
+    expect(failed.textContent).toBe("3");
+    expect(failed.className).toContain("text-status-failed");
+  });
+
+  it("folds the output-token total beneath the elapsed clock", () => {
+    render(
+      <HeroMetrics counters={counters()} totalOutputTokens={2_500_000} />,
+    );
+    expect(screen.getByTestId("elapsed-value")).toBeTruthy();
+    expect(screen.getByTestId("total-output-tokens-value").textContent).toBe(
+      "2.50",
+    );
+    expect(screen.getByText(/M output tokens/)).toBeTruthy();
+  });
+});
+
 describe("<HeroMetrics /> agents stepper", () => {
   const counters = {
     total_tasks: 10,

@@ -1,7 +1,7 @@
 ---
 name: ola-top
 description: Design philosophy and scope guardrails for ola-top, the terminal monitor. Load whenever changing ola-top — every change must be checked against this philosophy.
-version: 1.0.0
+version: 1.0.1
 ---
 
 # The ola-top design philosophy
@@ -23,6 +23,9 @@ refresh tick. It never runs a collector, daemon, socket, or background
 aggregator, and it never caches run state across ticks. The files it reads:
 
 - `<folder>/PLAN.md` — task counts (checkbox-is-truth, same as the harness).
+  This file is also the gate for listing a folder at all: a subdirectory with no
+  `PLAN.md` is not a run and is skipped, so helper dirs (e.g. an `agent/bin/`)
+  beside the numbered folders never show up as rows.
 - `<folder>/STATS.jsonl` — per-iteration stats (the metrics spine).
 - `<folder>/.ola/tasks.json` — per-task spine for parallel folders.
 - `<folder>/.ola/events.jsonl` — lifecycle stream; envelope pinned to

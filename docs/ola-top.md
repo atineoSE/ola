@@ -11,6 +11,10 @@ ola-top [-f <agent-folder>] [-r <refresh-seconds>]
 | `-f, --agent-folder` | Path to the agent folder | `../agent` |
 | `-r, --refresh` | Refresh interval in seconds | `2` |
 
+Only subfolders that contain a `PLAN.md` are listed — that file is the task
+spine ola-top reads, so a directory without one (e.g. a `bin/` of helper
+scripts living beside the numbered folders) is not a run and never appears.
+
 ## Keybindings
 
 | Key | Action |
