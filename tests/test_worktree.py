@@ -379,3 +379,45 @@ class TestCleanup:
 
     def test_no_op_when_missing(self, tmp_path):
         worktree.cleanup(tmp_path / "does-not-exist", keep_on_failure=False)
+
+
+class TestPruneBranch:
+    def _branches(self, project: Path) -> str:
+        return subprocess.run(
+            ["git", "branch", "--list"],
+            cwd=str(project),
+            capture_output=True,
+            check=True,
+        ).stdout.decode()
+
+    def test_deletes_the_task_branch(self, tmp_path):
+        project, _agent_root, folder = _two_repos(tmp_path, "- [ ] One\n")
+        task = enumerate_tasks(folder)[0]
+        worktree.create(project, folder, task.task_id)
+        worktree.cleanup(
+            project / ".ola" / "worktrees" / task.task_id, keep_on_failure=False
+        )
+
+        # Before pruning the ref lingers; after, it is gone.
+        assert f"ola/{folder.name}/{task.task_id}" in self._branches(project)
+        worktree.prune_branch(project, folder, task.task_id)
+        assert f"ola/{folder.name}/{task.task_id}" not in self._branches(project)
+
+    def test_force_deletes_unmerged_branch(self, tmp_path):
+        # A branch whose commit never landed on main (the rebase-recommit case,
+        # patch-identical but not an ancestor) must still be pruned: -D, not -d.
+        project, _agent_root, folder = _two_repos(tmp_path, "- [ ] One\n")
+        task = enumerate_tasks(folder)[0]
+        wt = worktree.create(project, folder, task.task_id)
+        (wt / "stray.txt").write_text("never merged\n")
+        worktree.commit(wt, "ola: stray work not on main")
+        worktree.cleanup(wt, keep_on_failure=False)
+
+        worktree.prune_branch(project, folder, task.task_id)
+        assert f"ola/{folder.name}/{task.task_id}" not in self._branches(project)
+
+    def test_no_op_when_branch_absent(self, tmp_path):
+        # Never raises even if the branch was already cleared (best-effort).
+        project, _agent_root, folder = _two_repos(tmp_path, "- [ ] One\n")
+        task = enumerate_tasks(folder)[0]
+        worktree.prune_branch(project, folder, task.task_id)

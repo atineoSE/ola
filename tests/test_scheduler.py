@@ -292,6 +292,15 @@ def test_run_folder_single_task_success(tmp_path):
     wt = project / ".ola" / "worktrees" / task.task_id
     assert not wt.exists()
 
+    # The per-task branch was pruned too — a completed run leaves no ola/* refs.
+    branches = subprocess.run(
+        ["git", "branch", "--list"],
+        cwd=str(project),
+        capture_output=True,
+        check=True,
+    ).stdout.decode()
+    assert f"ola/{folder.name}/{task.task_id}" not in branches
+
     # tasks.json reflects completion.
     state = TaskState.load(folder)
     entry = state.get(task.task_id)

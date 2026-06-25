@@ -65,6 +65,15 @@ def _git(
     return result
 
 
+def _branch_name(folder: Path, task_id: str) -> str:
+    """Per-task branch name ``ola/<folder.name>/<task_id>``.
+
+    Named after the agent-folder stage *folder* for traceability. Single source
+    of the convention so :func:`create` and :func:`prune_branch` cannot drift.
+    """
+    return f"ola/{folder.name}/{task_id}"
+
+
 def create(project_path: Path, folder: Path, task_id: str) -> Path:
     """Create a git worktree for *task_id* anchored at *project_path*'s HEAD.
 
@@ -80,7 +89,7 @@ def create(project_path: Path, folder: Path, task_id: str) -> Path:
     project_path = Path(project_path)
     worktree_path = project_path / ".ola" / "worktrees" / task_id
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
-    branch = f"ola/{folder.name}/{task_id}"
+    branch = _branch_name(folder, task_id)
     # Clear leftovers from a prior attempt before recreating.
     _git(project_path, "worktree", "remove", "--force", str(worktree_path), check=False)
     _git(project_path, "worktree", "prune", check=False)
@@ -89,6 +98,22 @@ def create(project_path: Path, folder: Path, task_id: str) -> Path:
     _git(project_path, "branch", "-D", branch, check=False)
     _git(project_path, "worktree", "add", "-b", branch, str(worktree_path), "HEAD")
     return worktree_path
+
+
+def prune_branch(project_path: Path, folder: Path, task_id: str) -> None:
+    """Delete the task's ``ola/<folder.name>/<task_id>`` branch, best-effort.
+
+    Called on the success path once the worktree's commit has been merged back
+    and the worktree itself removed: the branch ref has served its traceability
+    purpose and would otherwise leak, one dangling ref per completed task, until
+    a same-id task happened to reclaim the name (which a unique-per-run task_id
+    never does). ``-D`` (force) because a merge-back that rebased the commit onto
+    a moved HEAD leaves a branch tip that is patch-identical to what landed yet
+    not a literal ancestor of it, so ``-d`` would refuse. Failure-path branches
+    are intentionally *not* pruned — they stay for post-mortem and are cleared by
+    :func:`create` on the next attempt. ``check=False`` so cleanup never raises.
+    """
+    _git(project_path, "branch", "-D", _branch_name(folder, task_id), check=False)
 
 
 def commit(worktree: Path, message: str) -> str:

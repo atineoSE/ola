@@ -58,7 +58,14 @@ from ola.janitor import run_janitor
 from ola.loop import _append_stats, _exclude_ola_artifacts, per_task_state_dir
 from ola.plan import count_tasks, set_task_checked, task_is_checked
 from ola.taskstate import TaskState
-from ola.worktree import MergeBackConflict, cleanup, commit, create, merge_back
+from ola.worktree import (
+    MergeBackConflict,
+    cleanup,
+    commit,
+    create,
+    merge_back,
+    prune_branch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -762,6 +769,9 @@ def _run_one_task(
                 state.mark(task_id, "complete", last_error=None)
                 state.save()
             cleanup(worktree_path, keep_on_failure=False)
+            # Work is merged and the worktree is gone; drop the now-vestigial
+            # task branch so a completed run leaves no dangling ola/* refs.
+            prune_branch(project_path, folder, task_id)
             prog.complete(stats=response.stats)
             return _OUTCOME_COMPLETE
 
