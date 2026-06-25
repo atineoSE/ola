@@ -494,7 +494,18 @@ def _propagate(
     set_task_checked(folder, task_id, True)
     plan_rel = f"{folder.name}/PLAN.md"
     _git(agent_root, "add", plan_rel)
-    _git(agent_root, "commit", "-m", f"ola: {folder.name} {task_id}")
+    # The tick can net to nothing when the box is already ticked *and committed*
+    # — e.g. an un-jailed agent that wandered into the live folder and ticked
+    # PLAN.md itself, so a sibling task's commit already captured this line.
+    # set_task_checked is then a no-op and there is nothing staged; committing an
+    # empty index exits 1 ("nothing to commit"), which would crash an
+    # already-done task. Guard it like the project commit above: a pre-ticked
+    # box is a clean no-op completion, not a failure.
+    staged = (
+        _git(agent_root, "diff", "--cached", "--name-only").stdout.decode().strip()
+    )
+    if staged:
+        _git(agent_root, "commit", "-m", f"ola: {folder.name} {task_id}")
 
 
 def _truncate(s: str, n: int = 500) -> str:

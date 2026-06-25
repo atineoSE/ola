@@ -320,6 +320,47 @@ def test_run_folder_single_task_success(tmp_path):
     assert agent.invocations[0]["workdir"] == str(wt)
 
 
+def test_run_folder_already_committed_tick_is_noop_not_crash(tmp_path):
+    """A pre-committed checkbox must complete the task, not crash _propagate.
+
+    Reproduces the un-jailed-agent failure: an agent that wanders out of its
+    worktree into the live agent folder ticks PLAN.md there, so the box is
+    already ticked *and committed* by the time _propagate runs. set_task_checked
+    is then a no-op and nothing is staged — committing an empty index exits 1
+    ("nothing to commit"). The agent-root commit must be guarded like the
+    project commit so the task completes cleanly instead of raising.
+    """
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
+    task = enumerate_tasks(folder)[0]
+
+    class _WandersIntoLiveFolderAgent(_TickingAgent):
+        # Ticks its worktree copy (so it isn't stagnant) and *also* ticks and
+        # commits PLAN.md in the live agent root, mimicking an agent that wasn't
+        # confined to its worktree.
+        def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+            resp = super().run(
+                prompt, workdir, state_dir=state_dir, labels=labels,
+                on_progress=on_progress,
+            )
+            set_task_checked(folder, labels["task_id"], True)
+            _git(agent_root, "add", f"{folder.name}/PLAN.md")
+            _git(agent_root, "commit", "-m", "agent wandered: pre-tick")
+            return resp
+
+    agent = _WandersIntoLiveFolderAgent()
+    run_folder(agent, folder, agent_root, project, initial_cap=1)
+
+    # The box is ticked and the task completes — no nothing-to-commit crash.
+    assert task_is_checked(folder, task.task_id) is True
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "complete"
+    assert entry.last_error is None
+
+    # The agent's code still propagated to the project repo.
+    assert (project / f"file_{task.task_id}.txt").read_text() == task.task_id
+
+
 def test_run_folder_warms_up_agent_before_dispatch(tmp_path):
     """warm_up() runs exactly once, on the main thread, before any task runs.
 
