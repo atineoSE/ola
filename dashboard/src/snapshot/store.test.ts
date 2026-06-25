@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  meanTaskTokensPerSec,
   recomputeCounters,
   sumOutputTokens,
   windowedTokensPerSec,
@@ -92,6 +93,43 @@ describe("sumOutputTokens", () => {
 
   it("is 0 for an empty run", () => {
     expect(sumOutputTokens([])).toBe(0);
+  });
+});
+
+describe("meanTaskTokensPerSec — decode-weighted per-task average", () => {
+  it("is Σ tokens / Σ decode-seconds (a weighted mean, between the rates)", () => {
+    // 100 tok / 2s = 50/s and 300 tok / 2s = 150/s; weighted 400 / 4s = 100/s,
+    // which sits between the two per-task rates.
+    const avg = meanTaskTokensPerSec([
+      task("complete", { output_tokens: 100, decode_ms: 2000 }),
+      task("complete", { output_tokens: 300, decode_ms: 2000 }, "t-b"),
+    ]);
+    expect(avg).toBe(100);
+  });
+
+  it("never exceeds the peak per-task rate (the invariant the tile relies on)", () => {
+    // Fast task 200/1s = 200; slow task 100/10s = 10. Weighted average
+    // 300 / 11s ≈ 27.3 — comfortably ≤ the 200/s peak.
+    const avg = meanTaskTokensPerSec([
+      task("complete", { output_tokens: 200, decode_ms: 1000 }),
+      task("complete", { output_tokens: 100, decode_ms: 10000 }, "t-b"),
+    ])!;
+    expect(avg).toBeCloseTo(27.27, 1);
+    expect(avg).toBeLessThanOrEqual(200);
+  });
+
+  it("skips tasks with no metrics or a non-positive decode time", () => {
+    const avg = meanTaskTokensPerSec([
+      task("complete", { output_tokens: 100, decode_ms: 2000 }),
+      task("pending"),
+      task("complete", { output_tokens: 999, decode_ms: 0 }, "t-z"),
+    ]);
+    expect(avg).toBe(50); // only the first task counts: 100 / 2s
+  });
+
+  it("is null when no task carries usable metrics", () => {
+    expect(meanTaskTokensPerSec([])).toBeNull();
+    expect(meanTaskTokensPerSec([task("pending")])).toBeNull();
   });
 });
 

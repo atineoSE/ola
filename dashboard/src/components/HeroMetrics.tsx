@@ -41,6 +41,12 @@ export interface HeroMetricsProps {
    * per-task metrics so it persists after the run ends. `null` before any
    * task reports usable metrics. */
   peakTokensPerSec?: number | null;
+  /** Per-task decode-weighted average throughput (`Σ tokens / Σ decode-secs`),
+   * the headline for a non-streaming backend. It is a weighted mean of the
+   * per-task rates, so it stays ≤ `peakTokensPerSec` — the right partner for the
+   * peak, unlike the fleet wall-clock average which parallelism can push above
+   * the peak. `null` before any task reports usable metrics. */
+  avgTaskTokensPerSec?: number | null;
   /** Total output tokens generated across the run so far, displayed in
    * millions so the running total can be watched climbing. Also the numerator
    * for the durable average tok/sec (over the active-elapsed clock). */
@@ -65,6 +71,7 @@ export function HeroMetrics({
   onAgentsTargetChange,
   liveTokensPerSec = null,
   peakTokensPerSec = null,
+  avgTaskTokensPerSec = null,
   totalOutputTokens = 0,
   liveRateSupported = true,
   progress,
@@ -186,7 +193,9 @@ export function HeroMetrics({
         // No live token stream (oh / ct recover counts only post-hoc), so a
         // windowed live rate is never available — a permanent "—" would read as
         // broken. Show the durable average as the headline instead, with the
-        // peak as the secondary readout. Both are file-derived.
+        // peak as the secondary readout. Both are file-derived and per-task
+        // scoped (decode-weighted avg ≤ peak), so the headline never reads above
+        // "max" — unlike the fleet wall-clock average used in the live layout.
         <MetricTile
           label="Avg tok/sec"
           value={
@@ -194,7 +203,7 @@ export function HeroMetrics({
               className="font-mono tabular-nums tracking-tight"
               data-testid="output-tokens-value"
             >
-              {formatTokensPerSec(avgTokensPerSec)}
+              {formatTokensPerSec(avgTaskTokensPerSec)}
             </span>
           }
           footer={

@@ -256,24 +256,26 @@ describe("<HeroMetrics /> output tok/sec tile", () => {
     expect(screen.getByTestId("output-tokens-max").textContent).toBe("max —");
   });
 
-  it("shows avg as the headline and max below when the backend has no live rate", () => {
+  it("shows the per-task avg as the headline and max below for a non-streaming backend", () => {
     // A non-streaming backend (oh / ct): liveRateSupported=false. The live rate
-    // is never available, so the durable average becomes the headline and the
-    // peak the secondary readout — no permanent "—".
+    // is never available, so the durable per-task average is the headline and
+    // the peak the secondary readout — no permanent "—".
     render(
       <HeroMetrics
         counters={counters({ active: 2 })}
         liveRateSupported={false}
         liveTokensPerSec={null}
         peakTokensPerSec={56.8}
-        // avg = total output tokens / active elapsed = 8410 / 100 = 84.1.
+        avgTaskTokensPerSec={43.6}
+        // The fleet wall-clock average (8410 / 100 = 84.1) must NOT be the
+        // headline: it can exceed the peak. The per-task avg (43.6 ≤ 56.8) is.
         activeElapsedSeconds={100}
         activeAnchorTs={null}
         totalOutputTokens={8410}
       />,
     );
     expect(screen.getByText("Avg tok/sec")).toBeTruthy();
-    expect(screen.getByTestId("output-tokens-value").textContent).toBe("84.1");
+    expect(screen.getByTestId("output-tokens-value").textContent).toBe("43.6");
     expect(screen.getByTestId("output-tokens-max").textContent).toBe("max 56.8");
     // The streaming layout's separate "avg …" sub-readout is gone — the average
     // is the headline now.

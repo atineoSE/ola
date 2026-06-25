@@ -5,6 +5,7 @@ import { HeroMetrics } from "./components/HeroMetrics";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { TaskGrid } from "./components/TaskGrid";
 import {
+  meanTaskTokensPerSec,
   peakTaskTokensPerSec,
   recomputeCounters,
   sumOutputTokens,
@@ -120,6 +121,10 @@ function App() {
   // persist after the run ends; `peakTaskTokensPerSec` is the durable peak.
   const liveTokPerSec = useLiveTokensPerSec(tasks, project);
   const peakTokPerSec = useMemo(() => peakTaskTokensPerSec(tasks), [tasks]);
+  // Per-task decode-weighted average rate — the headline a non-streaming
+  // backend shows in place of the (unavailable) live rate. Stays ≤ the peak,
+  // unlike the fleet wall-clock average, so "avg" never reads above "max".
+  const avgTaskTokPerSec = useMemo(() => meanTaskTokensPerSec(tasks), [tasks]);
   const totalOutputTokens = useMemo(() => sumOutputTokens(tasks), [tasks]);
   const activity = useMemo(
     () => snapshot.activity.filter((e) => e.folder === project),
@@ -170,6 +175,7 @@ function App() {
         onAgentsTargetChange={concurrencyAvailable ? setAgentsTarget : undefined}
         liveTokensPerSec={liveTokPerSec}
         peakTokensPerSec={peakTokPerSec}
+        avgTaskTokensPerSec={avgTaskTokPerSec}
         totalOutputTokens={totalOutputTokens}
         liveRateSupported={agentStreamsLiveTokens(backend)}
       />

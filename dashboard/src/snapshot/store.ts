@@ -127,6 +127,33 @@ export function peakTaskTokensPerSec(
   return peak;
 }
 
+/**
+ * Decode-time-weighted average single-agent throughput (tokens/sec) across a
+ * project's tasks: `Σ output_tokens / Σ decode_seconds`. This is a weighted
+ * mean of the per-task `tokens_per_sec`, so it always sits **between the slowest
+ * and fastest task** — in particular `≤ peakTaskTokensPerSec`. That makes it the
+ * right partner for the peak readout, unlike the fleet wall-clock average
+ * (`sumOutputTokens / active-elapsed`), which sums parallel agents over one
+ * clock and can therefore exceed any single task's rate. It is derived purely
+ * from the durable per-task `data.metrics`, so it is static (no drift against
+ * the live elapsed clock) and survives a finished run / reload. `null` until a
+ * task reports usable metrics with a positive decode time.
+ */
+export function meanTaskTokensPerSec(
+  tasks: Record<string, TaskState> | TaskState[],
+): number | null {
+  const list = Array.isArray(tasks) ? tasks : Object.values(tasks);
+  let tokens = 0;
+  let decodeMs = 0;
+  for (const t of list) {
+    const m = readMetrics(t.data);
+    if (m == null || m.decode_ms <= 0) continue;
+    tokens += m.output_tokens;
+    decodeMs += m.decode_ms;
+  }
+  return decodeMs > 0 ? tokens / (decodeMs / 1000) : null;
+}
+
 export function recomputeCounters(tasks: Record<string, TaskState>): Counters {
   let completed = 0;
   let failed = 0;

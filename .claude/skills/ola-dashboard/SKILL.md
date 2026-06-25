@@ -1,7 +1,7 @@
 ---
 name: ola-dashboard
 description: Design philosophy and scope guardrails for ola-dashboard, the browser monitor. Load whenever changing ola-dashboard — every change must be checked against this philosophy.
-version: 1.7.0
+version: 1.7.1
 ---
 
 # The ola-dashboard design philosophy
@@ -105,9 +105,15 @@ The shape worth keeping from the prototype:
     survive a reload, unlike a client-side session accumulator). **Backends that
     don't stream** tokens (`oh`/`ct` recover counts only post-hoc, so a live rate
     never exists — keyed off `agent_backend` via `agentStreamsLiveTokens`, not a
-    transient null) relabel this tile **"Avg tok/sec"** and promote the durable
+    transient null) relabel this tile **"Avg tok/sec"** and promote a durable
     **average to the headline** with the peak beneath, rather than showing a
-    permanently-blank `—`.
+    permanently-blank `—`. That headline is the **per-task decode-weighted
+    average** (`meanTaskTokensPerSec` = Σ tokens / Σ decode-secs), *not* the fleet
+    wall-clock average: a weighted mean of the per-task rates always sits ≤ the
+    per-task peak, so "avg" never reads above "max". The fleet wall-clock average
+    sums parallel agents over one clock and can exceed any single task's rate, so
+    it is unfit to pair with a per-task peak (and it drifts against the live
+    elapsed clock between completions).
   - **Elapsed** — an **active-time stopwatch** (it advances only while ≥1 agent
     is running and freezes during idle gaps, so it reads as time-worked, not
     wall-clock — `build_snapshot` accumulates the active seconds from the event

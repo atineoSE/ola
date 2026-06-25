@@ -14,6 +14,7 @@ export {
   ACTIVITY_FEED_LIMIT,
   EMPTY_COUNTERS,
   EMPTY_SNAPSHOT,
+  meanTaskTokensPerSec,
   peakTaskTokensPerSec,
   recomputeCounters,
   sumOutputTokens,
