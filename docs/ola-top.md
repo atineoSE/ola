@@ -34,6 +34,15 @@ ola-top has two column layouts, toggled with `m`:
 
 In a parallel folder the **Agent** fills from the `started` event the moment a task begins (mnemonic only — the agent version arrives with the first `STATS.jsonl` row). **Model** is not in the event stream, so it stays blank until that first `STATS.jsonl` row lands.
 
+### Totals row
+
+A bold **`TOTAL`** row is pinned to the bottom of the table (below a divider, and below the scrolled window — it never scrolls away). It is a grand total across **all** folders, independent of which are expanded. It fills only the additive numeric columns:
+
+* **Task view** — Tasks (`completed/total`, each summed), Turns, Time.
+* **Metrics view** — Input, Output, Avg Ctx (aggregate input ÷ turns), Max Ctx (the largest single call), Time.
+
+Ratio, percentage, and median columns (Cache%, In/Out, LLM/Tool, TTFT, Tok/s) carry no meaningful total and are left blank rather than showing a fabricated number.
+
 ## Sequential vs parallel folders
 
 ola-top adapts what it shows when you expand a folder, based on whether the folder runs in [parallel mode](./parallel.md) (i.e. it has a `.ola/` sidecar):

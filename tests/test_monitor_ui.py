@@ -100,13 +100,13 @@ class TestBuildTable:
             ),
         ]
         table = build_table(folders)
-        assert table.row_count == 2
+        assert table.row_count == 3  # 2 folders + TOTAL footer
 
     def test_dim_style_for_no_tasks(self):
         """Folders with 0 total tasks should get dim styling."""
         folders = [FolderStatus(name="empty")]
         table = build_table(folders)
-        assert table.row_count == 1
+        assert table.row_count == 2  # 1 folder + TOTAL footer
         # The row style should be "dim" — we check via the internal rows
         assert table.rows[0].style == "dim"
 
@@ -145,8 +145,8 @@ class TestBuildTable:
         text = _render_table_text(table)
         assert "▶" in text
         assert "▼" not in text
-        # No sub-rows
-        assert table.row_count == 1
+        # No sub-rows (folder row only) + TOTAL footer
+        assert table.row_count == 2
 
     def test_expanded_shows_iterations(self):
         """Expanded folders render iteration sub-rows."""
@@ -175,8 +175,8 @@ class TestBuildTable:
             )
         ]
         table = build_table(folders, expanded={"t1"})
-        # 1 parent + 2 iteration rows
-        assert table.row_count == 3
+        # 1 parent + 2 iteration rows + TOTAL footer
+        assert table.row_count == 4
         text = _render_table_text(table)
         assert "▼" in text
         assert "task-t1-1" in text
@@ -186,7 +186,7 @@ class TestBuildTable:
         """Expanding a folder with no iterations adds no sub-rows."""
         folders = [FolderStatus(name="empty")]
         table = build_table(folders, expanded={"empty"})
-        assert table.row_count == 1
+        assert table.row_count == 2  # folder (no iterations) + TOTAL footer
 
     def test_mixed_expanded_collapsed(self):
         """Only expanded folders get sub-rows."""
@@ -204,8 +204,8 @@ class TestBuildTable:
             ),
         ]
         table = build_table(folders, expanded={"b"})
-        # a: 1 row, b: 1 parent + 2 iterations = 4 total
-        assert table.row_count == 4
+        # a: 1 row, b: 1 parent + 2 iterations = 4, + TOTAL footer
+        assert table.row_count == 5
 
     def test_cursor_highlights_row(self):
         """The cursor row should use reverse styling."""
@@ -246,6 +246,89 @@ class TestBuildTable:
         table = build_table(folders, mode=ViewMode.METRICS)
         assert len(table.columns) == 12
         assert table.columns[0].header == "#"
+
+
+class TestTotalsRow:
+    """The grand-total footer row pinned to the bottom of the table."""
+
+    def _two_folders(self) -> list[FolderStatus]:
+        return [
+            FolderStatus(
+                name="01-a",
+                tasks_completed=3,
+                tasks_total=5,
+                iterations=[
+                    IterationStatus(
+                        phase="t1",
+                        input_tokens=10_000,
+                        output_tokens=5_000,
+                        num_turns=4,
+                        wall_ms=120_000,
+                        max_input_tokens=8_000,
+                    )
+                ],
+            ),
+            FolderStatus(
+                name="02-b",
+                tasks_completed=4,
+                tasks_total=4,
+                iterations=[
+                    IterationStatus(
+                        phase="t1",
+                        input_tokens=20_000,
+                        output_tokens=10_000,
+                        num_turns=6,
+                        wall_ms=60_000,
+                        max_input_tokens=15_000,
+                    )
+                ],
+            ),
+        ]
+
+    def test_no_totals_for_empty_agent_folder(self):
+        """An empty agent folder gets no footer (and no divider)."""
+        assert build_table([]).row_count == 0
+
+    def _total_line(self, table) -> str:
+        lines = [ln for ln in _render_table_text(table).splitlines() if "TOTAL" in ln]
+        assert lines, "no TOTAL row rendered"
+        return lines[0]
+
+    def test_task_view_sums_tasks_turns_time(self):
+        table = build_table(self._two_folders(), mode=ViewMode.TASK)
+        # The footer is the last row, rendered bold.
+        assert table.rows[-1].style == "bold"
+        line = self._total_line(table)
+        assert "7/9" in line  # completed 3+4 / total 5+4, summed separately
+        assert "10" in line  # turns 4 + 6
+        assert "3m00s" in line  # wall 2m + 1m
+
+    def test_metrics_view_sums_tokens_and_ctx_blanks_ratios(self):
+        table = build_table(self._two_folders(), mode=ViewMode.METRICS)
+        line = self._total_line(table)
+        assert "30.0k" in line  # input 10k + 20k
+        assert "15.0k" in line  # output 5k + 10k (and max ctx = max(8k, 15k))
+        assert "3.0k" in line  # avg ctx = total input 30k // total turns 10
+        # Ratio / percentage / median columns have no meaningful total: blank.
+        assert "%" not in line  # no Cache% / LLM-Tool split
+        assert "x" not in line  # no In/Out ratio
+
+    def test_totals_pinned_below_a_scrolled_window(self):
+        """The footer is appended after the window, whatever the scroll offset."""
+        folders = [
+            FolderStatus(
+                name="big",
+                tasks_completed=1,
+                tasks_total=2,
+                iterations=[
+                    IterationStatus(phase=f"loop-{i}", wall_ms=1000)
+                    for i in range(20)
+                ],
+            )
+        ]
+        table = build_table(folders, expanded={"big"}, offset=10, max_rows=5)
+        assert table.rows[-1].style == "bold"
+        assert "TOTAL" in _render_table_text(table)
 
 
 class TestHeaderFooter:
@@ -501,13 +584,15 @@ class TestViewport:
         folders = self._big_folder(20)
         # 1 folder + 20 iters = 21 display rows
         table = build_table(folders, expanded={"big"}, max_rows=5)
-        assert table.row_count == 5
+        # 5 windowed data rows + TOTAL footer (the footer is always appended,
+        # below the scrolled window, and is not capped by max_rows).
+        assert table.row_count == 6
 
     def test_offset_skips_rows(self):
         """offset advances the window into the iteration list."""
         folders = self._big_folder(20)
         table = build_table(folders, expanded={"big"}, offset=10, max_rows=5)
-        assert table.row_count == 5
+        assert table.row_count == 6  # 5 windowed rows + TOTAL footer
         text = _render_table_text(table)
         # display_rows[10:15] = iters 9..13
         assert "loop-9" in text
@@ -520,7 +605,7 @@ class TestViewport:
         """An out-of-range offset clamps to the last full window."""
         folders = self._big_folder(20)
         table = build_table(folders, expanded={"big"}, offset=999, max_rows=5)
-        assert table.row_count == 5
+        assert table.row_count == 6  # 5 windowed rows + TOTAL footer
         text = _render_table_text(table)
         # Window snaps to display_rows[16:21] = iters 15..19
         assert "loop-19" in text
@@ -528,7 +613,7 @@ class TestViewport:
     def test_max_rows_none_renders_all(self):
         folders = self._big_folder(20)
         table = build_table(folders, expanded={"big"}, max_rows=None)
-        assert table.row_count == 21
+        assert table.row_count == 22  # 21 display rows + TOTAL footer
 
     def test_cursor_on_iteration_row(self):
         """Cursor highlight follows the flat row index, including iter rows."""
@@ -545,7 +630,7 @@ class TestViewport:
         # Cursor at row 15 but window is rows 0..4 — build_table doesn't
         # adjust offset itself, that's run_live's job. Just verify it renders.
         table = build_table(folders, expanded={"big"}, cursor=15, offset=0, max_rows=5)
-        assert table.row_count == 5
+        assert table.row_count == 6  # 5 windowed rows + TOTAL footer
 
     def test_indicator_in_title(self):
         folders = self._big_folder(20)
@@ -597,7 +682,7 @@ class TestMetricsMode:
             FolderStatus(name="t1", tasks_completed=1, tasks_total=2, iterations=iters)
         ]
         table = build_table(folders, expanded={"t1"}, mode=ViewMode.METRICS)
-        assert table.row_count == 2
+        assert table.row_count == 3  # folder + 1 iteration + TOTAL footer
         text = _render_table_text(table)
         assert "task-t1-1" in text
 
@@ -644,7 +729,7 @@ class TestMetricsMode:
             FolderStatus(name="t1", tasks_completed=3, tasks_total=5, iterations=iters)
         ]
         table = build_table(folders, expanded={"t1"}, mode=ViewMode.TASK)
-        assert table.row_count == 3
+        assert table.row_count == 4  # folder + 2 iterations + TOTAL footer
 
     def test_header_shows_mode(self):
         """Header should display the current mode label."""
@@ -717,8 +802,8 @@ class TestParallelTaskView:
         """A parallel folder shows the expand arrow but no clever badge."""
         folders = [_parallel_folder()]
         table = build_table(folders, expanded=set())
-        # Folder row only — task rows hidden until expanded.
-        assert table.row_count == 1
+        # Folder row only (+ TOTAL footer); task rows hidden until expanded.
+        assert table.row_count == 2
         text = _render_table_text(table)
         assert "▶" in text
         # No running/cap enrichment crammed into the folder cell.
@@ -735,8 +820,8 @@ class TestParallelTaskView:
         """
         folders = [_parallel_folder()]
         table = build_table(folders, expanded={"09-parallel"})
-        # 1 folder + 3 task rows.
-        assert table.row_count == 4
+        # 1 folder + 3 task rows + TOTAL footer.
+        assert table.row_count == 5
         text = _render_table_text(table)
         assert "▼" in text
         assert "Refactor extractor" in text
@@ -776,7 +861,7 @@ class TestParallelTaskView:
         folder = _parallel_folder()  # task_rows carry no stats
         table = build_table([folder], expanded={"09-parallel"}, mode=ViewMode.METRICS)
         # Folder row still renders; task rows show only elapsed, no token cells.
-        assert table.row_count == 4
+        assert table.row_count == 5  # folder + 3 task rows + TOTAL footer
 
     def test_build_display_rows_uses_tasks_for_parallel(self):
         """A parallel folder's expanded sub-rows are 'task', not 'iter'."""
@@ -831,8 +916,9 @@ class TestParallelTaskView:
         """Task rows render in METRICS mode too (with empty metric cells)."""
         folders = [_parallel_folder()]
         table = build_table(folders, expanded={"09-parallel"}, mode=ViewMode.METRICS)
-        # 1 folder + 3 task rows; metric cells stay empty but rows still render.
-        assert table.row_count == 4
+        # 1 folder + 3 task rows + TOTAL footer; metric cells stay empty but
+        # rows still render.
+        assert table.row_count == 5
         assert table.rows[1].style == "green"  # complete task colored by status
 
 

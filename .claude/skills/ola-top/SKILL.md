@@ -1,7 +1,7 @@
 ---
 name: ola-top
 description: Design philosophy and scope guardrails for ola-top, the terminal monitor. Load whenever changing ola-top — every change must be checked against this philosophy.
-version: 1.0.1
+version: 1.1.0
 ---
 
 # The ola-top design philosophy
@@ -50,6 +50,16 @@ Expanding a folder drills into iterations (sequential) or per-task sub-rows
 the ones a single task has a value for — **honor the columns**; status reads
 off row colour, not an extra text column. Resist adding a third view or
 bolting panels onto the grid; that pressure belongs in [[ola-dashboard]].
+
+A bold **`TOTAL`** footer row is pinned to the bottom (below a divider, after the
+scrolled window) as a grand total across all folders. It is *within* the column
+grammar, not a bolted-on panel: it fills only the **additive** numeric columns
+(Tasks, Turns, Time; and Input, Output, Avg/Max Ctx in metrics view) and leaves
+ratio/percentage/median columns (Cache%, In/Out, LLM/Tool, TTFT, Tok/s) blank —
+a sum of a median or a rate is meaningless, so honour the columns by not
+fabricating one. It is excluded from the cursor/`display_rows` navigation (never
+selectable) and from the `N/total` indicator; reserve its two lines (row +
+divider) in `_TABLE_CHROME_ROWS` so the viewport math still fits.
 
 ## Checklist when changing ola-top
 

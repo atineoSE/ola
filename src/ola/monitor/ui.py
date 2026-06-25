@@ -27,7 +27,8 @@ from ola.monitor.data import FolderStatus, read_agent_folder
 # - bottom border (1)
 # - caption (1)
 # - blank line before caption (1)
-_TABLE_CHROME_ROWS = 7
+# - the always-present TOTAL footer row (1) and the divider line above it (1)
+_TABLE_CHROME_ROWS = 9
 
 
 class ViewMode(Enum):
@@ -162,6 +163,72 @@ def _find_active_index(folders: list[FolderStatus]) -> int | None:
         if fs.tasks_total > 0 and fs.tasks_completed < fs.tasks_total:
             return idx
     return None
+
+
+def _append_totals_row(
+    table: Table, folders: list[FolderStatus], mode: ViewMode
+) -> None:
+    """Append a ``TOTAL`` footer row aggregating the numeric columns.
+
+    A grand total across *all* folders (independent of which are expanded or
+    scrolled into view), drawn below a divider so it reads as a summary. Only the
+    additive numeric columns are filled — tasks, turns, time, input, output, and
+    context (avg = aggregate input/turn, max = the largest single call). Ratio,
+    percentage, and median columns (Cache%, In/Out, LLM/Tool, TTFT, Tok/s) have
+    no meaningful sum, so they are left blank rather than fabricating a number.
+    No row is added for an empty agent folder.
+    """
+    if not folders:
+        return
+
+    completed = sum(fs.tasks_completed for fs in folders)
+    total = sum(fs.tasks_total for fs in folders)
+    turns = sum(fs.total_num_turns for fs in folders)
+    wall_ms = sum(fs.display_wall_ms for fs in folders)
+    input_tokens = sum(fs.total_input_tokens for fs in folders)
+    output_tokens = sum(fs.total_output_tokens for fs in folders)
+    max_ctx = max((fs.max_input_tokens for fs in folders), default=0)
+    # Aggregate avg context = total input over total LLM calls (turns), matching
+    # FolderStatus.avg_input_tokens but across every folder.
+    avg_ctx = input_tokens // turns if turns else 0
+
+    # Divider above the footer so it visually separates from the data rows.
+    table.add_section()
+
+    if mode == ViewMode.TASK:
+        tasks_str = f"{completed}/{total}"
+        if total > 0 and completed >= total:
+            tasks_text = Text(tasks_str, style="green")
+        elif total > 0:
+            tasks_text = Text(tasks_str, style="yellow")
+        else:
+            tasks_text = Text(tasks_str, style="dim")
+        table.add_row(
+            "",
+            "TOTAL",
+            "",
+            "",
+            tasks_text,
+            str(turns) if turns else "",
+            _fmt_time(wall_ms),
+            style="bold",
+        )
+    else:  # METRICS
+        table.add_row(
+            "",
+            "TOTAL",
+            _fmt_tokens(input_tokens),
+            _fmt_tokens(output_tokens),
+            _fmt_tokens(avg_ctx),
+            _fmt_tokens(max_ctx),
+            "",  # Cache% — a rate, not a sum
+            "",  # In/Out — a ratio
+            "",  # LLM/Tool — a split
+            "",  # TTFT — a median
+            "",  # Tok/s — a median
+            _fmt_time(wall_ms),
+            style="bold",
+        )
 
 
 def build_table(
@@ -420,6 +487,10 @@ def build_table(
                     _fmt_time(it.wall_ms),
                     style=iter_style,
                 )
+
+    # Grand-total footer across all folders, always pinned to the bottom (after
+    # the scrolled window), so it reads as a summary regardless of offset.
+    _append_totals_row(table, folders, mode)
 
     return table
 
