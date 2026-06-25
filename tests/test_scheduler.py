@@ -26,7 +26,6 @@ from ola.events.client import Emitter, LocalSink
 from ola.plan import enumerate_tasks, set_task_checked, task_is_checked
 from ola.scheduler import (
     DEFAULT_CONCURRENCY,
-    DEFAULT_METRIC_INTERVAL,
     _DEFAULT_TASK_PROMPT,
     RunInterrupted,
     _load_task_prompt,
@@ -1739,10 +1738,6 @@ def _read_metrics(folder: Path) -> list[dict]:
     return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
 
 
-def test_default_metric_interval_constant():
-    assert DEFAULT_METRIC_INTERVAL == 15.0
-
-
 def test_append_metric_sample_writes_json_line(tmp_path):
     append_metric_sample(tmp_path, "cpu", 0.5, "2026-06-24T00:00:00.000Z")
     append_metric_sample(tmp_path, "rss", 12.0, "2026-06-24T00:00:01.000Z")
@@ -1793,7 +1788,6 @@ def test_run_folder_metric_probe_writes_sample(tmp_path):
         project,
         initial_cap=1,
         metric_cmd='echo \'{"name": "cpu", "value": 0.5}\'',
-        metric_interval=0.1,
     )
     rows = _read_metrics(folder)
     assert rows
@@ -1802,9 +1796,39 @@ def test_run_folder_metric_probe_writes_sample(tmp_path):
     assert "ts" in rows[0]
 
 
+def test_run_folder_probe_samples_baseline_then_each_merge_back(tmp_path):
+    """The probe runs once as a baseline, then once per tick that merged a
+    worktree back — and it runs in the *project* base branch, so it watches the
+    merged artefacts climb. With cap=1 the two merges land in distinct ticks, so
+    the series is the baseline followed by one bump per merge: [0, 1, 2]."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] one\n- [ ] two\n")
+    # An idempotent probe: count merged file_*.txt artefacts in the cwd (the
+    # project repo). Re-running it on an unchanged tree yields the same number.
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/bin/sh\n"
+        'n=$(ls file_*.txt 2>/dev/null | wc -l | tr -d " ")\n'
+        "printf '{\"name\": \"files\", \"value\": %s}\\n' \"$n\"\n"
+    )
+    probe.chmod(0o755)
+    run_folder(
+        _TickingAgent(),
+        folder,
+        agent_root,
+        project,
+        initial_cap=1,  # serialize so each merge-back lands in its own tick
+        metric_cmd=f"sh {probe}",
+    )
+    values = [r["value"] for r in _read_metrics(folder)]
+    assert values == [0.0, 1.0, 2.0]
+
+
 @pytest.mark.parametrize("cmd", ["exit 1", "echo not-json", "sleep 30"])
-def test_run_folder_broken_probe_never_crashes_no_sample(tmp_path, cmd):
+def test_run_folder_broken_probe_never_crashes_no_sample(tmp_path, cmd, monkeypatch):
     """A broken probe (non-zero/junk/timeout) leaves the run intact, no sample."""
+    # Shrink the probe timeout so the `sleep 30` case trips it quickly rather
+    # than blocking the baseline + merge-back probe for the full ceiling.
+    monkeypatch.setattr("ola.scheduler.PROBE_TIMEOUT_SEC", 0.2)
     project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
     task = enumerate_tasks(folder)[0]
     run_folder(
@@ -1814,7 +1838,6 @@ def test_run_folder_broken_probe_never_crashes_no_sample(tmp_path, cmd):
         project,
         initial_cap=1,
         metric_cmd=cmd,
-        metric_interval=0.2,
     )
     # The task still completes — a broken probe never stalls or crashes the run.
     assert task_is_checked(folder, task.task_id) is True

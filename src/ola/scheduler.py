@@ -97,12 +97,12 @@ DEFAULT_CONCURRENCY = 2
 # longer ticking).
 HEARTBEAT_INTERVAL_SEC = 5.0
 
-# Default cadence (seconds) for the optional harness metric probe. When a
-# ``metric_cmd`` is configured the main loop runs it no more than once per this
-# interval — its own monotonic gate, independent of the heartbeat — and appends
-# the parsed samples to ``.ola/metrics.jsonl``. With no ``metric_cmd`` the probe
-# never runs and the file is never created (the fallback to current behaviour).
-DEFAULT_METRIC_INTERVAL = 15.0
+# Wall-clock ceiling (seconds) for a single metric-probe run. The probe is
+# driven by merge-back progress (see ``run_folder``), so there is no polling
+# cadence — only this timeout, which bounds a slow or hung probe so it can never
+# stall the scheduler. With no ``metric_cmd`` the probe never runs and
+# ``.ola/metrics.jsonl`` is never created (the fallback to current behaviour).
+PROBE_TIMEOUT_SEC = 10.0
 
 # Worker outcomes reported back to the main loop, which folds them into the
 # folder-wide stagnation counter. ``STAGNANT`` (agent reported success but did
@@ -858,7 +858,6 @@ def run_folder(
     max_attempts: int = 0,
     janitor_enabled: bool = True,
     metric_cmd: str | None = None,
-    metric_interval: float = DEFAULT_METRIC_INTERVAL,
 ) -> None:
     """Process every pending task in *folder*/PLAN.md in parallel.
 
@@ -881,11 +880,17 @@ def run_folder(
     *janitor_enabled* controls whether a task that self-reports BLOCKED
     dispatches a janitor run (see :mod:`ola.janitor`); when ``False`` the task
     simply stays ``blocked`` in tasks.json.
-    *metric_cmd* is an optional shell command run periodically (throttled to
-    *metric_interval* seconds, its own monotonic gate beside the heartbeat) that
-    emits JSON metric samples appended to ``.ola/metrics.jsonl`` (see
-    :func:`_run_probe`/:func:`append_metric_sample`). When ``None`` the probe is
-    a no-op and no file is written — the fallback to current behaviour.
+    *metric_cmd* is an optional shell command that emits JSON metric samples
+    appended to ``.ola/metrics.jsonl`` (see
+    :func:`_run_probe`/:func:`append_metric_sample`). It runs in *project_path*
+    (the base branch) and is driven by **merge-back progress**, not a wall-clock
+    cadence: once as a baseline before the loop, then once after each tick that
+    merged at least one worktree back — because the base branch only changes on
+    merge-back, sampling between merges would just re-read an unchanged tree. The
+    probe is expected to be **idempotent** (running it back-to-back on an
+    unchanged tree is harmless), so no debounce is needed; a single run is
+    bounded by :data:`PROBE_TIMEOUT_SEC`. When ``None`` the probe is a no-op and
+    no file is written — the fallback to current behaviour.
     """
     folder = Path(folder)
     agent_root = Path(agent_root)
@@ -1065,23 +1070,26 @@ def run_folder(
             },
         )
 
-    # Optional harness metric probe: same shape as the heartbeat (own monotonic
-    # gate, throttled by metric_interval). A None metric_cmd makes this a no-op
-    # so no metrics.jsonl is written — the fallback to current behaviour.
-    last_metric = 0.0
-
+    # Optional harness metric probe. The probe measures the *project* base
+    # branch (cwd=project_path), and that tree only changes when a worker merges
+    # its worktree back — so the probe is driven by merge-back progress, not a
+    # wall-clock cadence: a baseline sample before the loop, then one sample per
+    # tick that merged ≥1 worktree back. The probe is assumed idempotent, so
+    # back-to-back runs on an unchanged tree are harmless and no debounce is
+    # kept; a single run is bounded by PROBE_TIMEOUT_SEC. A None metric_cmd makes
+    # this a no-op so no metrics.jsonl is written — the fallback to current
+    # behaviour.
     def _sample_probe() -> None:
-        nonlocal last_metric
         if metric_cmd is None:
             return
-        now_m = time.monotonic()
-        if now_m - last_metric < metric_interval:
-            return
-        last_metric = now_m
-        pairs = _run_probe(metric_cmd, folder, timeout=min(metric_interval, 10.0))
+        pairs = _run_probe(metric_cmd, project_path, timeout=PROBE_TIMEOUT_SEC)
         ts = _utc_now_iso()
         for name, value in pairs:
             append_metric_sample(folder, name, value, ts)
+
+    # Baseline reading of the untouched base branch so the sparkline has a t0
+    # point before any merge-back moves the metric.
+    _sample_probe()
 
     try:
         while True:
@@ -1142,7 +1150,6 @@ def run_folder(
             # active wait and the cap-0 paused sleep — so a paused-but-alive
             # scheduler still beats.
             _write_heartbeat()
-            _sample_probe()
 
             wait_set: list[Future] = list(in_flight.keys())
             if janitor_future is not None:
@@ -1166,6 +1173,7 @@ def run_folder(
                 timeout=1.0,
                 return_when=FIRST_COMPLETED,
             )
+            batch_merged = False
             for fut in done:
                 if fut is janitor_future:
                     # A janitor crash must not kill the folder; the blocked
@@ -1190,6 +1198,12 @@ def run_folder(
                     consecutive_stagnant = 0
                     continue
                 outcome = fut.result()
+                if outcome == _OUTCOME_COMPLETE:
+                    # A merge-back landed on the base branch — the only event
+                    # that can move a project-measured metric. Flag it; the probe
+                    # samples once after the whole done-batch so a set of
+                    # simultaneous completions coalesces into a single reading.
+                    batch_merged = True
                 if outcome == _OUTCOME_STAGNANT:
                     consecutive_stagnant += 1
                 else:
@@ -1209,6 +1223,13 @@ def run_folder(
                             entry = state.get(job.task_id)
                             blocked_text = entry.text if entry else job.task_id
                         janitor_queue.append((record, blocked_text, job.attempt))
+
+            # Re-probe once per tick when a merge-back landed, so the base-branch
+            # metric is re-read exactly when it can have changed. Every merge —
+            # including the last task's, just before the loop drains — is
+            # followed by this sample, so no terminal flush is needed.
+            if batch_merged:
+                _sample_probe()
 
             if consecutive_stagnant >= _MAX_STAGNANT_LOOPS:
                 logger.warning(

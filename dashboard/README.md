@@ -11,8 +11,12 @@ Beyond the built-in counters and token throughput, the dashboard can surface a
 coverage — whatever a run wants to watch climb). It renders as a hero tile with
 a sparkline.
 
-The metric comes from a **probe**: a command the *harness* runs on an interval.
-The dashboard never runs it; it only reads the samples the harness appends to
+The metric comes from a **probe**: a command the *harness* runs **in the project
+base branch, on merge-back progress**. The base branch only changes when a task
+merges its worktree back, so the harness probes when that happens — once as a
+baseline before the run, then after each merge-back — rather than on a fixed
+timer that would just re-read an unchanged tree. The dashboard never runs the
+probe; it only reads the samples the harness appends to
 `<folder>/.ola/metrics.jsonl`.
 
 ### Probe contract
@@ -26,9 +30,15 @@ A probe is **any executable** that, when run, prints a JSON object to stdout:
 - `name` is the metric label shown on the tile; `value` must be a **number**.
 - To report **multiple metrics**, print a JSON **array** of such objects; the
   dashboard renders the first as the primary tile.
-- The probe is expected to **run fast and do no network I/O** — it is invoked
-  repeatedly on a short interval, so it should be a cheap local read (count a
-  file, grep a log, query a local socket), not a slow or remote call.
+- The probe runs in the **project base branch** (its working directory is the
+  project repo), so it measures the merged result of completed tasks — not any
+  in-flight worktree.
+- The probe must be **idempotent**: it is re-run after every merge-back (and
+  once as a baseline), so running it back-to-back on an unchanged tree must be
+  harmless and yield the same reading.
+- The probe is expected to **run fast and do no network I/O** — it should be a
+  cheap local read (count a file, grep a log, query a local socket), not a slow
+  or remote call.
 
 ### Configuration
 
@@ -37,9 +47,9 @@ Configure the probe on the harness, via flags or environment variables:
 | Flag | Env var | Default | Meaning |
 |------|---------|---------|---------|
 | `--metric-cmd <cmd>` | `OLA_METRIC_CMD` | _unset_ | The probe command to run. |
-| `--metric-interval <seconds>` | `OLA_METRIC_INTERVAL` | `10` | How often to run the probe. |
 
-The flag takes precedence over the environment variable when both are set.
+The flag takes precedence over the environment variable when both are set. There
+is no interval knob — the probe fires on merge-back progress, not a timer.
 
 ### Fallback when no probe is configured
 

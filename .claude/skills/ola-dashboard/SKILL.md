@@ -1,7 +1,7 @@
 ---
 name: ola-dashboard
 description: Design philosophy and scope guardrails for ola-dashboard, the browser monitor. Load whenever changing ola-dashboard — every change must be checked against this philosophy.
-version: 1.4.0
+version: 1.5.0
 ---
 
 # The ola-dashboard design philosophy
@@ -38,11 +38,14 @@ The dashboard can surface a project-defined **progress metric** (e.g. tests
 passing, files migrated, a coverage percent) in the hero metrics. The mechanism
 keeps the no-collector / one-write invariants intact:
 
-- The **harness** runs a user-configured probe command on an interval and
-  appends each `{"name": …, "value": <number>}` sample to
-  `<folder>/.ola/metrics.jsonl`. This is another harness-owned `.ola/` file,
-  exactly like `events.jsonl` or `tasks.json` — the dashboard never runs the
-  probe, never spawns a process, and never writes this file.
+- The **harness** runs a user-configured probe command **in the project base
+  branch, driven by merge-back progress** (a baseline before the run, then after
+  each task merges its worktree back — *not* a wall-clock timer, since the base
+  branch only changes on merge-back), and appends each
+  `{"name": …, "value": <number>}` sample to `<folder>/.ola/metrics.jsonl`. This
+  is another harness-owned `.ola/` file, exactly like `events.jsonl` or
+  `tasks.json` — the dashboard never runs the probe, never spawns a process, and
+  never writes this file.
 - The **dashboard** reads `metrics.jsonl` through `build_snapshot` (folding the
   samples into each folder's `progress` field — `{value, series}`) and renders a
   tile + sparkline. It stays a pure-read **view** of file state.

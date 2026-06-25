@@ -113,7 +113,7 @@ class TestMaxAttempts:
 
 
 class TestMetricProbe:
-    """Verify --metric-cmd/--metric-interval thread into run_outer_loop."""
+    """Verify --metric-cmd threads into run_outer_loop."""
 
     def test_defaults(self, tmp_path):
         agent_dir = tmp_path / "agent"
@@ -126,31 +126,21 @@ class TestMetricProbe:
         ):
             main()
             assert mock_loop.call_args.kwargs["metric_cmd"] is None
-            assert mock_loop.call_args.kwargs["metric_interval"] == 15.0
 
-    def test_flags_reach_run_outer_loop(self, tmp_path):
+    def test_flag_reaches_run_outer_loop(self, tmp_path):
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         with (
             patch.dict(os.environ, {"SANDBOX": "1"}, clear=True),
             patch(
                 "sys.argv",
-                [
-                    "ola",
-                    "-f",
-                    str(agent_dir),
-                    "--metric-cmd",
-                    "echo hi",
-                    "--metric-interval",
-                    "3.5",
-                ],
+                ["ola", "-f", str(agent_dir), "--metric-cmd", "echo hi"],
             ),
             patch("ola.cli.create_agent"),
             patch("ola.cli.run_outer_loop") as mock_loop,
         ):
             main()
             assert mock_loop.call_args.kwargs["metric_cmd"] == "echo hi"
-            assert mock_loop.call_args.kwargs["metric_interval"] == 3.5
 
     def test_env_fallback_honored(self, tmp_path):
         agent_dir = tmp_path / "agent"
@@ -158,11 +148,7 @@ class TestMetricProbe:
         with (
             patch.dict(
                 os.environ,
-                {
-                    "SANDBOX": "1",
-                    "OLA_METRIC_CMD": "probe.sh",
-                    "OLA_METRIC_INTERVAL": "7",
-                },
+                {"SANDBOX": "1", "OLA_METRIC_CMD": "probe.sh"},
                 clear=True,
             ),
             patch("sys.argv", ["ola", "-f", str(agent_dir)]),
@@ -171,7 +157,6 @@ class TestMetricProbe:
         ):
             main()
             assert mock_loop.call_args.kwargs["metric_cmd"] == "probe.sh"
-            assert mock_loop.call_args.kwargs["metric_interval"] == 7.0
 
     def test_flag_overrides_env(self, tmp_path):
         agent_dir = tmp_path / "agent"
