@@ -81,7 +81,7 @@ its frontmatter (semver, starting at `1.0.0`).
 |-------|---------|---------|
 | `ola-design` | 1.3.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.0.1 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
-| `ola-dashboard` | 1.6.0 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
+| `ola-dashboard` | 1.7.0 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 1.0.2 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |

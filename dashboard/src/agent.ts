@@ -69,3 +69,19 @@ export function agentColor(backend: string | null | undefined): string {
   if (!backend) return DEFAULT_ACCENT;
   return AGENT_COLORS[backend] ?? DEFAULT_ACCENT;
 }
+
+/** Backends that recover token counts only *post-hoc* (at task teardown) and so
+ * never report a live, token-level streaming rate: `oh` (headless `--json`) and
+ * `ct` (the TUI). The hero tile shows the durable average instead of a live rate
+ * for these. See `src/ola/agents/openhands.py` / `claude_code_tui.py`. */
+const NON_STREAMING_BACKENDS = new Set(["oh", "ct"]);
+
+/** Whether *backend* emits a live streaming output-token rate. True for the
+ * streaming backends (`cc` / `cx`) and for an unknown/empty backend (assume a
+ * live rate until the run names itself, so a just-started run isn't switched to
+ * the average headline prematurely); false only for the known non-streamers. */
+export function agentStreamsLiveTokens(
+  backend: string | null | undefined,
+): boolean {
+  return !(backend != null && NON_STREAMING_BACKENDS.has(backend));
+}

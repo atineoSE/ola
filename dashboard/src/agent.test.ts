@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { agentColor, agentName, DEFAULT_ACCENT, inkOn } from "./agent";
+import {
+  agentColor,
+  agentName,
+  agentStreamsLiveTokens,
+  DEFAULT_ACCENT,
+  inkOn,
+} from "./agent";
 
 describe("agentName", () => {
   it("maps the known backend mnemonics to display names", () => {
@@ -47,5 +53,27 @@ describe("inkOn", () => {
     expect(inkOn("#ffffff")).toBe("#0b0d10");
     expect(inkOn("#000000")).toBe("#f5f7fa");
     expect(inkOn("ffffff")).toBe("#0b0d10");
+  });
+});
+
+describe("agentStreamsLiveTokens", () => {
+  it("is true for the streaming backends (cc / cx)", () => {
+    expect(agentStreamsLiveTokens("cc")).toBe(true);
+    expect(agentStreamsLiveTokens("cx")).toBe(true);
+  });
+
+  it("is false for the post-hoc backends (oh / ct)", () => {
+    // headless --json (oh) and the TUI (ct) recover token counts only at
+    // teardown, so they never report a live rate.
+    expect(agentStreamsLiveTokens("oh")).toBe(false);
+    expect(agentStreamsLiveTokens("ct")).toBe(false);
+  });
+
+  it("assumes streaming for an unknown or empty backend", () => {
+    // Until a just-started run names its backend, keep the live headline.
+    expect(agentStreamsLiveTokens("xyz")).toBe(true);
+    expect(agentStreamsLiveTokens("")).toBe(true);
+    expect(agentStreamsLiveTokens(null)).toBe(true);
+    expect(agentStreamsLiveTokens(undefined)).toBe(true);
   });
 });

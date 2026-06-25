@@ -45,6 +45,12 @@ export interface HeroMetricsProps {
    * millions so the running total can be watched climbing. Also the numerator
    * for the durable average tok/sec (over the active-elapsed clock). */
   totalOutputTokens?: number;
+  /** Whether the run's backend emits a live, token-level streaming rate. When
+   * `false` (the `oh`/`ct` backends, which recover token counts only post-hoc),
+   * the tok/sec tile shows the durable **average** as its headline with the peak
+   * beneath, instead of a permanently-blank live rate. Defaults to `true` so a
+   * streaming backend (`cc`/`cx`) keeps the live headline. */
+  liveRateSupported?: boolean;
   /** Task-defined progress probes for the folder, keyed by metric name. The
    * primary (first) metric renders as an extra tile with a sparkline; absent or
    * empty renders nothing, leaving the no-probe layout unchanged. */
@@ -60,6 +66,7 @@ export function HeroMetrics({
   liveTokensPerSec = null,
   peakTokensPerSec = null,
   totalOutputTokens = 0,
+  liveRateSupported = true,
   progress,
 }: HeroMetricsProps) {
   const { total_tasks, completed, failed, active } = counters;
@@ -149,31 +156,56 @@ export function HeroMetrics({
         />
       )}
 
-      <MetricTile
-        label="Output tok/sec"
-        value={
-          <span
-            className="font-mono tabular-nums tracking-tight"
-            data-testid="output-tokens-value"
-          >
-            {formatTokensPerSec(liveTokensPerSec)}
-          </span>
-        }
-        footer={
-          // Half the main value's font size (text-5xl → text-2xl), so avg/peak
-          // read as a clearly secondary readout beneath the live rate. Both are
-          // file-derived, so they persist after the run finishes (when the live
-          // rate above falls back to `—`).
-          <div className="flex justify-between font-mono text-2xl tabular-nums text-text-muted">
-            <span data-testid="output-tokens-avg">
-              avg {formatTokensPerSec(avgTokensPerSec)}
+      {liveRateSupported ? (
+        <MetricTile
+          label="Output tok/sec"
+          value={
+            <span
+              className="font-mono tabular-nums tracking-tight"
+              data-testid="output-tokens-value"
+            >
+              {formatTokensPerSec(liveTokensPerSec)}
             </span>
-            <span data-testid="output-tokens-max">
-              max {formatTokensPerSec(peakTokensPerSec)}
+          }
+          footer={
+            // Half the main value's font size (text-5xl → text-2xl), so avg/peak
+            // read as a clearly secondary readout beneath the live rate. Both are
+            // file-derived, so they persist after the run finishes (when the live
+            // rate above falls back to `—`).
+            <div className="flex justify-between font-mono text-2xl tabular-nums text-text-muted">
+              <span data-testid="output-tokens-avg">
+                avg {formatTokensPerSec(avgTokensPerSec)}
+              </span>
+              <span data-testid="output-tokens-max">
+                max {formatTokensPerSec(peakTokensPerSec)}
+              </span>
+            </div>
+          }
+        />
+      ) : (
+        // No live token stream (oh / ct recover counts only post-hoc), so a
+        // windowed live rate is never available — a permanent "—" would read as
+        // broken. Show the durable average as the headline instead, with the
+        // peak as the secondary readout. Both are file-derived.
+        <MetricTile
+          label="Avg tok/sec"
+          value={
+            <span
+              className="font-mono tabular-nums tracking-tight"
+              data-testid="output-tokens-value"
+            >
+              {formatTokensPerSec(avgTokensPerSec)}
             </span>
-          </div>
-        }
-      />
+          }
+          footer={
+            <div className="font-mono text-2xl tabular-nums text-text-muted">
+              <span data-testid="output-tokens-max">
+                max {formatTokensPerSec(peakTokensPerSec)}
+              </span>
+            </div>
+          }
+        />
+      )}
 
       <MetricTile
         label="Elapsed"

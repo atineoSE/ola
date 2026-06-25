@@ -11,7 +11,7 @@ import {
   useSnapshot,
 } from "./snapshot";
 import type { Snapshot } from "./snapshot";
-import { agentColor, agentName, inkOn } from "./agent";
+import { agentColor, agentName, agentStreamsLiveTokens, inkOn } from "./agent";
 import { useConcurrency } from "./hooks/useConcurrency";
 import { useLiveTokensPerSec } from "./hooks/useLiveTokensPerSec";
 
@@ -171,6 +171,7 @@ function App() {
         liveTokensPerSec={liveTokPerSec}
         peakTokensPerSec={peakTokPerSec}
         totalOutputTokens={totalOutputTokens}
+        liveRateSupported={agentStreamsLiveTokens(backend)}
       />
       {/* Below lg the two columns collapse into a single column and stack
           vertically. Pin definite row tracks (not content-driven `auto` rows)
