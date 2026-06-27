@@ -66,6 +66,12 @@ def test_sequential_plan_all_complete(tmp_path):
     subjects = git_log_subjects(agent_path)
     assert sum(s.startswith("ola: 01-find-date ") for s in subjects) == 2
 
+    # The PLAN.md task description rides in the commit subject, not just the id.
+    assert any(
+        s.startswith("ola: 01-find-date ") and "Create date.txt" in s
+        for s in subjects
+    )
+
     # No .ola/concurrency file → ola materializes the default cap on the first
     # tick, so the file is present and auditable afterward.
     fs = read_folder_status(folder)

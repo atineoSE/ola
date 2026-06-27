@@ -454,12 +454,32 @@ def _substitute(
     )
 
 
+def _commit_message(folder: Path, task_id: str, task_text: str) -> str:
+    """Build a commit message for a completed task.
+
+    The subject stays greppable — ``ola: <folder> <task_id>`` — but gains the
+    task's first line so ``git log --oneline`` is readable instead of a wall of
+    opaque ids. The full PLAN.md task text follows in the body whenever it
+    carries more than the (possibly truncated) subject already shows.
+    """
+    prefix = f"ola: {folder.name} {task_id}"
+    text = task_text.strip()
+    if not text:
+        return prefix
+    first = text.splitlines()[0].strip()
+    subject = f"{prefix}: {_truncate(first, 72)}"
+    if text == first and len(first) <= 72:
+        return subject
+    return f"{subject}\n\n{text}"
+
+
 def _propagate(
     worktree_path: Path,
     folder: Path,
     agent_root: Path,
     project_path: Path,
     task_id: str,
+    task_text: str,
     base_sha: str,
 ) -> None:
     """Land the worktree's code on *project_path* and tick PLAN.md in *agent_root*.
@@ -476,7 +496,8 @@ def _propagate(
     *base_sha* (nothing new to cherry-pick), so the project repo is left
     untouched and only the tick is committed in the agent folder.
     """
-    sha = commit(worktree_path, f"ola: {folder.name} {task_id}")
+    message = _commit_message(folder, task_id, task_text)
+    sha = commit(worktree_path, message)
     if sha != base_sha:
         merge_back(worktree_path, project_path)
         # The merge can net to nothing new on the project repo when a sibling
@@ -505,7 +526,7 @@ def _propagate(
         _git(agent_root, "diff", "--cached", "--name-only").stdout.decode().strip()
     )
     if staged:
-        _git(agent_root, "commit", "-m", f"ola: {folder.name} {task_id}")
+        _git(agent_root, "commit", "-m", message)
 
 
 def _truncate(s: str, n: int = 500) -> str:
@@ -762,6 +783,7 @@ def _run_one_task(
                         agent_root,
                         project_path,
                         task_id,
+                        task_text,
                         base_sha,
                     )
             except MergeBackConflict as conflict:
