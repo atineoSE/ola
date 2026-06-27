@@ -1,7 +1,7 @@
 ---
 name: ola-top
 description: Design philosophy and scope guardrails for ola-top, the terminal monitor. Load whenever changing ola-top — every change must be checked against this philosophy.
-version: 1.1.0
+version: 1.1.1
 ---
 
 # The ola-top design philosophy
@@ -60,6 +60,20 @@ a sum of a median or a rate is meaningless, so honour the columns by not
 fabricating one. It is excluded from the cursor/`display_rows` navigation (never
 selectable) and from the `N/total` indicator; reserve its two lines (row +
 divider) in `_TABLE_CHROME_ROWS` so the viewport math still fits.
+
+## One display row is one terminal line
+
+The viewport scroll budgets exactly one terminal line per display row
+(`max_rows = lines - _TABLE_CHROME_ROWS`). That invariant is load-bearing: if a
+cell wraps, a row spans two-plus lines and the table overflows the screen — the
+single-page layout silently breaks (a real bug a 25-folder run hit when the
+verbose Agent string folded to three lines per row). So **every column is
+`no_wrap=True` and truncates with `overflow="ellipsis"`**, never folds; the
+`Folder` column alone is flexible (`ratio=1`) so it absorbs slack and ellipsizes
+first, leaving the fixed numeric columns their full width. The title and caption
+are likewise pinned to one line each (their `no_wrap`/`overflow`), matching the
+single line `_TABLE_CHROME_ROWS` reserves for each. When you add or widen a
+column, keep it single-line and re-check that a row never wraps at narrow widths.
 
 ## Checklist when changing ola-top
 

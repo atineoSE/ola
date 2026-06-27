@@ -286,6 +286,11 @@ def build_table(
         ("  ", ""),
         (path_str, "dim"),
     )
+    # Pin title/caption to a single line each — _TABLE_CHROME_ROWS reserves one
+    # line apiece, so a wrapped title (long agent path) or caption (on a narrow
+    # terminal) would push the table past the viewport budget.
+    title.no_wrap = True
+    title.overflow = "ellipsis"
 
     # Footer: keybinding hints
     caption = Text.assemble(
@@ -302,28 +307,45 @@ def build_table(
         ("Enter", "bold"),
         (": expand", "dim"),
     )
+    caption.no_wrap = True
+    caption.overflow = "ellipsis"
 
     table = Table(title=title, caption=caption, expand=True, show_header=True)
-    table.add_column("#", justify="right", style="dim", width=3)
-    table.add_column("Folder", style="bold")
+    # Every column is single-line (no_wrap + ellipsis): a wrapped cell would make
+    # a display row span >1 terminal line, but the viewport math in run_live
+    # budgets exactly one line per display row. Folding (the rich default, and the
+    # old Agent/Model setting) silently broke that invariant — a 25-folder run
+    # overflowed the screen because each row folded to ~3 lines. Truncate instead.
+    table.add_column("#", justify="right", style="dim", width=3, no_wrap=True)
+    # Folder is the one flexible column (ratio=1): it absorbs slack space and is
+    # the first to give it back, so the fixed-width numeric columns keep their
+    # full content while a long folder/task label ellipsizes instead of starving
+    # them.
+    table.add_column(
+        "Folder", style="bold", no_wrap=True, overflow="ellipsis", ratio=1
+    )
 
     if mode == ViewMode.TASK:
-        table.add_column("Agent", max_width=16, overflow="fold")
-        table.add_column("Model", max_width=20, overflow="fold")
-        table.add_column("Tasks", justify="right")
-        table.add_column("Turns", justify="right")
-        table.add_column("Time", justify="right")
+        table.add_column(
+            "Agent", max_width=16, no_wrap=True, overflow="ellipsis"
+        )
+        table.add_column(
+            "Model", max_width=20, no_wrap=True, overflow="ellipsis"
+        )
+        table.add_column("Tasks", justify="right", no_wrap=True)
+        table.add_column("Turns", justify="right", no_wrap=True)
+        table.add_column("Time", justify="right", no_wrap=True)
     else:  # METRICS
-        table.add_column("Input", justify="right")
-        table.add_column("Output", justify="right")
-        table.add_column("Avg Ctx", justify="right")
-        table.add_column("Max Ctx", justify="right")
-        table.add_column("Cache%", justify="right")
-        table.add_column("In/Out", justify="right")
-        table.add_column("LLM/Tool", justify="right")
-        table.add_column("TTFT", justify="right")
-        table.add_column("Tok/s", justify="right")
-        table.add_column("Time", justify="right")
+        table.add_column("Input", justify="right", no_wrap=True)
+        table.add_column("Output", justify="right", no_wrap=True)
+        table.add_column("Avg Ctx", justify="right", no_wrap=True)
+        table.add_column("Max Ctx", justify="right", no_wrap=True)
+        table.add_column("Cache%", justify="right", no_wrap=True)
+        table.add_column("In/Out", justify="right", no_wrap=True)
+        table.add_column("LLM/Tool", justify="right", no_wrap=True)
+        table.add_column("TTFT", justify="right", no_wrap=True)
+        table.add_column("Tok/s", justify="right", no_wrap=True)
+        table.add_column("Time", justify="right", no_wrap=True)
 
     for vis_idx, (kind, fi, ii) in enumerate(visible_rows):
         flat_idx = actual_offset + vis_idx
