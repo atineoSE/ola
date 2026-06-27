@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from rich.console import Group, RenderableType
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
@@ -118,6 +119,128 @@ _TASK_STATUS_STYLES: dict[str, str] = {
 def _task_status_style(status: str) -> str:
     """Return a color style for a per-task row given its status."""
     return _TASK_STATUS_STYLES.get(status, "")
+
+
+# Columns eligible to be the "active" detail column, per mode, in display order.
+# "#" is omitted (it is just the row number). Left/Right cycles through these and
+# the bottom detail line shows the active column's full value for the cursor row
+# — the only indication of which column is active. Folder is the default.
+_TASK_DETAIL_COLS: list[str] = ["Folder", "Agent", "Model", "Tasks", "Turns", "Time"]
+_METRICS_DETAIL_COLS: list[str] = [
+    "Folder", "Input", "Output", "Avg Ctx", "Max Ctx",
+    "Cache%", "In/Out", "LLM/Tool", "TTFT", "Tok/s", "Time",
+]
+
+# The detail line never spans more than this many terminal lines; a value longer
+# than that at the current width is clipped with an ellipsis, so the detail can
+# never blow the viewport budget the way a folding grid cell once did.
+_MAX_DETAIL_LINES = 3
+
+
+def _detail_cols(mode: ViewMode) -> list[str]:
+    """Column labels the detail line can cycle through, in display order."""
+    return _TASK_DETAIL_COLS if mode == ViewMode.TASK else _METRICS_DETAIL_COLS
+
+
+def _row_values(
+    folders: list[FolderStatus], kind: str, fi: int, ii: int, mode: ViewMode
+) -> dict[str, str]:
+    """Plain-text value of every column for one display row.
+
+    Single source of truth for cell text, shared by the grid (``build_table``
+    styles and truncates these) and the bottom detail line (which shows the
+    active column's full, untruncated value for the row under the cursor). The
+    ``Folder`` value omits the expand-arrow prefix and the ``#`` value the row
+    number adornments — ``build_table`` adds those affordances when it styles
+    the row.
+    """
+    fs = folders[fi]
+    if kind == "folder":
+        if mode == ViewMode.TASK:
+            return {
+                "#": str(fi + 1),
+                "Folder": fs.name,
+                "Agent": fs.agent_display,
+                "Model": fs.model_display,
+                "Tasks": f"{fs.tasks_completed}/{fs.tasks_total}",
+                "Turns": str(fs.total_num_turns) if fs.total_num_turns else "",
+                "Time": _fmt_time(fs.display_wall_ms),
+            }
+        return {
+            "#": str(fi + 1),
+            "Folder": fs.name,
+            "Input": _fmt_tokens(fs.total_input_tokens),
+            "Output": _fmt_tokens(fs.total_output_tokens),
+            "Avg Ctx": _fmt_tokens(fs.avg_input_tokens),
+            "Max Ctx": _fmt_tokens(fs.max_input_tokens),
+            "Cache%": f"{fs.cache_hit_rate:.0f}%",
+            "In/Out": _fmt_ratio(fs.io_ratio),
+            "LLM/Tool": _fmt_time_breakdown(fs.time_breakdown),
+            "TTFT": _fmt_ttft(fs.median_ttft_ms, fs.all_streamed),
+            "Tok/s": _fmt_tok_per_sec(fs.llm_tok_per_sec),
+            "Time": _fmt_time(fs.display_wall_ms),
+        }
+    if kind == "task":
+        tr = fs.task_rows[ii]
+        label = f"  └ Task {ii + 1} ({tr.task_id})"
+        folder_cell = f"{label}: {tr.text}" if tr.text else label
+        st = tr.stats
+        elapsed = _fmt_time(int(tr.elapsed_s * 1000)) if tr.elapsed_s else ""
+        if mode == ViewMode.TASK:
+            return {
+                "#": "",
+                "Folder": folder_cell,
+                "Agent": "",
+                "Model": "",
+                "Tasks": "",
+                "Turns": str(st.num_turns) if st and st.num_turns else "",
+                "Time": elapsed,
+            }
+        if st is None:  # never-run task: only Folder + elapsed time
+            return {c: "" for c in _METRICS_DETAIL_COLS} | {
+                "#": "", "Folder": folder_cell, "Time": elapsed
+            }
+        return {
+            "#": "",
+            "Folder": folder_cell,
+            "Input": _fmt_tokens(st.input_tokens),
+            "Output": _fmt_tokens(st.output_tokens),
+            "Avg Ctx": _fmt_tokens(st.avg_input_tokens),
+            "Max Ctx": _fmt_tokens(st.max_input_tokens),
+            "Cache%": f"{st.cache_hit_rate:.0f}%",
+            "In/Out": _fmt_ratio(st.io_ratio),
+            "LLM/Tool": _fmt_time_breakdown(st.time_breakdown),
+            "TTFT": _fmt_ttft(st.ttft_ms, st.streamed),
+            "Tok/s": _fmt_tok_per_sec(st.llm_tok_per_sec),
+            "Time": elapsed,
+        }
+    # iteration row (legacy sequential folder)
+    it = fs.iterations[ii]
+    if mode == ViewMode.TASK:
+        delta = it.tasks_completed_delta
+        return {
+            "#": "",
+            "Folder": f"  └ {it.phase}",
+            "Agent": "",
+            "Model": "",
+            "Tasks": str(delta) if delta else "",
+            "Turns": str(it.num_turns) if it.num_turns else "",
+            "Time": _fmt_time(it.wall_ms),
+        }
+    return {
+        "#": "",
+        "Folder": f"  └ {it.phase}",
+        "Input": _fmt_tokens(it.input_tokens),
+        "Output": _fmt_tokens(it.output_tokens),
+        "Avg Ctx": _fmt_tokens(it.avg_input_tokens),
+        "Max Ctx": _fmt_tokens(it.max_input_tokens),
+        "Cache%": f"{it.cache_hit_rate:.0f}%",
+        "In/Out": _fmt_ratio(it.io_ratio),
+        "LLM/Tool": _fmt_time_breakdown(it.time_breakdown),
+        "TTFT": _fmt_ttft(it.ttft_ms, it.streamed),
+        "Tok/s": _fmt_tok_per_sec(it.llm_tok_per_sec),
+        "Time": _fmt_time(it.wall_ms),
+    }
 
 
 def _build_display_rows(
@@ -300,6 +423,8 @@ def build_table(
         (": mode  ", "dim"),
         ("\u2191\u2193", "bold"),
         (": move  ", "dim"),
+        ("\u2190\u2192", "bold"),
+        (": column  ", "dim"),
         ("PgUp/PgDn", "bold"),
         (": page  ", "dim"),
         ("g/G", "bold"),
@@ -327,7 +452,7 @@ def build_table(
 
     if mode == ViewMode.TASK:
         table.add_column(
-            "Agent", max_width=16, no_wrap=True, overflow="ellipsis"
+            "Agent", max_width=24, no_wrap=True, overflow="ellipsis"
         )
         table.add_column(
             "Model", max_width=20, no_wrap=True, overflow="ellipsis"
@@ -351,6 +476,7 @@ def build_table(
         flat_idx = actual_offset + vis_idx
         is_cursor = cursor is not None and flat_idx == cursor
         fs = folders[fi]
+        vals = _row_values(folders, kind, fi, ii, mode)
 
         if kind == "folder":
             is_active = fi == active_idx
@@ -377,11 +503,11 @@ def build_table(
 
             # Active folder is distinguished by its colour (bold yellow vs
             # plain yellow for other in-progress folders), not a marker.
-            folder_cell = f"{prefix}{fs.name}"
+            folder_cell = f"{prefix}{vals['Folder']}"
 
             if mode == ViewMode.TASK:
-                # Color tasks per-cell
-                tasks_str = f"{fs.tasks_completed}/{fs.tasks_total}"
+                # Color the Tasks cell per completion state.
+                tasks_str = vals["Tasks"]
                 if fs.tasks_total > 0 and fs.tasks_completed >= fs.tasks_total:
                     tasks_text = Text(tasks_str, style="green")
                 elif fs.tasks_total > 0:
@@ -389,124 +515,113 @@ def build_table(
                 else:
                     tasks_text = Text(tasks_str, style="dim")
 
-                turns_str = str(fs.total_num_turns) if fs.total_num_turns else ""
                 table.add_row(
-                    str(fi + 1),
+                    vals["#"],
                     folder_cell,
-                    fs.agent_display,
-                    fs.model_display,
+                    vals["Agent"],
+                    vals["Model"],
                     tasks_text,
-                    turns_str,
-                    _fmt_time(fs.display_wall_ms),
+                    vals["Turns"],
+                    vals["Time"],
                     style=style,
                 )
             else:  # METRICS
-                cache_pct_val = fs.cache_hit_rate
                 cache_text = Text(
-                    f"{cache_pct_val:.0f}%", style=_cache_style(cache_pct_val)
+                    vals["Cache%"], style=_cache_style(fs.cache_hit_rate)
                 )
 
                 table.add_row(
-                    str(fi + 1),
+                    vals["#"],
                     folder_cell,
-                    _fmt_tokens(fs.total_input_tokens),
-                    _fmt_tokens(fs.total_output_tokens),
-                    _fmt_tokens(fs.avg_input_tokens),
-                    _fmt_tokens(fs.max_input_tokens),
+                    vals["Input"],
+                    vals["Output"],
+                    vals["Avg Ctx"],
+                    vals["Max Ctx"],
                     cache_text,
-                    _fmt_ratio(fs.io_ratio),
-                    _fmt_time_breakdown(fs.time_breakdown),
-                    _fmt_ttft(fs.median_ttft_ms, fs.all_streamed),
-                    _fmt_tok_per_sec(fs.llm_tok_per_sec),
-                    _fmt_time(fs.display_wall_ms),
+                    vals["In/Out"],
+                    vals["LLM/Tool"],
+                    vals["TTFT"],
+                    vals["Tok/s"],
+                    vals["Time"],
                     style=style,
                 )
         elif kind == "task":  # parallel-mode per-task row
             tr = fs.task_rows[ii]
             base_style = _task_status_style(tr.status)
             row_style = f"reverse {base_style}".strip() if is_cursor else base_style
-            # Label each task by its PLAN.md position (1-based) and its
-            # tasks.json id (so the row traces straight back into
-            # tasks.json/events.jsonl). Status shows through the row color. The
-            # task text follows so the row stays self-describing.
-            position = ii + 1
-            label = f"  └ Task {position} ({tr.task_id})"
-            folder_cell = f"{label}: {tr.text}" if tr.text else label
+            # The Folder cell labels each task by its PLAN.md position (1-based)
+            # and its tasks.json id (so the row traces straight back into
+            # tasks.json/events.jsonl), with the task text following so the row
+            # stays self-describing. Status shows through the row color.
+            folder_cell = vals["Folder"]
             st = tr.stats
-            elapsed_cell = _fmt_time(int(tr.elapsed_s * 1000)) if tr.elapsed_s else ""
 
             if mode == ViewMode.TASK:
-                # #, Folder, Agent, Model, Tasks, Turns, Time
-                turns_str = str(st.num_turns) if st and st.num_turns else ""
                 table.add_row(
                     "",
                     folder_cell,
                     "",
                     "",
                     "",
-                    turns_str,
-                    elapsed_cell,
+                    vals["Turns"],
+                    vals["Time"],
                     style=row_style or None,
                 )
             elif st is not None:  # METRICS — fold in the task's STATS aggregate
                 cache_text = Text(
-                    f"{st.cache_hit_rate:.0f}%", style=_cache_style(st.cache_hit_rate)
+                    vals["Cache%"], style=_cache_style(st.cache_hit_rate)
                 )
                 table.add_row(
                     "",
                     folder_cell,
-                    _fmt_tokens(st.input_tokens),
-                    _fmt_tokens(st.output_tokens),
-                    _fmt_tokens(st.avg_input_tokens),
-                    _fmt_tokens(st.max_input_tokens),
+                    vals["Input"],
+                    vals["Output"],
+                    vals["Avg Ctx"],
+                    vals["Max Ctx"],
                     cache_text,
-                    _fmt_ratio(st.io_ratio),
-                    _fmt_time_breakdown(st.time_breakdown),
-                    _fmt_ttft(st.ttft_ms, st.streamed),
-                    _fmt_tok_per_sec(st.llm_tok_per_sec),
-                    elapsed_cell,
+                    vals["In/Out"],
+                    vals["LLM/Tool"],
+                    vals["TTFT"],
+                    vals["Tok/s"],
+                    vals["Time"],
                     style=row_style or None,
                 )
             else:  # METRICS — a never-run task has no token metrics yet
-                cells: list[Any] = ["", folder_cell] + [""] * 9 + [elapsed_cell]
+                cells: list[Any] = ["", folder_cell] + [""] * 9 + [vals["Time"]]
                 table.add_row(*cells, style=row_style or None)
         else:  # iter row
             it = fs.iterations[ii]
             iter_style = "reverse dim" if is_cursor else "dim"
 
             if mode == ViewMode.TASK:
-                delta = it.tasks_completed_delta
-                delta_str = str(delta) if delta else ""
-                it_turns_str = str(it.num_turns) if it.num_turns else ""
                 table.add_row(
                     "",
-                    f"  \u2514 {it.phase}",
+                    vals["Folder"],
                     "",
                     "",
-                    delta_str,
-                    it_turns_str,
-                    _fmt_time(it.wall_ms),
+                    vals["Tasks"],
+                    vals["Turns"],
+                    vals["Time"],
                     style=iter_style,
                 )
             else:  # METRICS
-                it_cache_val = it.cache_hit_rate
                 it_cache_text = Text(
-                    f"{it_cache_val:.0f}%",
-                    style=_cache_style(it_cache_val),
+                    vals["Cache%"],
+                    style=_cache_style(it.cache_hit_rate),
                 )
                 table.add_row(
                     "",
-                    f"  \u2514 {it.phase}",
-                    _fmt_tokens(it.input_tokens),
-                    _fmt_tokens(it.output_tokens),
-                    _fmt_tokens(it.avg_input_tokens),
-                    _fmt_tokens(it.max_input_tokens),
+                    vals["Folder"],
+                    vals["Input"],
+                    vals["Output"],
+                    vals["Avg Ctx"],
+                    vals["Max Ctx"],
                     it_cache_text,
-                    _fmt_ratio(it.io_ratio),
-                    _fmt_time_breakdown(it.time_breakdown),
-                    _fmt_ttft(it.ttft_ms, it.streamed),
-                    _fmt_tok_per_sec(it.llm_tok_per_sec),
-                    _fmt_time(it.wall_ms),
+                    vals["In/Out"],
+                    vals["LLM/Tool"],
+                    vals["TTFT"],
+                    vals["Tok/s"],
+                    vals["Time"],
                     style=iter_style,
                 )
 
@@ -515,6 +630,71 @@ def build_table(
     _append_totals_row(table, folders, mode)
 
     return table
+
+
+def build_detail(
+    folders: list[FolderStatus],
+    expanded: set[str],
+    cursor: int,
+    mode: ViewMode,
+    active_col: str,
+    width: int,
+) -> Text:
+    """Build the bottom detail line: the active column's full value for the
+    cursor row.
+
+    The grid columns ellipsize, so this line is the way to read a truncated
+    value in full; cycling the active column with Left/Right is the *only*
+    indication of which column is active (no header is highlighted). The value
+    is clipped to ``_MAX_DETAIL_LINES`` rows' worth at the current width so the
+    detail can never itself overflow the viewport.
+    """
+    value = ""
+    rows = _build_display_rows(folders, expanded)
+    if rows and 0 <= cursor < len(rows):
+        kind, fi, ii = rows[cursor]
+        value = _row_values(folders, kind, fi, ii, mode).get(active_col, "")
+    value = value.strip() or "—"  # em dash stands in for an empty cell
+
+    # Clip so the line never exceeds _MAX_DETAIL_LINES at this width. One line is
+    # held back for the label and any leading words, since a long unbroken token
+    # word-wraps onto its own line before being char-broken across the rest. The
+    # viewport math reserves the measured height regardless, so this only bounds
+    # how much screen the detail may claim.
+    budget = max(1, width) * max(1, _MAX_DETAIL_LINES - 1)
+    if len(value) > budget:
+        value = value[: max(1, budget - 1)] + "…"
+
+    return Text.assemble((f"{active_col} ", "bold magenta"), (value, ""))
+
+
+def build_view(
+    folders: list[FolderStatus],
+    expanded: set[str],
+    cursor: int,
+    agent_path: Path,
+    mode: ViewMode,
+    offset: int,
+    max_rows: int,
+    active_col: str,
+    width: int,
+) -> Group:
+    """Compose the full live view: the scrolled table plus the detail line."""
+    table = build_table(
+        folders, expanded, cursor, agent_path, mode, offset=offset, max_rows=max_rows
+    )
+    detail = build_detail(folders, expanded, cursor, mode, active_col, width)
+    return Group(table, detail)
+
+
+def _measure_height(renderable: RenderableType, width: int) -> int:
+    """Count the terminal lines a renderable occupies at the given width."""
+    import io as _io
+
+    from rich.console import Console
+
+    console = Console(file=_io.StringIO(), width=max(1, width))
+    return max(1, len(console.render_lines(renderable, console.options)))
 
 
 def _read_key(fd: int) -> str | None:
@@ -549,14 +729,30 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
     cursor = 0  # display row index (folder + iter rows in visual order)
     offset = 0  # first display row currently visible
     mode = ViewMode.TASK
+    active_col = "Folder"  # column whose full value the detail line shows
 
     folders = read_agent_folder(agent_path)
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
 
+    def view() -> Group:
+        size = shutil.get_terminal_size((80, 24))
+        return build_view(
+            folders, expanded, cursor, agent_path, mode,
+            offset, viewport_height(), active_col, size.columns,
+        )
+
     def viewport_height() -> int:
-        return max(1, shutil.get_terminal_size((80, 24)).lines - _TABLE_CHROME_ROWS)
+        # The detail line lives below the table, so its (wrapped) height comes
+        # out of the row budget on top of the fixed table chrome — measured each
+        # tick because it depends on the active column's value at the cursor.
+        size = shutil.get_terminal_size((80, 24))
+        detail = build_detail(
+            folders, expanded, cursor, mode, active_col, size.columns
+        )
+        detail_h = _measure_height(detail, size.columns)
+        return max(1, size.lines - _TABLE_CHROME_ROWS - detail_h)
 
     def clamp_view() -> None:
         """Keep cursor in bounds and scroll offset so cursor stays visible."""
@@ -581,15 +777,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
         clamp_view()
 
         with Live(
-            build_table(
-                folders,
-                expanded,
-                cursor,
-                agent_path,
-                mode,
-                offset=offset,
-                max_rows=viewport_height(),
-            ),
+            view(),
             refresh_per_second=4,
             screen=True,
         ) as live:
@@ -603,6 +791,10 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
                     break
                 elif key == "m":
                     mode = ViewMode.METRICS if mode == ViewMode.TASK else ViewMode.TASK
+                    # Modes share Folder/Time but not the metric columns, so snap
+                    # the active detail column back to Folder if it's gone.
+                    if active_col not in _detail_cols(mode):
+                        active_col = "Folder"
                     needs_update = True
                 elif key == "\x1b[A":  # Up arrow
                     if cursor > 0:
@@ -613,6 +805,16 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
                     if cursor < len(rows) - 1:
                         cursor += 1
                         needs_update = True
+                elif key == "\x1b[D":  # Left arrow — previous detail column
+                    cols = _detail_cols(mode)
+                    i = cols.index(active_col) if active_col in cols else 0
+                    active_col = cols[(i - 1) % len(cols)]
+                    needs_update = True
+                elif key == "\x1b[C":  # Right arrow — next detail column
+                    cols = _detail_cols(mode)
+                    i = cols.index(active_col) if active_col in cols else 0
+                    active_col = cols[(i + 1) % len(cols)]
+                    needs_update = True
                 elif key == "\x1b[5~":  # PgUp
                     cursor = max(0, cursor - viewport_height())
                     needs_update = True
@@ -663,18 +865,7 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
 
                 if needs_update:
                     clamp_view()
-                    live.update(
-                        build_table(
-                            folders,
-                            expanded,
-                            cursor,
-                            agent_path,
-                            mode,
-                            offset=offset,
-                            max_rows=viewport_height(),
-                        ),
-                        refresh=True,
-                    )
+                    live.update(view(), refresh=True)
 
                 _time.sleep(0.05)  # ~20 FPS input polling
     finally:

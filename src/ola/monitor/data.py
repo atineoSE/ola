@@ -12,9 +12,6 @@ from ola.plan import enumerate_tasks, parse_task_counts
 from ola.stats import cache_hit_rate as _cache_hit_rate
 from ola.taskstate import TaskState
 
-# Max characters of task text retained in a TaskRow before truncating with "…".
-_TASK_TEXT_MAX = 60
-
 
 _AGENT_FULL_NAMES: dict[str, str] = {
     "cc": "Claude Code",
@@ -344,13 +341,6 @@ class TaskRow:
     stats: IterationStatus | None = None
 
 
-def _truncate(text: str, limit: int = _TASK_TEXT_MAX) -> str:
-    """Truncate ``text`` to ``limit`` characters, appending '…' if cut."""
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
 def _parse_ts(ts: str) -> datetime | None:
     """Parse an event ISO-8601 timestamp (trailing 'Z'), or None if malformed."""
     try:
@@ -596,7 +586,10 @@ def read_task_rows(
         rows.append(
             TaskRow(
                 task_id=entry.task_id,
-                text=_truncate(entry.text),
+                # Full task text — ola-top truncates per column (ellipsis) and
+                # shows the whole value in its detail line, so the data layer
+                # holds the truth and the display decides how much to show.
+                text=entry.text,
                 status=entry.status,
                 attempt=entry.attempts,
                 elapsed_s=elapsed_s,

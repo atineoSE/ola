@@ -20,10 +20,23 @@ scripts living beside the numbered folders) is not a run and never appears.
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Navigate rows |
+| `←` / `→` | Change the active column shown in the detail line |
 | `Enter` | Expand / collapse a folder to show its sub-rows |
 | `m` | Toggle between the **task** view (default) and the **metrics** view |
 | `PgUp` / `PgDn` | Scroll a viewport at a time |
+| `g` / `G` | Jump to the first / last row |
 | `q` | Quit |
+
+### Detail line
+
+Every grid column is a single line and truncates with an ellipsis (`…`) when
+the value doesn't fit, so the table always stays one screen tall. To read a
+truncated value in full, look at the **detail line** pinned below the table: it
+shows the whole value of the *active* column for the row under the cursor.
+`←` / `→` cycle which column is active (it starts on **Folder**); the detail
+line is the only indication of which column is active — no header is
+highlighted. This is how you read a long folder/agent/model string or a full
+task description without widening the terminal.
 
 ## Views
 
@@ -66,11 +79,16 @@ ola-top adapts what it shows when you expand a folder, based on whether the fold
  # │ Folder                          │ Agent │ Model         │ Tasks │ Turns │  Time
  1 │ 01-setup                        │ cc    │ claude-opus-4 │   5/5 │    18 │  3m12s
  2 │ ▼ 02-implement                  │ cc    │ claude-opus-4 │   1/3 │    24 │  4m20s
-   │   └ t-1a2b3c4d Add retry to client                                   │  0m42s
-   │   └ t-9f8e7d6c Wire timeout config                                   │  1m05s
+   │   └ Task 1 (t-1a2b3c4d): Add r… │       │               │       │       │  0m42s
+   │   └ Task 2 (t-9f8e7d6c): Wire … │       │               │       │       │  1m05s
 
- q: quit  ↑↓: navigate  Enter: expand/collapse  m: toggle view
+ q: quit  m: mode  ↑↓: move  ←→: column  PgUp/PgDn: page  g/G: top/bot  Enter: expand
+ Folder └ Task 1 (t-1a2b3c4d): Add retry to client with exponential backoff
 ```
+
+The last line is the detail line: with the cursor on Task 1 and the active
+column set to **Folder**, it shows that cell's full text even though the grid
+ellipsized it.
 
 Folder rows also read off colour: **green** = all tasks done, **bold yellow** = the active folder (the first one with work remaining), **plain yellow** = other in-progress folders, **dim** = no tasks yet. The active folder is shown by its colour alone — there is no separate marker.
 

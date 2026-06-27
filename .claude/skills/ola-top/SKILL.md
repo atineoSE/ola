@@ -1,7 +1,7 @@
 ---
 name: ola-top
 description: Design philosophy and scope guardrails for ola-top, the terminal monitor. Load whenever changing ola-top — every change must be checked against this philosophy.
-version: 1.1.1
+version: 1.2.0
 ---
 
 # The ola-top design philosophy
@@ -74,6 +74,21 @@ first, leaving the fixed numeric columns their full width. The title and caption
 are likewise pinned to one line each (their `no_wrap`/`overflow`), matching the
 single line `_TABLE_CHROME_ROWS` reserves for each. When you add or widen a
 column, keep it single-line and re-check that a row never wraps at narrow widths.
+
+## The detail line reads a truncated cell in full
+
+Because the grid ellipsizes, the full value would otherwise be unreadable. The
+**detail line** below the table shows the whole value of the *active* column for
+the row under the cursor; `←`/`→` cycle the active column (starting on Folder).
+It is the **only** indication of which column is active — do not highlight a
+header. The detail line sits outside the table, so its (wrapped) height comes out
+of the row budget *on top of* `_TABLE_CHROME_ROWS`; `run_live` measures it each
+tick and clips the value to at most `_MAX_DETAIL_LINES`, so it can never break the
+one-screen invariant. Cell values come from `_row_values` — the single source of
+truth shared with the grid, so the detail can never disagree with the column.
+Because the detail exists, the data layer keeps the **full** task text (it no
+longer pre-truncates to a fixed width); the display, not `data.py`, decides how
+much to show.
 
 ## Checklist when changing ola-top
 

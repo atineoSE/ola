@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -11,9 +12,11 @@ from rich.console import Console
 
 from ola.monitor.data import FolderStatus, IterationStatus, TaskRow, read_folder_status
 from ola.monitor.ui import (
+    _MAX_DETAIL_LINES,
     ViewMode,
     _build_display_rows,
     _cache_style,
+    _detail_cols,
     _find_active_index,
     _fmt_ratio,
     _fmt_time,
@@ -22,9 +25,13 @@ from ola.monitor.ui import (
     _fmt_tokens,
     _fmt_ttft,
     _folder_row_index,
+    _measure_height,
     _read_key,
+    _row_values,
     _task_status_style,
+    build_detail,
     build_table,
+    build_view,
 )
 
 
@@ -964,3 +971,102 @@ def test_read_folder_status_populates_parallel_view(tmp_path):
     assert "One" in text
     assert "Two" in text
     assert "t-aaa" in text  # task ids trace back into tasks.json
+
+
+def _render(renderable, width: int = 120) -> str:
+    """Render any rich renderable to plain text for assertion."""
+    console = Console(file=StringIO(), width=width, force_terminal=True)
+    console.print(renderable)
+    return console.file.getvalue()
+
+
+class TestDetailLine:
+    """The bottom detail line: the active column's full value for the cursor
+    row, cycled with Left/Right. The only indication of the active column."""
+
+    def test_detail_cols_start_with_folder_in_both_modes(self):
+        assert _detail_cols(ViewMode.TASK)[0] == "Folder"
+        assert _detail_cols(ViewMode.METRICS)[0] == "Folder"
+        assert "Agent" in _detail_cols(ViewMode.TASK)
+        assert "Cache%" in _detail_cols(ViewMode.METRICS)
+        # "#" is never cycle-able — it is just the row number.
+        assert "#" not in _detail_cols(ViewMode.TASK)
+        assert "#" not in _detail_cols(ViewMode.METRICS)
+
+    def test_default_folder_shows_folder_name(self):
+        folders = [FolderStatus(name="09-parallel", tasks_completed=1, tasks_total=3)]
+        detail = build_detail(folders, set(), 0, ViewMode.TASK, "Folder", 120)
+        assert "Folder" in detail.plain
+        assert "09-parallel" in detail.plain
+
+    def test_shows_full_agent_string_untruncated(self):
+        """The Agent value is shown in full even though the grid column (24 wide)
+        ellipsizes it."""
+        long_agent = "Claude Code 2.1.177 (Claude Code)"
+        folders = [
+            FolderStatus(
+                name="01-foo",
+                tasks_completed=1,
+                tasks_total=1,
+                iterations=[
+                    IterationStatus(
+                        phase="loop-1", agent="cc", agent_version="2.1.177 (Claude Code)"
+                    )
+                ],
+            )
+        ]
+        # Grid truncates.
+        grid = _render_table_text(build_table(folders, mode=ViewMode.TASK))
+        assert long_agent not in grid
+        # Detail shows it whole.
+        detail = build_detail(folders, set(), 0, ViewMode.TASK, "Agent", 120)
+        assert long_agent in detail.plain
+
+    def test_shows_full_task_text_untruncated(self):
+        long_text = "Rename project " + "x" * 80
+        folder = _parallel_folder()
+        folder.task_rows[0].text = long_text
+        rows = _build_display_rows([folder], {"09-parallel"})
+        task_cursor = next(i for i, r in enumerate(rows) if r[0] == "task")
+        detail = build_detail(
+            [folder], {"09-parallel"}, task_cursor, ViewMode.TASK, "Folder", 200
+        )
+        assert long_text in detail.plain
+
+    def test_empty_cell_shows_dash(self):
+        """A column with no value for the cursor row reads as an em dash."""
+        folders = [FolderStatus(name="01-foo", tasks_completed=0, tasks_total=1)]
+        detail = build_detail(folders, set(), 0, ViewMode.TASK, "Turns", 120)
+        assert "—" in detail.plain
+
+    def test_long_value_clipped_to_max_lines(self):
+        """A value longer than the detail budget is clipped so the line can never
+        exceed _MAX_DETAIL_LINES — the viewport invariant must hold."""
+        folder = _parallel_folder()
+        folder.task_rows[0].text = "y" * 5000
+        rows = _build_display_rows([folder], {"09-parallel"})
+        task_cursor = next(i for i, r in enumerate(rows) if r[0] == "task")
+        width = 80
+        detail = build_detail(
+            [folder], {"09-parallel"}, task_cursor, ViewMode.TASK, "Folder", width
+        )
+        assert detail.plain.endswith("…")
+        assert _measure_height(detail, width) <= _MAX_DETAIL_LINES
+
+    def test_build_view_groups_table_and_detail(self):
+        folders = [FolderStatus(name="09-parallel", tasks_completed=1, tasks_total=3)]
+        view = build_view(
+            folders, set(), 0, Path("/agent"), ViewMode.TASK, 0, 20, "Folder", 120
+        )
+        text = re.sub(r"\x1b\[[0-9;]*m", "", _render(view))
+        assert "ola-top" in text  # the table
+        assert "09-parallel" in text  # both grid and detail
+        # The detail line's label is present on the last line, below the table.
+        assert text.rstrip().splitlines()[-1].lstrip().startswith("Folder")
+
+    def test_detail_matches_row_values(self):
+        """build_detail reads the same value source as the grid (_row_values)."""
+        folder = _parallel_folder()
+        vals = _row_values([folder], "folder", 0, -1, ViewMode.TASK)
+        detail = build_detail([folder], set(), 0, ViewMode.TASK, "Tasks", 120)
+        assert vals["Tasks"] in detail.plain

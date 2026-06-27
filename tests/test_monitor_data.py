@@ -762,7 +762,9 @@ def test_read_task_rows_spine_from_tasks_json(tmp_path: Path):
     assert rows[1].last_progress_message == ""
 
 
-def test_read_task_rows_truncates_text(tmp_path: Path):
+def test_read_task_rows_keeps_full_text(tmp_path: Path):
+    """The data layer retains the full task text; ola-top truncates per column
+    (ellipsis) and shows the whole value in its detail line."""
     folder = tmp_path / "01-task"
     folder.mkdir()
     long_text = "x" * 200
@@ -771,8 +773,7 @@ def test_read_task_rows_truncates_text(tmp_path: Path):
         [{"task_id": "t-aaa", "text": long_text, "line_no": 1, "status": "pending"}],
     )
     row = read_task_rows(folder)[0]
-    assert len(row.text) == 60
-    assert row.text.endswith("…")
+    assert row.text == long_text
 
 
 def test_read_task_rows_folds_in_events(tmp_path: Path):
