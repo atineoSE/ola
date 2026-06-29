@@ -99,12 +99,12 @@ setup() {
 
 @test "allow_host: domain gets wildcard subdomain" {
   _ola_allow_host "llm.example.com"
-  [ "$(cat "$SBX_LOG")" = "sbx policy allow network -g llm.example.com,*.llm.example.com" ]
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network llm.example.com,*.llm.example.com" ]
 }
 
 @test "allow_host: IPv4 literal allowed bare (no *.ip)" {
   _ola_allow_host "216.243.220.30"
-  [ "$(cat "$SBX_LOG")" = "sbx policy allow network -g 216.243.220.30" ]
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
 @test "allow_host: empty host is a no-op" {
@@ -137,7 +137,7 @@ LLM_BASE_URL="https://10.0.0.5/v1"'
   run _ola_apply_policy "$TMPDIR_TEST/ap_ip" "$blob"
   [ "$status" -eq 0 ]
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(cat "$SBX_LOG")" = "sbx policy allow network -g 216.243.220.30" ]
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
 @test "apply_policy: resolved domain LLM endpoint gets wildcard" {
@@ -145,16 +145,34 @@ LLM_BASE_URL="https://10.0.0.5/v1"'
   mkdir -p "$TMPDIR_TEST/ap_dom"
   run _ola_apply_policy "$TMPDIR_TEST/ap_dom" "$blob"
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network -g llm-proxy.app.all-hands.dev,*.llm-proxy.app.all-hands.dev" ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network llm-proxy.app.all-hands.dev,*.llm-proxy.app.all-hands.dev" ]
 }
 
 @test "apply_policy: allowlist.txt + LLM endpoint counted together" {
   local blob='LLM_BASE_URL="https://216.243.220.30/v1"'
   run _ola_apply_policy "$AGENT_DIR" "$blob"
   [ "$output" = "Synced 3 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network -g docs.docker.com,*.docs.docker.com" ]
-  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network -g docker.io,*.docker.io" ]
-  [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network -g 216.243.220.30" ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network docs.docker.com,*.docs.docker.com" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network docker.io,*.docker.io" ]
+  [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
+}
+
+@test "apply_policy: strips inline comments from allowlist (regression)" {
+  # An inline '# note' must not leak into RESOURCES. A real allowlist line
+  # 'www.eventbriteapi.com  # ... ticket_classes ...' once passed the whole
+  # comment to sbx, which split it on commas/spaces and parsed 'ticket_classes'
+  # as a bogus domain → duplicate-rule error → the entire sync aborted.
+  mkdir -p "$TMPDIR_TEST/ap_inline"
+  cat > "$TMPDIR_TEST/ap_inline/allowlist.txt" <<'EOF'
+# full-line comment
+www.eventbriteapi.com          # v3 REST API base (events, ticket_classes, attendees)
+   api.example.com   # indented host with trailing note
+EOF
+  run _ola_apply_policy "$TMPDIR_TEST/ap_inline" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network www.eventbriteapi.com,*.www.eventbriteapi.com" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network api.example.com,*.api.example.com" ]
 }
 
 @test "apply_policy: LLM localhost allows with port" {
@@ -162,7 +180,7 @@ LLM_BASE_URL="https://10.0.0.5/v1"'
   mkdir -p "$TMPDIR_TEST/ap_local"
   run _ola_apply_policy "$TMPDIR_TEST/ap_local" "$blob"
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network -g localhost:11434" ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:11434" ]
 }
 
 @test "apply_policy: LMNR localhost with port" {
@@ -171,7 +189,7 @@ LMNR_HTTP_PORT="8000"'
   mkdir -p "$TMPDIR_TEST/ap_lmnr"
   run _ola_apply_policy "$TMPDIR_TEST/ap_lmnr" "$blob"
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network -g localhost:8000" ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:8000" ]
 }
 
 @test "apply_policy: LMNR remote domain" {
@@ -179,7 +197,7 @@ LMNR_HTTP_PORT="8000"'
   mkdir -p "$TMPDIR_TEST/ap_lmnr2"
   run _ola_apply_policy "$TMPDIR_TEST/ap_lmnr2" "$blob"
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network -g api.lmnr.ai,*.api.lmnr.ai" ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network api.lmnr.ai,*.api.lmnr.ai" ]
 }
 
 @test "apply_policy: empty blob → allowlist only" {
@@ -217,7 +235,7 @@ LMNR_HTTP_PORT="8000"'
   run ola-policy-sync "$TMPDIR_TEST/ps_ok"
   [ "$status" -eq 0 ]
   [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(cat "$SBX_LOG")" = "sbx policy allow network -g 216.243.220.30" ]
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
 @test "policy-sync: fail-fast when ola env exits non-zero" {
@@ -526,7 +544,7 @@ _mock_sbx_new_sandbox() {
   ola-sandbox new-sandbox
 
   grep -q 'sbx ls' "$SBX_LOG"
-  grep -q "sbx policy allow network -g docs.docker.com" "$SBX_LOG"
+  grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
   grep -q "sbx create shell --name new-sandbox --template ghcr.io/$(whoami)/ola:latest -m 12777m -q" "$SBX_LOG"
   grep -q "sbx_new$" "$SBX_LOG"
   ! grep -q 'agent:ro' "$SBX_LOG"

@@ -85,7 +85,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-plan` | 1.0.2 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 1.2.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy, secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall). Contract version-pinned; re-verify on sbx upgrade. |
+| `sbx` | 1.3.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy, secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall). Contract version-pinned; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

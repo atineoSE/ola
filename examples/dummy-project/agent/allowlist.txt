@@ -1,8 +1,9 @@
 # Project-specific domains opened through the sandbox's deny-by-default network
-# policy. One host per line; subdomains are included automatically. Blank lines
-# and lines starting with '#' are ignored. See docs/sandbox.md.
+# policy. One host per line; subdomains are included automatically. Blank lines,
+# lines starting with '#', and inline '# ...' comments after a host are ignored.
+# See docs/sandbox.md.
 
 # 02-get-docs fetches the Cohere Chat API reference (docs.cohere.com) and
 # 03-cohere-chat calls the Chat API itself (api.cohere.com).
-docs.cohere.com
-api.cohere.com
+docs.cohere.com   # Cohere Chat API reference
+api.cohere.com    # Cohere Chat API

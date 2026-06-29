@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 1.2.0
+version: 1.3.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -19,6 +19,12 @@ version: 1.2.0
 > the **75%-of-host hard ceiling on `-m`**, and the no-swap hard-wall behavior
 > were confirmed empirically (the latter two on a 48 GB host; the rest of this
 > doc is still pinned to `v0.31.3`).
+>
+> **Network policy scope re-verified against sbx `v0.33.0`** — `policy
+> allow`/`deny`/`rm network` now default to **global** scope with `--sandbox`
+> for single-sandbox scoping; the old mandatory `-g`/`--global` flag is
+> deprecated. See *Network Policies*. (`secret` still uses `-g`/positional
+> SANDBOX — that scoping was NOT changed.)
 
 ## Quick Reference
 
@@ -92,19 +98,27 @@ one.**
   must sit comfortably below `-m`.
 
 ### Network Policies
-**Scope is mandatory for allow/deny:** every `policy allow network` and
-`policy deny network` call MUST pass `-g`/`--global` (apply to all sandboxes)
-or a `SANDBOX` name before RESOURCES. The bare form
-(`sbx policy allow network "host"`) exits non-zero with
-`ERROR: must specify either --global RESOURCES or SANDBOX RESOURCES`.
+**Global is the default scope (v0.33.0); `-g`/`--global` is deprecated.**
+Pass RESOURCES bare for a global rule (applies to all sandboxes). Scope to one
+sandbox with the `--sandbox <name>` flag — **not** a positional SANDBOX name.
+The old `-g`/`--global` flag still works but prints
+`Flag --global has been deprecated, global is now the default; omit --global,
+or use --sandbox to target a single sandbox` to stderr — drop it, or it
+pollutes captured error output and will break when the flag is removed.
+
+> **Contract reversal (v0.29.0–v0.31.x → v0.33.0):** scope used to be
+> MANDATORY (the bare form exited non-zero with
+> `ERROR: must specify either --global RESOURCES or SANDBOX RESOURCES`). That
+> requirement was reversed: bare is now the global default. Any script still
+> passing `-g`/`--global` should drop it.
 
 - `sbx policy set-default <allow-all|balanced|deny-all>` — set baseline (run BEFORE adding rules / first sandbox)
 - `sbx policy ls [SANDBOX] [--type network]` — show active rules (provenance, scope, decision, resources, IDs)
-- `sbx policy allow network -g "domain1,*.domain2"` — global allow rule
-- `sbx policy allow network <SANDBOX> "domain"` — sandbox-scoped allow rule
-- `sbx policy deny network -g "domain"` — global deny rule (deny always > allow)
-- `sbx policy rm network -g --resource "domain"` — remove a global rule by resource (or `--id <uuid>`)
-- `sbx policy rm network <SANDBOX> --resource "domain"` — remove a sandbox-scoped rule
+- `sbx policy allow network "domain1,*.domain2"` — global allow rule (bare = global)
+- `sbx policy allow network --sandbox <SANDBOX> "domain"` — sandbox-scoped allow rule
+- `sbx policy deny network "domain"` — global deny rule (deny always > allow)
+- `sbx policy rm network --resource "domain"` — remove a global rule by resource (or `--id <uuid>`)
+- `sbx policy rm network --sandbox <SANDBOX> --resource "domain"` — remove a sandbox-scoped rule
 - `sbx policy log [SANDBOX] [--type network] [--limit N] [--json] [-q]` — view allowed/blocked requests
 - `sbx policy reset` — reset policies to defaults
 - `sbx policy profile ...` — manage reusable policy profiles

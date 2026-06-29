@@ -121,7 +121,7 @@ sbx policy allow network "example.com,*.example.com"  # add allow rule
 sbx policy log                        # view blocked requests
 ```
 
-Project-specific domains can be added to `agent/allowlist.txt` (one domain per line). The `ola-sandbox` helper applies these automatically on sandbox creation.
+Project-specific domains can be added to `agent/allowlist.txt` (one host per line; subdomains are included automatically). Blank lines, full-line `#` comments, and inline `# ...` comments after a host are ignored. The `ola-sandbox` helper applies these automatically on sandbox creation.
 
 ## Laminar tracing (OpenHands only)
 

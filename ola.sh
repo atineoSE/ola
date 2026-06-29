@@ -53,17 +53,21 @@ _ola_port_from_url() {
   esac
 }
 
-# Add a global sbx network allow rule. As of sbx v0.29.0 the command
-# requires a scope (`-g/--global` or a SANDBOX) before RESOURCES; the
-# bare `sbx policy allow network RESOURCES` form now exits non-zero.
+# Add a global sbx network allow rule. As of sbx v0.33.0 global is the
+# DEFAULT scope: pass RESOURCES bare for a global rule (`--sandbox <name>`
+# scopes to one sandbox). The old `-g`/`--global` flag is deprecated — it
+# still works but prints "Flag --global has been deprecated" to stderr,
+# which pollutes the captured error output and will break outright once the
+# flag is removed. (Earlier, v0.29.0–v0.31.x, scope was MANDATORY and the
+# bare form exited non-zero; that requirement was reversed.)
 # Failures are surfaced rather than swallowed: a discarded error here
-# once let that breaking CLI change disable policy sync for every run
-# with no signal (sync still printed "Synced N" while adding nothing).
+# once let a breaking CLI change disable policy sync for every run with no
+# signal (sync still printed "Synced N" while adding nothing).
 # Idempotent: re-adding a covered rule is a no-op and exits 0.
 _ola_policy_allow() {
   local resources="$1" out
-  if ! out="$(sbx policy allow network -g "$resources" 2>&1)"; then
-    echo "Error: 'sbx policy allow network -g $resources' failed: $out" >&2
+  if ! out="$(sbx policy allow network "$resources" 2>&1)"; then
+    echo "Error: 'sbx policy allow network $resources' failed: $out" >&2
     return 1
   fi
   return 0
@@ -108,8 +112,17 @@ _ola_apply_policy() {
 
   local allowlist="$agent_dir/allowlist.txt"
   if [ -f "$allowlist" ]; then
-    while IFS= read -r host || [ -n "$host" ]; do
-      [[ -z "$host" || "$host" == \#* ]] && continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      # Strip inline comments ('host  # note') then take the first
+      # whitespace-delimited token as the host. Without this, comment words
+      # leak into RESOURCES (comma/space-separated) and sbx parses them as
+      # bogus domains — e.g. a 'ticket_classes' note triggered a duplicate-
+      # rule error that aborted the whole sync. Blank and '#'-only lines
+      # collapse to an empty host and are skipped.
+      line="${line%%#*}"
+      local host
+      read -r host _ <<< "$line"
+      [ -z "$host" ] && continue
       if _ola_policy_allow "$host,*.$host"; then
         count=$((count + 1))
       else
