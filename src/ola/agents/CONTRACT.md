@@ -21,6 +21,27 @@ arrives in its prompt or is recoverable from the project's current state.
 Finished code changes merge back onto the project repo, and ola reconciles each
 task's checkbox tick onto the agent-folder PLAN.md on the agent's behalf.
 
+## The agent commits its own verified work; harness commits are bookkeeping
+
+The task agent **commits its changes in its worktree before ticking** — the
+prompt requires it. That commit is where the project's own quality gate runs:
+if the project has git hooks (a `pre-commit` running linters or type checks),
+they fire on the agent's commit, *inside the agent's loop*, where the agent
+sees the failure and fixes it before finishing. A closed feedback loop is only
+possible here — after the agent ticks, its context is gone.
+
+Every commit ola itself makes is therefore pure bookkeeping and runs with
+`--no-verify`: the worktree fallback commit (a safety net for a backend that
+ticked without committing), the reconciliation commit that lands the merged
+tree on the project repo, and the checkbox-tick commit in the agent folder. A
+project git hook is the *agent's* gate, exercised once in the agent's worktree;
+it must never re-fire as a hidden post-hoc veto on ola's reconciliation commit
+— which would run the hook over the *combined* tree (this task plus siblings)
+and fail a task for coupling the independence contract already assumes away.
+The agent's own commit message is preserved onto the project repo
+(`git commit -C <sha>`); the synthetic `ola: <folder> <task>: …` message is only
+the fallback when the agent left the worktree uncommitted.
+
 ## Merging code back is reconciliation, not a hard gate
 
 A task's worktree branched off the project HEAD at *its* start; by the time it

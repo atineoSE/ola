@@ -1,7 +1,13 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.3.0
+version: 1.4.0
+# 1.4.0: add the agent-commits-its-own-verified-work principle — the agent
+#         commits in its worktree before ticking (project git hooks are its
+#         gate, run in-loop), and every harness bookkeeping commit runs
+#         --no-verify so a project hook never re-fires post-hoc (minor: new
+#         compatible guidance, defers to CONTRACT.md for the load-bearing
+#         detail).
 # 1.3.0: add the merge-back-is-reconciliation principle — 3-way merge,
 #         identical-add no-op, conflict → intra-run retry → janitor escalation,
 #         no smart-merge in the hot path (minor: new compatible guidance, defers
@@ -101,3 +107,8 @@ the answer is wrong:
   no-op, conflict → intra-run retry → janitor escalation), or does it make a
   recoverable collision a hard failure — or worse, smart-merge with a model in
   the hot path?
+- Does it keep the **agent's own worktree commit the project's quality gate**
+  (project git hooks run in-loop, where the agent can fix and re-commit), with
+  every harness bookkeeping commit `--no-verify` — or does it let a project
+  hook re-fire on ola's reconciliation/tick commit, turning a post-agent
+  bookkeeping step into a hidden hard gate the agent can never react to?

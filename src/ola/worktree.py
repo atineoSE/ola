@@ -119,15 +119,21 @@ def prune_branch(project_path: Path, folder: Path, task_id: str) -> None:
 def commit(worktree: Path, message: str) -> str:
     """Stage all changes in *worktree* and commit with *message*.
 
-    Returns the resulting commit SHA. If the worktree has no uncommitted
-    changes (e.g. the agent already committed), returns the current HEAD
-    SHA without creating a new commit.
+    Returns the resulting commit SHA. The task agent is expected to have
+    *already* committed its verified work (see ``TASK-PROMPT.md``): when the
+    worktree has no uncommitted changes this returns the agent's HEAD SHA
+    unchanged, preserving the agent's own commit(s) and message. This commit is
+    only a **fallback** for a backend that ticked without committing — pure
+    bookkeeping, so it runs with ``--no-verify``: the project's own git hooks
+    (e.g. a ``pre-commit`` running mypy/ruff) are the *agent's* gate, exercised
+    inside the agent's loop where it can react, and must never re-fire on the
+    harness's post-hoc commit after the agent's context is gone.
     """
     worktree = Path(worktree)
     _git(worktree, "add", "-A")
     staged = _git(worktree, "diff", "--cached", "--name-only").stdout.decode().strip()
     if staged:
-        _git(worktree, "commit", "-m", message)
+        _git(worktree, "commit", "--no-verify", "-m", message)
     return _git(worktree, "rev-parse", "HEAD").stdout.decode().strip()
 
 

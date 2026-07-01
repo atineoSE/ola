@@ -511,7 +511,11 @@ def _propagate(
             .strip()
         )
         if staged:
-            _git(project_path, "commit", "-C", sha)
+            # --no-verify: the project's git hooks are the agent's gate, run
+            # inside the agent's own worktree commit; this reconciliation commit
+            # is bookkeeping and must not re-fire them over the merged tree (see
+            # worktree.commit and CONTRACT.md).
+            _git(project_path, "commit", "--no-verify", "-C", sha)
     set_task_checked(folder, task_id, True)
     plan_rel = f"{folder.name}/PLAN.md"
     _git(agent_root, "add", plan_rel)
@@ -526,7 +530,7 @@ def _propagate(
         _git(agent_root, "diff", "--cached", "--name-only").stdout.decode().strip()
     )
     if staged:
-        _git(agent_root, "commit", "-m", message)
+        _git(agent_root, "commit", "--no-verify", "-m", message)
 
 
 def _truncate(s: str, n: int = 500) -> str:
