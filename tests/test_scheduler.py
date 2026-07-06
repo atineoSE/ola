@@ -1561,6 +1561,18 @@ def test_run_folder_blocked_task_is_terminal_no_retry(tmp_path):
     assert len(_log_oneline(project, "main")) == 1
     assert not (project / ".ola" / "worktrees" / task.task_id).exists()
 
+    # The branch shares the worktree's fate: with the worktree gone and the task
+    # terminal (relocated by the janitor to a differently-named folder, so no
+    # future create() reclaims it), the branch is pruned — no dangling ola/* ref.
+    branches = subprocess.run(
+        ["git", "branch", "--list"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert f"ola/{folder.name}/{task.task_id}" not in branches
+
     # The marker is retained as the audit record (in the agent folder).
     assert (folder / ".ola" / "blocked" / f"{task.task_id}.reason").exists()
 

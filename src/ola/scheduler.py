@@ -827,6 +827,11 @@ def _run_one_task(
                 state.mark(task_id, "blocked", last_error=f"blocked: {record.reason}")
                 state.save()
             cleanup(worktree_path, keep_on_failure=False)
+            # The worktree is gone, so the branch has no post-mortem value left;
+            # and because blocked is terminal (the janitor relocates the task to
+            # a differently-named leftovers folder) no future create() reclaims
+            # this ref. Prune it now so a blocked task leaves no dangling branch.
+            prune_branch(project_path, folder, task_id)
             prog.blocked(record.reason, stats=response.stats)
             return _OUTCOME_BLOCKED
 

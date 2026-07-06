@@ -103,15 +103,22 @@ def create(project_path: Path, folder: Path, task_id: str) -> Path:
 def prune_branch(project_path: Path, folder: Path, task_id: str) -> None:
     """Delete the task's ``ola/<folder.name>/<task_id>`` branch, best-effort.
 
-    Called on the success path once the worktree's commit has been merged back
-    and the worktree itself removed: the branch ref has served its traceability
-    purpose and would otherwise leak, one dangling ref per completed task, until
-    a same-id task happened to reclaim the name (which a unique-per-run task_id
-    never does). ``-D`` (force) because a merge-back that rebased the commit onto
-    a moved HEAD leaves a branch tip that is patch-identical to what landed yet
-    not a literal ancestor of it, so ``-d`` would refuse. Failure-path branches
-    are intentionally *not* pruned — they stay for post-mortem and are cleared by
-    :func:`create` on the next attempt. ``check=False`` so cleanup never raises.
+    Called whenever the task's worktree is torn down for good — on success once
+    the commit has been merged back, and on the blocked path once the worktree
+    is removed: in both cases the branch ref has served its traceability purpose
+    and would otherwise leak one dangling ref per task. ``-D`` (force) because a
+    merge-back that rebased the commit onto a moved HEAD leaves a branch tip that
+    is patch-identical to what landed yet not a literal ancestor of it, so
+    ``-d`` would refuse.
+
+    The branch shares its worktree's fate: it is pruned exactly when the
+    worktree is removed. **Failed/stagnant** branches are intentionally *not*
+    pruned — their worktree is kept for post-mortem, and :func:`create` clears
+    both when it re-branches the same ``task_id`` in the same folder on the next
+    attempt (a blocked task, by contrast, is terminal and relocated by the
+    janitor to a differently-named leftovers folder, so nothing ever reclaims
+    its branch — hence the explicit prune here). ``check=False`` so cleanup
+    never raises.
     """
     _git(project_path, "branch", "-D", _branch_name(folder, task_id), check=False)
 
