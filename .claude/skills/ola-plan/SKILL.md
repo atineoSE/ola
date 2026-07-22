@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 1.0.2
+version: 1.1.0
 ---
 
 # Create an ola plan
@@ -146,6 +146,29 @@ Optional, per folder, when it helps:
   at once (default 1). Set it (e.g. `4`) when a stage has many independent tasks
   worth running in parallel. The cap is re-read live during the run.
 
+At the **agent-folder root** (not per stage), one more file may be needed:
+
+- **`allowlist.txt`** — the project's network egress. ola runs tasks inside a
+  deny-by-default sandbox, so any host a task must reach and that the default
+  policy does not already cover has to be listed here, one host per line
+  (subdomains included; `#` comments allowed). **Always ask yourself what the
+  plan reaches for**, because a missing host does not fail loudly — the task
+  stalls or silently degrades, and the checkbox never gets ticked.
+
+  The default `balanced` policy already covers AI provider APIs, package
+  managers, code hosts and registries, so the common cases (installing
+  dependencies, calling Anthropic/OpenAI) need **nothing**. Loopback traffic
+  between processes inside the sandbox is not governed by policy either. Write
+  the file only for genuinely project-specific hosts — a vendor API the project
+  integrates with, documentation the plan fetches, a private registry — and put
+  a one-line comment next to each saying which stage needs it.
+
+  Network is not the only sandbox prerequisite worth stating. If the plan's
+  tasks depend on credentials or binaries the sandbox provides (the injected
+  Claude subscription credentials, an installed CLI), say so in the plan or in
+  the spec the tasks read, so a fresh-context agent fails with a clear message
+  instead of an inscrutable one.
+
 Do **not** write any `PLAN.md` for work that genuinely needs a human decision
 that was never resolved in planning — leave it out and tell the user, rather
 than encoding a guess as a task.
@@ -171,6 +194,10 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
 - Does each folder have a `PLAN.md` (the only thing that makes a folder run), and
   no leftover `SEED-PROMPT.md` or other generator file? ola executes authored
   plans only.
+- Have you walked the plan for **every host a task reaches**, and either
+  confirmed the default sandbox policy covers it or listed it in
+  `allowlist.txt`? State the conclusion to the user either way — "nothing
+  needed, the defaults cover it" is a real answer, silence is not.
 
 ## Example shape
 
