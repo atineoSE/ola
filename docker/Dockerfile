@@ -4,8 +4,21 @@ FROM docker/sandbox-templates:shell-docker
 # ~/.openhands/agent_settings.json with jq before each parallel `oh` run; absent
 # jq it silently falls back to a possibly-stale base_url. Install it explicitly
 # so the OpenHands path is robust rather than degraded.
-RUN sudo apt-get update && \
-    sudo apt-get install -y --no-install-recommends jq && \
+#
+# gh (GitHub CLI): ola.sh's _ola_inject_gh injects the host's `gh auth token`
+# into the sandbox and runs `gh auth setup-git` so both `gh` and plain
+# git-over-HTTPS work. Not in Ubuntu's default apt repos, so add GitHub's
+# official apt repository first (keyring + sources list, per
+# https://cli.github.com/packages).
+RUN sudo mkdir -p -m 755 /etc/apt/keyrings && \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
+        sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
+    sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    sudo mkdir -p -m 755 /etc/apt/sources.list.d && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
+        sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends jq gh && \
     sudo rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI (native installer — no Node.js required)
@@ -63,6 +76,7 @@ RUN set -e && \
     codex --version && \
     docker --version && \
     jq --version && \
+    gh --version && \
     git config --global user.name | grep -q ola && \
     d="$(mktemp -d)" && cd "$d" && git init -q && git config user.email ola@localhost && \
     git config user.name ola && git commit -q --allow-empty -m init && \
