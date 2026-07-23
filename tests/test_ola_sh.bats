@@ -137,25 +137,28 @@ LLM_BASE_URL="https://10.0.0.5/v1"'
   mkdir -p "$TMPDIR_TEST/ap_ip"
   run _ola_apply_policy "$TMPDIR_TEST/ap_ip" "$blob"
   [ "$status" -eq 0 ]
-  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
+  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
 @test "apply_policy: resolved domain LLM endpoint gets wildcard" {
   local blob='LLM_BASE_URL="https://llm-proxy.app.all-hands.dev"'
   mkdir -p "$TMPDIR_TEST/ap_dom"
   run _ola_apply_policy "$TMPDIR_TEST/ap_dom" "$blob"
-  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network llm-proxy.app.all-hands.dev,*.llm-proxy.app.all-hands.dev" ]
+  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network llm-proxy.app.all-hands.dev,*.llm-proxy.app.all-hands.dev" ]
 }
 
 @test "apply_policy: allowlist.txt + LLM endpoint counted together" {
   local blob='LLM_BASE_URL="https://216.243.220.30/v1"'
   run _ola_apply_policy "$AGENT_DIR" "$blob"
-  [ "$output" = "Synced 3 domain(s) to sbx policy." ]
+  [ "$output" = "Synced 4 domain(s) to sbx policy." ]
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network docs.docker.com,*.docs.docker.com" ]
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network docker.io,*.docker.io" ]
-  [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
+  [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
+  [ "$(sed -n '4p' "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
 @test "apply_policy: strips inline comments from allowlist (regression)" {
@@ -171,17 +174,19 @@ www.eventbriteapi.com          # v3 REST API base (events, ticket_classes, atten
 EOF
   run _ola_apply_policy "$TMPDIR_TEST/ap_inline" ""
   [ "$status" -eq 0 ]
-  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$output" = "Synced 3 domain(s) to sbx policy." ]
   [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network www.eventbriteapi.com,*.www.eventbriteapi.com" ]
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network api.example.com,*.api.example.com" ]
+  [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
 }
 
 @test "apply_policy: LLM localhost allows with port" {
   local blob='LLM_BASE_URL="http://localhost:11434/v1"'
   mkdir -p "$TMPDIR_TEST/ap_local"
   run _ola_apply_policy "$TMPDIR_TEST/ap_local" "$blob"
-  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:11434" ]
+  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network localhost:11434" ]
 }
 
 @test "apply_policy: LMNR localhost with port" {
@@ -189,27 +194,30 @@ EOF
 LMNR_HTTP_PORT="8000"'
   mkdir -p "$TMPDIR_TEST/ap_lmnr"
   run _ola_apply_policy "$TMPDIR_TEST/ap_lmnr" "$blob"
-  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network localhost:8000" ]
+  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network localhost:8000" ]
 }
 
 @test "apply_policy: LMNR remote domain" {
   local blob='LMNR_BASE_URL="https://api.lmnr.ai"'
   mkdir -p "$TMPDIR_TEST/ap_lmnr2"
   run _ola_apply_policy "$TMPDIR_TEST/ap_lmnr2" "$blob"
-  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network api.lmnr.ai,*.api.lmnr.ai" ]
+  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network api.lmnr.ai,*.api.lmnr.ai" ]
 }
 
 @test "apply_policy: empty blob → allowlist only" {
   run _ola_apply_policy "$AGENT_DIR" ""
-  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$output" = "Synced 3 domain(s) to sbx policy." ]
 }
 
-@test "apply_policy: no allowlist, empty blob → 0" {
+@test "apply_policy: no allowlist, empty blob → github rule only" {
   mkdir -p "$TMPDIR_TEST/ap_none"
   run _ola_apply_policy "$TMPDIR_TEST/ap_none" ""
-  [ "$output" = "Synced 0 domain(s) to sbx policy." ]
+  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
 }
 
 @test "apply_policy: returns non-zero and reports when sbx policy allow fails" {
@@ -235,8 +243,9 @@ LMNR_HTTP_PORT="8000"'
   export OLA_ENV_BLOB='LLM_BASE_URL="https://216.243.220.30/v1"'
   run ola-policy-sync "$TMPDIR_TEST/ps_ok"
   [ "$status" -eq 0 ]
-  [ "$output" = "Synced 1 domain(s) to sbx policy." ]
-  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
+  [ "$output" = "Synced 2 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
 }
 
 @test "policy-sync: fail-fast when ola env exits non-zero" {
@@ -267,6 +276,35 @@ LMNR_HTTP_PORT="8000"'
 @test "inject_sidecar: empty blob is a no-op" {
   _ola_inject_sidecar box ""
   [ ! -s "$SBX_LOG" ]
+}
+
+# ===== _ola_inject_gh =====
+
+@test "inject_gh: gh absent on host — warns and no-ops" {
+  PATH="/usr/bin:/bin" run _ola_inject_gh box
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh not found on host"* ]]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "inject_gh: gh present but no token — warns and no-ops" {
+  gh() { [ "$1 $2" = "auth token" ] && return 1; }
+  export -f gh
+  run _ola_inject_gh box
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gh auth token not found"* ]]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "inject_gh: token present — appends GH_TOKEN and runs gh auth setup-git" {
+  gh() { [ "$1 $2" = "auth token" ] && echo "fake-token"; }
+  export -f gh
+  _ola_inject_gh box
+  local expected_b64
+  expected_b64="$(printf 'GH_TOKEN=%s\n' "fake-token" | base64)"
+  grep -qF "$expected_b64" "$SBX_LOG"
+  grep -q '>> \$HOME/\.ola/agent\.env' "$SBX_LOG"
+  grep -q 'gh auth setup-git' "$SBX_LOG"
 }
 
 # ===== _ola_inject_oh_settings / _ola_setup_shell_rc =====
@@ -474,6 +512,8 @@ EOF
 
   security() { echo '{"oauth_token":"fake"}'; }
   export -f security
+  gh() { [ "$1 $2" = "auth token" ] && echo "fake-token"; }
+  export -f gh
   sbx() {
     echo "sbx $*" >> "$SBX_LOG"
     if [ "$1" = "ls" ]; then echo "my-sandbox  running  2h"; return 0; fi
@@ -487,6 +527,12 @@ EOF
   grep -q 'sbx ls' "$SBX_LOG"
   grep -q 'sbx exec my-sandbox bash' "$SBX_LOG"
   grep -q '\.ola/agent.env' "$SBX_LOG"
+  grep -q 'gh auth setup-git' "$SBX_LOG"
+  # gh injection runs after the sidecar write (which it appends onto).
+  local sidecar_line gh_line
+  sidecar_line="$(grep -n '\.ola/agent.env' "$SBX_LOG" | head -1 | cut -d: -f1)"
+  gh_line="$(grep -n 'gh auth setup-git' "$SBX_LOG" | head -1 | cut -d: -f1)"
+  [ "$gh_line" -gt "$sidecar_line" ]
   [[ "$(tail -1 "$SBX_LOG")" == *"sbx run --name my-sandbox"* ]]
 }
 
@@ -546,6 +592,7 @@ _mock_sbx_new_sandbox() {
 
   grep -q 'sbx ls' "$SBX_LOG"
   grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
+  grep -q "sbx policy allow network github.com,\*.github.com" "$SBX_LOG"
   grep -q "sbx create shell --name new-sandbox --template ghcr.io/$(whoami)/ola:latest -m 12777m -q" "$SBX_LOG"
   grep -q "sbx_new$" "$SBX_LOG"
   ! grep -q 'agent:ro' "$SBX_LOG"

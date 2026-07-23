@@ -131,6 +131,14 @@ _ola_apply_policy() {
     done < "$allowlist"
   fi
 
+  # Auto-allow GitHub egress so the injected `gh`/GH_TOKEN auth works with no
+  # allowlist.txt edit; the *. wildcard also covers api./codeload.github.com.
+  if _ola_policy_allow "github.com,*.github.com"; then
+    count=$((count + 1))
+  else
+    failed=$((failed + 1))
+  fi
+
   local _llm_base _llm_host _llm_port
   _llm_base="$(_ola_blob_val "$blob" LLM_BASE_URL)"
   if [ -n "$_llm_base" ]; then
@@ -193,6 +201,35 @@ _ola_inject_sidecar() {
   data="$(printf '%s\n' "$blob" | base64)"
   sbx exec "$name" bash -c 'mkdir -p "$HOME/.ola"' 2>/dev/null
   sbx exec "$name" bash -c "echo '$data' | base64 -d > \$HOME/.ola/agent.env" 2>/dev/null
+}
+
+# Inject the host's GitHub CLI auth into a running sandbox so `gh` and plain
+# git-over-HTTPS work there. Mirrors cc-credentials: reads the token fresh
+# from the host (`gh auth token` resolves keyring/file/env the way gh itself
+# would) on every create AND reconnect — gh tokens don't rotate-on-refresh
+# the way the CC subscription token does, so this read IS the refresh.
+# Non-fatal: a host with no `gh auth login` just gets a warning, never a
+# reason to fail sandbox creation. Must run AFTER _ola_inject_sidecar, which
+# overwrites (not appends) ~/.ola/agent.env — this appends GH_TOKEN to it;
+# the login rc sources that file under `set -a`, so no `export` is needed.
+_ola_inject_gh() {
+  local name="$1"
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "Warning: gh not found on host — run 'gh auth login' on the host first." >&2
+    return 0
+  fi
+  local gh_token
+  gh_token="$(gh auth token 2>/dev/null)"
+  if [ -z "$gh_token" ]; then
+    echo "Warning: gh auth token not found — run 'gh auth login' on the host first." >&2
+    return 0
+  fi
+  local data
+  data="$(printf 'GH_TOKEN=%s\n' "$gh_token" | base64)"
+  sbx exec "$name" bash -c "echo '$data' | base64 -d >> \$HOME/.ola/agent.env" 2>/dev/null
+  local tok_b64
+  tok_b64="$(printf '%s' "$gh_token" | base64)"
+  sbx exec "$name" bash -c "export GH_TOKEN=\$(echo '$tok_b64' | base64 -d); gh auth setup-git" 2>/dev/null
 }
 
 # Sync the sbx network policy from the two project config files:
@@ -490,6 +527,7 @@ _ola_sandbox_prepare() {
     # rewritten here (it sources the refreshed sidecar by path).
     _ola_inject_credentials "$name"
     _ola_inject_sidecar "$name" "$_env_blob"
+    _ola_inject_gh "$name"
     _ola_inject_oh_settings "$name" "$_env_blob"
     return 0
   fi
@@ -529,6 +567,7 @@ _ola_sandbox_prepare() {
 
   _ola_inject_credentials "$name"
   _ola_inject_sidecar "$name" "$_env_blob"
+  _ola_inject_gh "$name"
   _ola_inject_oh_settings "$name" "$_env_blob"
 
   # Export the resolved env into the login shell and land in the project repo.
