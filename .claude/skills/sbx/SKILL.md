@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.1.0
+version: 2.2.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -166,6 +166,13 @@ exactly the rule shape needed, no ola code change required.
 
 ### Credentials
 - **Claude subscription (OAuth)**: `ola-sandbox` copies `~/.claude/.credentials.json` from host into the sandbox at creation/reconnection time (via `sbx exec` + base64). No API key needed.
+- **GitHub CLI (`gh`) auth**: on every create **and** reconnect, `ola-sandbox` also
+  reads the host's `gh auth token` and injects it as `GH_TOKEN` into the sandbox
+  sidecar (`~/.ola/agent.env`), then runs `gh auth setup-git` inside the sandbox
+  so plain `git`-over-HTTPS (not just `gh`) works — mirroring the Claude
+  credentials flow above. It also auto-allows `github.com,*.github.com` egress.
+  Non-fatal when the host has no `gh` login (or no `gh` installed): a warning is
+  printed and the sandbox still comes up, just without `gh`/git-over-HTTPS auth.
 - Service secrets are held by the sbx proxy (NOT the agent / not the OS keychain); the proxy injects them into outbound API calls. Scope `-g`/global or per-sandbox.
 - `sbx secret set -g <service>` — store a global secret (interactive prompt)
 - `echo "$KEY" | sbx secret set -g <service>` — non-interactive via stdin

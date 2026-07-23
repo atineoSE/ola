@@ -53,7 +53,9 @@ runs `cc-credentials` on every sandbox create/reconnect, then injects the result
 the `cc` backend copies the bootstrap files into a per-task `CLAUDE_CONFIG_DIR`.
 **Keep credentials fresh via `cc-credentials` — do not "fix" auth by pointing
 `CLAUDE_CONFIG_DIR` at the live `~/.claude`; the per-task isolation is
-intentional.**
+intentional.** The host's `gh` (GitHub CLI) auth is injected into every
+sandbox the same way, on the same create/reconnect path — see the `sbx`
+skill's *Credentials* section.
 
 Gotcha: the subscription OAuth **refresh token rotates** on every refresh, so a
 copied credential snapshot is invalidated the moment any *other* client sharing
@@ -151,7 +153,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-plan` | 1.0.2 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.1.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule), secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), and `ola-monitor` (host-side auth launcher-watcher). Contract pinned to sbx v0.35.0; re-verify on sbx upgrade. |
+| `sbx` | 2.2.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule), secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, and `ola-monitor` (host-side auth launcher-watcher). Contract pinned to sbx v0.35.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 
