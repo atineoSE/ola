@@ -558,19 +558,32 @@ class ClaudeCodeAgent(Agent):
 
         llm_ms = total_ttft_ms + total_decode_ms
 
-        # Warn if measured llm_ms diverges significantly from CLI-reported
+        # Canary for a CLI stream-format change. llm_ms sums per-turn
+        # (message_start → message_delta) streaming windows, which are a *subset*
+        # of each request's full duration. So llm_ms < duration_api_ms is the
+        # normal regime — the gap is pre-first-event latency (request upload,
+        # server queue/accept, TTFB) plus the post-message_delta tail, and it
+        # grows on big-context / low-output turns. A moderate undercount is
+        # therefore expected and must NOT warn. Only two signatures are real:
+        #   (a) llm_ms exceeds duration_api_ms — impossible if our window is a
+        #       subset of API time → format/semantics changed;
+        #   (b) llm_ms is a tiny fraction of duration_api_ms — stream events
+        #       largely unparsed (the 2026-04 envelope-unwrap regression).
         api_ms_reported = result_data.get("duration_api_ms", 0)
         if api_ms_reported > 0 and llm_ms > 0:
-            delta = abs(llm_ms - api_ms_reported)
-            rel = delta / api_ms_reported
-            if delta > 1000 and rel > 0.20:
+            if llm_ms > api_ms_reported * 1.10:
                 logger.warning(
-                    "CC llm_ms divergence: measured=%dms, result.duration_api_ms=%dms "
-                    "(delta=%dms, %.0f%%) — possible CLI format change",
+                    "CC llm_ms exceeds CLI API time: measured=%dms > "
+                    "result.duration_api_ms=%dms — possible CLI format change",
                     llm_ms,
                     api_ms_reported,
-                    delta,
-                    rel * 100,
+                )
+            elif llm_ms < api_ms_reported * 0.10:
+                logger.warning(
+                    "CC llm_ms far below CLI API time: measured=%dms vs "
+                    "result.duration_api_ms=%dms — stream events may be unparsed",
+                    llm_ms,
+                    api_ms_reported,
                 )
 
         return self._parse_result(

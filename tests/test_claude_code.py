@@ -353,40 +353,75 @@ class TestStreamParser:
         assert s.cache_creation_tokens == 1000
         assert s.cache_read_tokens == 3000
 
-    def test_divergence_warning_logged(self, caplog):
-        """Large divergence between measured llm_ms and duration_api_ms triggers warning."""
-        # We need llm_ms > 0 and a very different duration_api_ms.
-        # To get non-zero llm_ms, we need real time to pass between events.
-        # Instead, we'll patch time.monotonic to control timing.
+    @staticmethod
+    def _fake_monotonic_10s():
+        """Yield monotonic values that produce llm_ms=10000ms.
+
+        message_start → turn_start = 5.0
+        content_block_start → token_start = 10.0 (ttft = 5000ms)
+        message_delta → decode ends at 15.0 (decode_ms = 5000ms)
+        """
         call_count = 0
 
-        def fake_monotonic():
+        def _tick():
             nonlocal call_count
             call_count += 1
-            # message_start: turn_start = t0
-            # content_block_start: token_start = t0 + 5 (ttft = 5000ms)
-            # message_delta: decode = 5s (decode_ms = 5000ms)
-            # Total llm_ms = 10000ms
             return call_count * 5.0
 
+        return _tick
+
+    def test_warns_when_measured_exceeds_api_time(self, caplog):
+        """measured llm_ms > duration_api_ms is impossible for a subset window → warn."""
+        # llm_ms=10000 vs duration_api_ms=1000 → exceeds by >10%.
         lines = _single_turn_lines(duration_api_ms=1000)
 
-        with patch("ola.agents.claude_code.time.monotonic", side_effect=fake_monotonic):
+        with patch(
+            "ola.agents.claude_code.time.monotonic",
+            side_effect=self._fake_monotonic_10s(),
+        ):
             with caplog.at_level(logging.WARNING, logger="ola.agents.claude_code"):
                 _run_stream(lines)
 
-        assert any("divergence" in r.message for r in caplog.records)
+        assert any("exceeds CLI API time" in r.message for r in caplog.records)
 
-    def test_no_divergence_warning_when_close(self, caplog):
-        """Values within threshold produce no warning."""
-        # With mocked events, llm_ms will be ~0 due to fast execution.
-        # duration_api_ms=0 means the check is skipped entirely.
+    def test_warns_when_measured_far_below_api_time(self, caplog):
+        """measured llm_ms < 10% of duration_api_ms → events likely unparsed → warn."""
+        # llm_ms=10000 vs duration_api_ms=200000 → 5% → far below.
+        lines = _single_turn_lines(duration_api_ms=200000)
+
+        with patch(
+            "ola.agents.claude_code.time.monotonic",
+            side_effect=self._fake_monotonic_10s(),
+        ):
+            with caplog.at_level(logging.WARNING, logger="ola.agents.claude_code"):
+                _run_stream(lines)
+
+        assert any("far below CLI API time" in r.message for r in caplog.records)
+
+    def test_no_warning_on_moderate_undercount(self, caplog):
+        """The normal regime — measured a healthy fraction of API time — must not warn."""
+        # llm_ms=10000 vs duration_api_ms=20000 → 50%, the expected big-context case.
+        lines = _single_turn_lines(duration_api_ms=20000)
+
+        with patch(
+            "ola.agents.claude_code.time.monotonic",
+            side_effect=self._fake_monotonic_10s(),
+        ):
+            with caplog.at_level(logging.WARNING, logger="ola.agents.claude_code"):
+                _run_stream(lines)
+
+        assert not any(
+            "CLI API time" in r.message for r in caplog.records
+        ), "moderate undercount should be silent"
+
+    def test_no_warning_when_api_time_absent(self, caplog):
+        """duration_api_ms=0 skips the check entirely."""
         lines = _single_turn_lines(duration_api_ms=0)
 
         with caplog.at_level(logging.WARNING, logger="ola.agents.claude_code"):
             _run_stream(lines)
 
-        assert not any("divergence" in r.message for r in caplog.records)
+        assert not any("CLI API time" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
