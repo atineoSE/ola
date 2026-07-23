@@ -11,6 +11,8 @@ from ola.agents import create_agent
 from ola.loop import run_outer_loop
 from ola.sandbox import is_sandbox, sanitize_proxy_env
 from ola.scheduler import (
+    AUTH_ESCALATION_EXIT_CODE,
+    AuthEscalation,
     FolderIncompleteError,
     RunInterrupted,
 )
@@ -189,6 +191,18 @@ def main() -> None:
             exc.folder_name,
         )
         sys.exit(1)
+    except AuthEscalation as exc:
+        # Auth is global — one task's authentication_error means every task
+        # sharing this credential would fail the same way — so the scheduler
+        # already aborted the whole run and dropped the host-visible marker
+        # (<agent-folder>/monitor/auth-escalation.json). Exit with a distinct
+        # code so this is unmistakable from a generic crash (1).
+        logger.error(
+            "%s Run `ola-sandbox <name>` to refresh credentials, then re-run "
+            "ola to resume from PLAN.md.",
+            exc,
+        )
+        sys.exit(AUTH_ESCALATION_EXIT_CODE)
     except RunInterrupted as exc:
         # Operator stopped the run (Ctrl-C / SIGTERM). The scheduler already
         # flushed a terminal snapshot for the in-flight tasks, so this is a

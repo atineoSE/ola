@@ -27,6 +27,7 @@ from ola.plan import enumerate_tasks, set_task_checked, task_is_checked
 from ola.scheduler import (
     DEFAULT_CONCURRENCY,
     _DEFAULT_TASK_PROMPT,
+    AuthEscalation,
     RunInterrupted,
     _load_task_prompt,
     _run_probe,
@@ -139,6 +140,36 @@ class _FailingAgent(Agent):
 
     def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
         return AgentResponse(output="boom", success=False, stats=IterationStats())
+
+    def version(self):
+        return "0.0.0"
+
+
+class _AuthFailingAgent(Agent):
+    """Stub agent whose every call fails with error_type=authentication_error.
+
+    Mirrors what ClaudeCodeAgent.run() returns once an AuthenticationError is
+    caught (see claude_code.py) — success=False with the classification the
+    scheduler keys on to abort the whole run.
+    """
+
+    mnemonic = "stub"
+    state_dir_name = ""
+
+    def __init__(self, message: str = "bad credential") -> None:
+        super().__init__()
+        self.calls = 0
+        self._message = message
+
+    def run(self, prompt, workdir, state_dir=None, labels=None, on_progress=None):
+        self.calls += 1
+        return AgentResponse(
+            output="Authentication failed.",
+            success=False,
+            stats=IterationStats(
+                error_type="authentication_error", error_message=self._message
+            ),
+        )
 
     def version(self):
         return "0.0.0"
@@ -1010,6 +1041,62 @@ def test_run_folder_rate_limit_too_far_fails(tmp_path):
     entry = state.get(task.task_id)
     assert entry.status == "failed"
     assert "rate limit" in entry.last_error.lower()
+
+
+# --- Auth escalation ---
+
+
+def test_run_folder_auth_failure_aborts_run_and_writes_marker(tmp_path):
+    """An authentication_error response aborts the whole run (not a per-task
+    fail/requeue) and drops the host-visible auth-escalation marker."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
+    task = enumerate_tasks(folder)[0]
+
+    agent = _AuthFailingAgent(message="refresh token rotated")
+
+    with pytest.raises(AuthEscalation) as excinfo:
+        run_folder(agent, folder, agent_root, project, initial_cap=1)
+
+    assert excinfo.value.folder_name == folder.name
+    assert "refresh token rotated" in str(excinfo.value)
+
+    # Terminal for the task — no retry burned on a dead-credential retry loop.
+    assert agent.calls == 1
+    assert task_is_checked(folder, task.task_id) is False
+    state = TaskState.load(folder)
+    entry = state.get(task.task_id)
+    assert entry.status == "failed"
+
+    marker_path = agent_root / "monitor" / "auth-escalation.json"
+    assert marker_path.exists()
+    marker = json.loads(marker_path.read_text())
+    assert marker["message"] == "refresh token rotated"
+    assert marker["sandbox"]
+    assert marker["ts"]
+
+
+def test_run_folder_auth_failure_marks_other_in_flight_tasks_failed(tmp_path):
+    """Auth is global: every other in-flight task is recorded failed too,
+    not left stuck at 'running'."""
+    plan = "- [ ] task one\n- [ ] task two\n"
+    project, agent_root, folder = _two_repos(tmp_path, plan)
+
+    agent = _AuthFailingAgent()
+    with pytest.raises(AuthEscalation):
+        run_folder(agent, folder, agent_root, project, initial_cap=2)
+
+    state = TaskState.load(folder)
+    for entry in state.all():
+        assert entry.status == "failed"
+
+
+def test_run_folder_generic_failure_does_not_write_auth_marker(tmp_path):
+    """A plain (non-auth) failure must not trip the auth-escalation path."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Will fail\n")
+
+    run_folder(_FailingAgent(), folder, agent_root, project, initial_cap=1)
+
+    assert not (agent_root / "monitor" / "auth-escalation.json").exists()
 
 
 # --- Concurrency ---

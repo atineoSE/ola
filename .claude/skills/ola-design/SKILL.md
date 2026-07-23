@@ -1,7 +1,12 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.4.0
+version: 1.5.0
+# 1.5.0: add the distinct-exit-code-per-terminal-state checklist item —
+#         RunInterrupted/FolderIncompleteError/AuthEscalation each exit with
+#         their own code so a caller can tell terminal run-states apart (minor:
+#         new compatible guidance; the cc failure classification itself is
+#         documented in CLAUDE.md, not duplicated here).
 # 1.4.0: add the agent-commits-its-own-verified-work principle — the agent
 #         commits in its worktree before ticking (project git hooks are its
 #         gate, run in-loop), and every harness bookkeeping commit runs
@@ -112,3 +117,9 @@ the answer is wrong:
   every harness bookkeeping commit `--no-verify` — or does it let a project
   hook re-fire on ola's reconciliation/tick commit, turning a post-agent
   bookkeeping step into a hidden hard gate the agent can never react to?
+- Does it give each distinct terminal run-state its own process exit code
+  (generic `1`, `128+signum` operator-interrupt, `40` Claude Code
+  auth-escalation — see `RunInterrupted`/`FolderIncompleteError`/
+  `AuthEscalation` in `src/ola/scheduler.py`) so a caller can tell them apart
+  programmatically, or does it collapse a new failure mode into a generic
+  non-zero exit?

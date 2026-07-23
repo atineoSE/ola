@@ -33,8 +33,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -113,6 +115,12 @@ _OUTCOME_COMPLETE = "complete"
 _OUTCOME_FAILED = "failed"
 _OUTCOME_STAGNANT = "stagnant"
 _OUTCOME_BLOCKED = "blocked"
+_OUTCOME_AUTH_ESCALATION = "auth_escalation"
+
+# Distinct process exit code for AuthEscalation (see cli.py), so an operator
+# (or a future host-side watcher) can tell "the Claude Code credential died"
+# apart from a generic crash (1) or an operator interrupt (128+signum).
+AUTH_ESCALATION_EXIT_CODE = 40
 
 
 class FolderIncompleteError(RuntimeError):
@@ -155,6 +163,25 @@ class RunInterrupted(RuntimeError):
         self.folder_name = folder_name
         self.signum = signum
         super().__init__(f"{folder_name}: run interrupted by {_signame(signum)}.")
+
+
+class AuthEscalation(RuntimeError):
+    """The Claude Code credential failed mid-run — every remaining task using
+    it would fail the same way, so the scheduler aborts the whole folder
+    instead of letting each task burn its own ~1s authentication failure.
+
+    Raised only *after* the in-flight snapshot has been flushed (every
+    ``running`` task recorded ``failed`` in tasks.json) and the host-visible
+    auth-escalation marker written (see :func:`_write_auth_escalation_marker`)
+    — the seam a host-side credential watcher polls. Propagates through the
+    outer loop to the CLI, which prints a clear auth-specific message and
+    exits with :data:`AUTH_ESCALATION_EXIT_CODE` rather than the generic ``1``.
+    """
+
+    def __init__(self, folder_name: str, message: str) -> None:
+        self.folder_name = folder_name
+        self.message = message
+        super().__init__(f"{folder_name}: authentication failed — {message}")
 
 
 def _signame(signum: int | None) -> str:
@@ -341,6 +368,42 @@ def _utc_now_iso() -> str:
     """UTC timestamp as ``YYYY-MM-DDThh:mm:ss.sssZ`` (matches the event ``ts``)."""
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _sandbox_name() -> str:
+    """Best-effort sandbox identifier for the auth-escalation marker.
+
+    Prefers an explicit override (for the host-side watcher's own wiring, not
+    yet built), else falls back to the container hostname sbx assigns each
+    sandbox — no new plumbing needed for that case.
+    """
+    return (
+        os.environ.get("OLA_SANDBOX_NAME")
+        or os.environ.get("SANDBOX_NAME")
+        or socket.gethostname()
+    )
+
+
+def _write_auth_escalation_marker(agent_root: Path, message: str) -> None:
+    """Drop the host-visible auth-escalation marker under ``<agent_root>/monitor/``.
+
+    This is the seam a host-side credential watcher polls: the project and
+    agent folder are already bind-mounted into the sandbox (see
+    ``design-notes.md``), so no new channel is needed — the file is
+    host-visible the instant it lands. Shape is locked:
+    ``{"sandbox": <name>, "ts": <ISO8601>, "message": <auth error>}``.
+    """
+    monitor_dir = agent_root / "monitor"
+    monitor_dir.mkdir(parents=True, exist_ok=True)
+    marker = {
+        "sandbox": _sandbox_name(),
+        "ts": _utc_now_iso(),
+        "message": message,
+    }
+    marker_path = monitor_dir / "auth-escalation.json"
+    tmp = marker_path.with_name(marker_path.name + ".tmp")
+    tmp.write_text(json.dumps(marker, indent=2) + "\n")
+    tmp.replace(marker_path)
 
 
 def write_heartbeat(folder: Path, payload: dict[str, Any]) -> None:
@@ -835,6 +898,21 @@ def _run_one_task(
             prog.blocked(record.reason, stats=response.stats)
             return _OUTCOME_BLOCKED
 
+        if not response.success and response.stats.error_type == "authentication_error":
+            # Auth is global — every other task sharing this credential would
+            # fail identically — so this is terminal for the task (no
+            # requeue) and signals the main loop to abort the whole folder
+            # rather than let each remaining worker burn its own ~1s failure.
+            # last_error carries the raw auth error (stats.error_message) —
+            # more diagnostic than the human-facing response.output — since
+            # the main loop reads it back to populate the escalation marker.
+            auth_message = response.stats.error_message or _truncate(response.output)
+            with state_lock:
+                state.mark(task_id, "failed", last_error=auth_message)
+                state.save()
+            prog.failed(_truncate(response.output), stats=response.stats)
+            return _OUTCOME_AUTH_ESCALATION
+
         if not response.success:
             _fail_or_requeue(
                 state,
@@ -978,6 +1056,7 @@ def run_folder(
     # folder rather than spin forever on an agent that never makes progress.
     consecutive_stagnant = 0
     halted = False
+    auth_aborted = False
 
     # Janitor lane: at most one janitor runs per folder, off to the side of
     # the worker pool — it is harness overhead, not a plan task, so it never
@@ -1065,6 +1144,43 @@ def run_folder(
             signame,
             len(in_flight),
             folder.name,
+        )
+
+    def _flush_auth_abort(message: str) -> None:
+        """Record every still in-flight task as aborted and drop the marker.
+
+        The task whose response actually carried the ``authentication_error``
+        is already marked failed by ``_run_one_task`` before this runs; this
+        only needs to cover the *other* in-flight workers, which would fail
+        the same way on their next API call — mirrors ``_flush_interrupt``'s
+        synchronous snapshot-then-stop shape, but for a global-credential
+        failure instead of an operator signal.
+        """
+        reason = f"auth escalation: {message}"
+        with state_lock:
+            for job in in_flight.values():
+                entry = state.get(job.task_id)
+                if entry is not None and entry.status == "running":
+                    state.mark(job.task_id, "failed", last_error=reason)
+                if emitter is not None:
+                    emitter.failed(
+                        agent_id=f"agent-{job.task_id}",
+                        attempt=job.attempt,
+                        folder=folder.name,
+                        task_id=job.task_id,
+                        task_text=entry.text if entry else job.task_id,
+                        agent_backend=agent.mnemonic,
+                        data={"error": reason, "auth_escalation": True},
+                    )
+            state.save()
+        _write_auth_escalation_marker(agent_root, message)
+        logger.error(
+            "Claude Code authentication failed in %s — aborting the run. "
+            "%d other in-flight task(s) recorded as failed. Marker written to "
+            "%s.",
+            folder.name,
+            len(in_flight),
+            agent_root / "monitor" / "auth-escalation.json",
         )
 
     # Liveness heartbeat: a small sidecar the main loop refreshes every tick
@@ -1229,6 +1345,15 @@ def run_folder(
                     consecutive_stagnant = 0
                     continue
                 outcome = fut.result()
+                if outcome == _OUTCOME_AUTH_ESCALATION:
+                    with state_lock:
+                        entry = state.get(job.task_id)
+                    message = (entry.last_error if entry else None) or (
+                        "authentication failed"
+                    )
+                    _flush_auth_abort(message)
+                    auth_aborted = True
+                    raise AuthEscalation(folder.name, message)
                 if outcome == _OUTCOME_COMPLETE:
                     # A merge-back landed on the base branch — the only event
                     # that can move a project-measured metric. Flag it; the probe
@@ -1284,13 +1409,14 @@ def run_folder(
                 # Best-effort restore: the prior handler may be a C-level one
                 # getsignal reports as None, which signal.signal refuses.
                 pass
-        # On a clean drain we wait for in-flight workers. On interrupt we don't
-        # stack a blocking join on top of the signal — the snapshot is already
-        # flushed. (The interpreter's concurrent.futures atexit hook still joins
-        # live worker threads, so a hung in-process worker — e.g. the oh backend
-        # mid-call — can keep the process alive until a SIGKILL; by then
-        # tasks.json already records the interruption.)
-        drain = not interrupted.is_set()
+        # On a clean drain we wait for in-flight workers. On interrupt — or an
+        # auth escalation, which is just as urgent to exit on — we don't stack
+        # a blocking join on top of it; the snapshot is already flushed. (The
+        # interpreter's concurrent.futures atexit hook still joins live worker
+        # threads, so a hung in-process worker — e.g. the oh backend mid-call —
+        # can keep the process alive until a SIGKILL; by then tasks.json
+        # already records the interruption.)
+        drain = not interrupted.is_set() and not auth_aborted
         executor.shutdown(wait=drain)
         for retired in retired_executors:
             retired.shutdown(wait=drain)

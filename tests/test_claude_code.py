@@ -2,12 +2,17 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ola.agents.claude_code import AuthenticationError, ClaudeCodeAgent
+from ola.agents.claude_code import (
+    AuthenticationError,
+    ClaudeCodeAgent,
+    _parse_session_limit_reset_epoch,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +153,17 @@ class TestClaudeCodeAgent:
         assert not resp.success
         assert "ola-sandbox" in resp.output
         assert ".credentials.json" in resp.output
+
+    def test_auth_error_sets_error_type_for_scheduler(self):
+        """error_type=authentication_error is what the scheduler keys on to
+        abort the whole run rather than fail-and-requeue this one task."""
+        agent = ClaudeCodeAgent()
+        with patch.object(
+            agent, "_run_once", side_effect=AuthenticationError("bad creds")
+        ):
+            resp = agent.run(prompt="hi", workdir="/tmp")
+        assert resp.stats.error_type == "authentication_error"
+        assert "bad creds" in resp.stats.error_message
 
     def test_auth_error_does_not_mention_old_approaches(self):
         """Neither cc-credentials nor sbx secret should appear."""
@@ -783,6 +799,118 @@ class TestRateLimitEvents:
         assert not resp.success
         assert resp.stats.error_type == "rate_limited"
         assert "seven_day_opus" in resp.stats.error_message
+
+
+# ---------------------------------------------------------------------------
+# Channel-B: terminal synthetic session-limit message
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_session_limit_message(text: str) -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "error": "rate_limit",
+            "isApiErrorMessage": True,
+            "apiErrorStatus": 429,
+            "message": {
+                "model": "<synthetic>",
+                "content": [{"type": "text", "text": text}],
+            },
+        }
+    )
+
+
+class TestSessionLimitResetParsing:
+    def test_parses_pm_time(self):
+        now = datetime(2026, 7, 23, 12, 0, 0, tzinfo=timezone.utc)
+        epoch = _parse_session_limit_reset_epoch(
+            "You've hit your session limit · resets 8:10pm (UTC)", now=now
+        )
+        expected = datetime(2026, 7, 23, 20, 10, 0, tzinfo=timezone.utc)
+        assert epoch == int(expected.timestamp())
+
+    def test_parses_am_time(self):
+        now = datetime(2026, 7, 23, 6, 0, 0, tzinfo=timezone.utc)
+        epoch = _parse_session_limit_reset_epoch("resets 8:10am (UTC)", now=now)
+        expected = datetime(2026, 7, 23, 8, 10, 0, tzinfo=timezone.utc)
+        assert epoch == int(expected.timestamp())
+
+    def test_rolls_forward_a_day_when_time_already_passed(self):
+        now = datetime(2026, 7, 23, 21, 0, 0, tzinfo=timezone.utc)
+        epoch = _parse_session_limit_reset_epoch("resets 8:10pm (UTC)", now=now)
+        expected = datetime(2026, 7, 24, 20, 10, 0, tzinfo=timezone.utc)
+        assert epoch == int(expected.timestamp())
+
+    def test_midnight_and_noon(self):
+        now = datetime(2026, 7, 23, 0, 0, 0, tzinfo=timezone.utc)
+        midnight = _parse_session_limit_reset_epoch("resets 12:00am (UTC)", now=now)
+        noon = _parse_session_limit_reset_epoch("resets 12:00pm (UTC)", now=now)
+        assert midnight == int(
+            datetime(2026, 7, 24, 0, 0, 0, tzinfo=timezone.utc).timestamp()
+        )
+        assert noon == int(
+            datetime(2026, 7, 23, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        )
+
+    def test_no_match_returns_none(self):
+        assert _parse_session_limit_reset_epoch("no reset time here") is None
+
+
+class TestChannelBSessionLimit:
+    def test_terminal_synthetic_message_classified_rate_limited(self):
+        """The terminal synthetic 429 message (no `result` event at all)
+        routes into the same error_type=rate_limited path as the structured
+        rate_limit_event, with the prose reset time parsed into an epoch."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _message_start(),
+            _content_block_start(),
+            _synthetic_session_limit_message(
+                "You've hit your session limit · resets 8:10pm (UTC)"
+            ),
+            # No result event — this message is terminal.
+        ]
+        fixed_epoch = 1234567890
+        with patch(
+            "ola.agents.claude_code._parse_session_limit_reset_epoch",
+            return_value=fixed_epoch,
+        ):
+            resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "rate_limited"
+        assert resp.stats.rate_limit_resets_at == fixed_epoch
+
+    def test_unparseable_reset_time_still_classified_rate_limited(self):
+        """A malformed/unexpected reset time still fails as rate_limited —
+        just without a sleep-and-resume target — instead of falling through
+        to a generic, unclassified failure."""
+        lines = [
+            json.dumps({"type": "system"}),
+            _synthetic_session_limit_message("hit your session limit, try later"),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "rate_limited"
+        assert resp.stats.rate_limit_resets_at is None
+
+    def test_generic_api_error_is_not_rate_limited_or_auth(self):
+        """A plain API error (not the Channel-B shape) is neither
+        rate_limited nor authentication_error — the three classes stay
+        distinct."""
+        lines = [
+            json.dumps({"type": "system"}),
+            json.dumps(
+                {
+                    "type": "error",
+                    "error": {"type": "overloaded_error", "message": "busy"},
+                }
+            ),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "overloaded_error"
+        assert resp.stats.error_type not in ("rate_limited", "authentication_error")
 
 
 # ---------------------------------------------------------------------------

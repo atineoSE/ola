@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from ola.cli import main
-from ola.scheduler import FolderIncompleteError
+from ola.scheduler import AUTH_ESCALATION_EXIT_CODE, AuthEscalation, FolderIncompleteError
 
 
 class TestBailOut:
@@ -27,6 +27,27 @@ class TestBailOut:
         ):
             main()
         assert excinfo.value.code == 1
+
+
+class TestAuthEscalation:
+    """AuthEscalation (whole-run auth abort) stops ola with a distinct exit code."""
+
+    def test_auth_escalation_exits_with_distinct_code(self, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch(
+                "ola.cli.run_outer_loop",
+                side_effect=AuthEscalation("02-utils", "bad credential"),
+            ),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == AUTH_ESCALATION_EXIT_CODE
+        assert excinfo.value.code != 1
 
 
 class TestSandboxGate:

@@ -1,12 +1,13 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse, ProgressCallback
@@ -19,6 +20,13 @@ _BOOTSTRAP_FILES = (".credentials.json", ".claude.json", "settings.json")
 _ALWAYS_REFRESH = {".credentials.json"}
 _STATUS_LINES = 3
 _MAX_LINE_LEN = 72
+
+# Channel-B (terminal synthetic rate-limit message) prose reset time, e.g.
+# "You've hit your session limit · resets 8:10pm (UTC)". No machine timestamp
+# is provided, so we parse the 12-hour clock time and anchor it to "now".
+_SESSION_LIMIT_RESET_RE = re.compile(
+    r"resets\s+(\d{1,2}):(\d{2})\s*([ap]m)\s*\(UTC\)", re.IGNORECASE
+)
 
 
 class _StatusDisplay:
@@ -66,6 +74,34 @@ class _StatusDisplay:
 
 class AuthenticationError(Exception):
     """Raised when Claude Code reports an authentication failure."""
+
+
+def _parse_session_limit_reset_epoch(
+    text: str, *, now: datetime | None = None
+) -> int | None:
+    """Parse a Channel-B reset time (e.g. "resets 8:10pm (UTC)") into an epoch.
+
+    The synthetic session-limit message carries no machine timestamp, only a
+    12-hour clock time with no date, so we anchor it to *now* (UTC) and roll
+    forward a day if that time has already passed today — the reset the CLI
+    reports is always in the future. Returns ``None`` when the text doesn't
+    match the expected shape; the caller still routes the failure into the
+    ``rate_limited`` path, just without a sleep-and-resume target.
+    """
+    match = _SESSION_LIMIT_RESET_RE.search(text)
+    if not match:
+        return None
+    hour_str, minute_str, meridiem = match.groups()
+    hour = int(hour_str) % 12
+    if meridiem.lower() == "pm":
+        hour += 12
+    now = now or datetime.now(timezone.utc)
+    candidate = now.replace(
+        hour=hour, minute=int(minute_str), second=0, microsecond=0
+    )
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return int(candidate.timestamp())
 
 
 def _is_self_hosted() -> bool:
@@ -125,10 +161,19 @@ class ClaudeCodeAgent(Agent):
     ) -> AgentResponse:
         try:
             return self._run_once(prompt, workdir, state_dir, on_progress=on_progress)
-        except AuthenticationError:
+        except AuthenticationError as exc:
+            # error_type="authentication_error" is what the scheduler keys on
+            # (mirrors error_type="rate_limited") to abort the whole run rather
+            # than fail this one task and let every other task burn its own
+            # ~1s auth failure — the credential is dead for all of them alike.
             return AgentResponse(
                 output="Authentication failed. Run `ola-sandbox <name>` to refresh credentials (copies ~/.claude/.credentials.json into sandbox).",
                 success=False,
+                stats=IterationStats(
+                    error_type="authentication_error",
+                    error_message=(str(exc)[:500] or None),
+                    models=[self.model] if self.model else [],
+                ),
             )
 
     def _run_once(
@@ -288,6 +333,28 @@ class ClaudeCodeAgent(Agent):
                 proc.kill()
                 proc.wait()
                 raise AuthenticationError(err_msg)
+
+            # --- Channel B: terminal synthetic session-limit message ---
+            # Channel A is the structured `rate_limit_event` handled below
+            # (proactive, machine `resetsAt`). This is the terminal form the
+            # CLI emits in its place when the session limit is actually hit:
+            # a synthetic assistant message with no `result` event to follow.
+            # Same underlying condition, so it routes into the same
+            # `rate_limit_hit` sleep-and-resume path via a parsed prose time.
+            if (
+                event.get("error") == "rate_limit"
+                and event.get("isApiErrorMessage")
+                and event.get("message", {}).get("model") == "<synthetic>"
+            ):
+                err_text = (
+                    event.get("message", {}).get("content", [{}])[0].get("text", "")
+                )
+                resets_at = _parse_session_limit_reset_epoch(err_text)
+                rate_limit_hit = {"resetsAt": resets_at, "rateLimitType": "session"}
+                logger.warning(
+                    "CC session limit hit (terminal synthetic message): %s", err_text
+                )
+                continue
 
             # --- Unwrap stream_event envelope and dispatch ---
 

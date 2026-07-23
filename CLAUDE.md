@@ -64,6 +64,42 @@ artifact, not a `cc` bug; the fix is to re-run `cc-credentials` (reconnect the
 sandbox) and/or run ola outside a live `claude` session — not to bypass the
 isolated config dir.
 
+### `cc` failure classification
+
+The `cc` backend (`src/ola/agents/claude_code.py`) differentiates three
+failure modes instead of collapsing every non-200 into "authentication
+failed":
+
+- **Subscription limit** — sleep-and-resume, transparent to the plan. Two
+  transports for the same condition, both routed into the same
+  `error_type="rate_limited"` + `rate_limit_resets_at` path
+  (`scheduler._run_with_rate_limit_resume`): (A) the structured
+  `rate_limit_event` stream event (machine `resetsAt`), and (B) the
+  *terminal* synthetic assistant message (`model:"<synthetic>"`,
+  `error:"rate_limit"`, `isApiErrorMessage:true`, text like `"You've hit your
+  session limit · resets 8:10pm (UTC)"`) — its reset time is prose-only and is
+  parsed into an epoch (`_parse_session_limit_reset_epoch`).
+- **Authentication failure** — global, not per-task: one task's
+  `authentication_error` means every task sharing that credential will fail
+  the same way. `ClaudeCodeAgent.run()` still catches `AuthenticationError`
+  (unchanged detection), but now tags the response
+  `stats.error_type="authentication_error"`; the scheduler keys on that to
+  abort the *entire* run rather than fail/requeue one task at a time
+  (`scheduler.AuthEscalation`), marks every other in-flight task failed, drops
+  the host-visible marker below, and the CLI exits with code **40** (see
+  `scheduler.AUTH_ESCALATION_EXIT_CODE`) instead of the generic `1`. Recover
+  by re-running `cc-credentials` (reconnect the sandbox) and re-running `ola`
+  — PLAN.md state lets it resume.
+- **Temporary failures** — anything else: normal per-task fail/requeue, no
+  special handling.
+
+The auth-escalation marker (`scheduler._write_auth_escalation_marker`) is
+JSON at `<agent-folder>/monitor/auth-escalation.json`:
+`{"sandbox": <name>, "ts": <ISO8601>, "message": <auth error>}`. The project
+and agent folder are already bind-mounted into the sandbox, so the file is
+host-visible with no new channel — this is the seam a future host-side
+credential watcher (not yet built; see `agent/design-notes.md`) polls.
+
 ### Layout
 
 - `ola.sh` — the harness entrypoint (installed as the `ola` CLI via `uv tool install .`).
