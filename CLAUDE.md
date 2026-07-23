@@ -97,12 +97,42 @@ The auth-escalation marker (`scheduler._write_auth_escalation_marker`) is
 JSON at `<agent-folder>/monitor/auth-escalation.json`:
 `{"sandbox": <name>, "ts": <ISO8601>, "message": <auth error>}`. The project
 and agent folder are already bind-mounted into the sandbox, so the file is
-host-visible with no new channel — this is the seam a future host-side
-credential watcher (not yet built; see `agent/design-notes.md`) polls.
+host-visible with no new channel — this is the seam the host-side
+`ola-monitor` watcher (below) polls.
+
+### `ola-monitor` — host-side auth launcher-watcher
+
+`ola-monitor` (in `ola.sh`, installed alongside `ola`/`ola-sandbox`) is
+**not** the old in-sandbox progress monitor — that concept was scrapped (see
+`agent/design-notes.md`); deterministic progress is `ola-top`'s job.
+`ola-monitor`'s sole concern is auth recovery: only the host can run
+`cc-credentials` against the Keychain and re-inject into the sandbox, so the
+watcher runs on the host and launches `ola` *into* the sandbox, rather than
+living in-sandbox. Invoke it with the same arguments you'd give `ola`:
+`ola-monitor -a cc -f ../agent`. The sandbox to launch into isn't part of
+`ola`'s own argv, so it's derived from the project checkout directory's
+basename (override with `OLA_MONITOR_SANDBOX` if the sandbox was created
+under a different name).
+
+It: **(1) Launches** — ensures/creates the sandbox and injects fresh
+credentials (`_ola_sandbox_prepare`, shared with `ola-sandbox`), then execs
+`ola <args>` inside it non-interactively (`sbx exec`, not `sbx run`),
+printing a one-line ack and otherwise passing ola's own logs through
+untouched. **(2) Watches** the host-visible auth-escalation marker above.
+**(3) Self-heals first** on the marker: re-pulls Keychain credentials
+(`cc-credentials`) and re-injects them (`_ola_inject_credentials`), deletes
+the marker, and relaunches `ola <args>` to resume the plan. **(4) Thrash
+guards:** if the same account re-heals `OLA_MONITOR_THRASH_MAX` times
+(default 3) within `OLA_MONITOR_THRASH_WINDOW` seconds (default 300) — the
+signature of a concurrent rotator, e.g. a live `claude` session sharing the
+account, which a mechanical re-pull cannot win — it stops re-healing and
+notifies the human instead. **(5) Notifies** if `cc-credentials` finds no
+valid Keychain token (user logged out) rather than looping. **(6) Exits**
+with ola's own exit code once ola completes without dropping a marker.
 
 ### Layout
 
-- `ola.sh` — the harness entrypoint (installed as the `ola` CLI via `uv tool install .`).
+- `ola.sh` — the harness entrypoint (installed as the `ola` CLI via `uv tool install .`); also provides the `ola-sandbox` and `ola-monitor` shell functions.
 - `src/` — Python package.
 - `dashboard/` — `ola-dashboard`, the browser-based monitor.
 - `helper-scripts/`, `docker/`, `docs/`, `examples/`, `tests/` — supporting code, sandbox, docs, and the bats/pytest suites.
@@ -121,7 +151,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-plan` | 1.0.2 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 1.3.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy, secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall). Contract version-pinned; re-verify on sbx upgrade. |
+| `sbx` | 1.4.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy, secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), and `ola-monitor` (host-side auth launcher-watcher). Contract version-pinned; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

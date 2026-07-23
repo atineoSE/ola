@@ -76,6 +76,27 @@ Inside the sandbox:
 ola -a cc -l 5
 ```
 
+## Unattended auth recovery: `ola-monitor`
+
+`ola-sandbox` + `ola -a cc` requires you to notice a loud auth failure (exit
+code 40) and manually re-run `ola-sandbox` to refresh credentials. **`ola-monitor`**
+automates that: it launches `ola` into the sandbox for you and watches for the
+host-visible auth-escalation marker, self-healing (re-pull Keychain creds,
+re-inject, relaunch `ola`) without a human in the loop for a one-off credential
+rotation. It takes the same arguments as `ola` itself:
+
+```bash
+ola-monitor -a cc -f ../agent -l 5
+```
+
+The sandbox name isn't part of `ola`'s own arguments, so `ola-monitor` derives it
+from the project checkout directory's name; set `OLA_MONITOR_SANDBOX` if the
+sandbox you want it to use was created under a different name. If the same
+credential breaks repeatedly in a short window (a concurrent `claude` session
+sharing the account, which a mechanical re-pull can't win) or the Keychain has no
+valid token at all (you've logged out), `ola-monitor` stops and tells you rather
+than looping forever. See CLAUDE.md for the full contract.
+
 ## Sandbox memory
 
 `sbx` defaults a sandbox to **50% of the Docker VM's memory** (capped at 32 GiB).

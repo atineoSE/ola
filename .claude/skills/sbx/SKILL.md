@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 1.3.0
+version: 1.4.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -148,6 +148,15 @@ and `**` for all hosts. Re-adding a covered resource is idempotent (exit 0,
   `gh auth token | sbx secret set --registry ghcr.io --password-stdin` (host-only;
   add `-g` to also write `~/.docker/config.json` into every new sandbox). Remove with
   `sbx secret rm --registry ghcr.io -f`.
+
+### `ola-monitor` (host-side auth launcher-watcher)
+`ola-monitor` (in `ola.sh`) wraps `ola-sandbox`'s create/reconnect + credential-inject
+path (`_ola_sandbox_prepare`) plus a non-interactive `sbx exec` of `ola <args>` to
+keep an ola run authenticated unsupervised: on the host-visible auth-escalation
+marker, it re-pulls Keychain credentials, re-injects them into the sandbox, and
+relaunches `ola` — with a thrash guard (repeated re-heals in a short window means a
+concurrent rotator, not a one-off) and a notify-fallback for a dead Keychain token.
+Auth-only scope — no progress reporting of its own. Full contract in CLAUDE.md.
 
 ### Ports
 Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = ephemeral; loopback by default).

@@ -174,7 +174,7 @@ Monitor a parallel run with [`ola-top`](./docs/ola-top.md), which renders a live
 
 Although you can run `ola` directly on your host, we strongly recommend running it inside a Docker sandbox (via [`sbx`](https://docs.docker.com/sandbox/)) for true filesystem and network isolation.
 
-See **[docs/sandbox.md](./docs/sandbox.md)** for the full setup: building the template image, the `ola-sandbox` shell helper, network policies, and Laminar tracing.
+See **[docs/sandbox.md](./docs/sandbox.md)** for the full setup: building the template image, the `ola-sandbox`/`ola-monitor` shell helpers, network policies, and Laminar tracing.
 
 ## ola-top
 

@@ -30,6 +30,7 @@ teardown_file() {
 setup() {
   export HOME="$TMPDIR_TEST/fake_home"
   unset OLA_SBX_IMAGE
+  unset OLA_MONITOR_SANDBOX OLA_MONITOR_THRASH_MAX OLA_MONITOR_THRASH_WINDOW
 
   # Re-source ola.sh (functions don't survive subshells in bats)
   local ola_sh="$(cd "$BATS_TEST_DIRNAME/.." && pwd)/ola.sh"
@@ -621,4 +622,286 @@ _mock_sbx_new_sandbox() {
 
   grep -q '\--template ola:dev' "$SBX_LOG"
   ! grep -q 'ghcr.io' "$SBX_LOG"
+}
+
+# ===== ola-monitor: deterministic helpers =====
+# The host-side auth launcher-watcher's own control flow (real sbx exec +
+# real Keychain) is verified manually — see design-notes.md — but the
+# marker parsing, heal/relaunch decision, and thrash counter/window are pure
+# and covered here without either.
+
+@test "monitor_agent_folder: defaults to ../agent" {
+  [ "$(_ola_monitor_agent_folder -a cc)" = "../agent" ]
+}
+
+@test "monitor_agent_folder: -f VALUE" {
+  [ "$(_ola_monitor_agent_folder -a cc -f ../custom-agent -l 5)" = "../custom-agent" ]
+}
+
+@test "monitor_agent_folder: --agent-folder VALUE" {
+  [ "$(_ola_monitor_agent_folder --agent-folder ../custom-agent)" = "../custom-agent" ]
+}
+
+@test "monitor_agent_folder: --agent-folder=VALUE" {
+  [ "$(_ola_monitor_agent_folder --agent-folder=../custom-agent)" = "../custom-agent" ]
+}
+
+@test "monitor_marker_field: extracts sandbox/ts/message" {
+  local marker="$TMPDIR_TEST/marker_field.json"
+  cat > "$marker" <<'EOF'
+{
+  "sandbox": "my-sandbox",
+  "ts": "2026-01-01T00:00:00.000Z",
+  "message": "authentication_error: invalid_grant"
+}
+EOF
+  [ "$(_ola_monitor_marker_field "$marker" sandbox)" = "my-sandbox" ]
+  [ "$(_ola_monitor_marker_field "$marker" ts)" = "2026-01-01T00:00:00.000Z" ]
+  [ "$(_ola_monitor_marker_field "$marker" message)" = "authentication_error: invalid_grant" ]
+}
+
+@test "monitor_marker_field: missing file fails" {
+  run _ola_monitor_marker_field "$TMPDIR_TEST/no-such-marker.json" sandbox
+  [ "$status" -ne 0 ]
+}
+
+@test "monitor_epoch: parses an ISO8601 UTC timestamp" {
+  [ "$(_ola_monitor_epoch "1970-01-01T00:02:03Z")" = "123" ]
+}
+
+@test "monitor_epoch: parses a timestamp with a millisecond fraction" {
+  [ "$(_ola_monitor_epoch "1970-01-01T00:02:03.456Z")" = "123" ]
+}
+
+@test "monitor_prune_window: drops epochs older than the window, keeps the rest" {
+  export OLA_MONITOR_THRASH_WINDOW=300
+  local out
+  out="$(_ola_monitor_prune_window 1000 600 800 950)"
+  [ "$out" = "$(printf '800\n950')" ]
+}
+
+@test "monitor_prune_window: window is overridable" {
+  export OLA_MONITOR_THRASH_WINDOW=60
+  local out
+  out="$(_ola_monitor_prune_window 1000 950 990)"
+  [ "$out" = "$(printf '950\n990')" ]
+}
+
+@test "monitor_prune_window: empty input yields nothing" {
+  [ -z "$(_ola_monitor_prune_window 1000)" ]
+}
+
+@test "monitor_decide: heals under the default threshold" {
+  [ "$(_ola_monitor_decide 0)" = "heal" ]
+  [ "$(_ola_monitor_decide 2)" = "heal" ]
+}
+
+@test "monitor_decide: thrashes at the default threshold (3)" {
+  [ "$(_ola_monitor_decide 3)" = "thrash" ]
+}
+
+@test "monitor_decide: threshold is overridable" {
+  export OLA_MONITOR_THRASH_MAX=2
+  [ "$(_ola_monitor_decide 1)" = "heal" ]
+  [ "$(_ola_monitor_decide 2)" = "thrash" ]
+}
+
+# ===== ola-monitor: control loop =====
+# `sbx exec` is stubbed to directly invoke the test's `ola` fake — good
+# enough to exercise the watcher's own decisions without a real sandbox.
+
+_mock_sbx_for_monitor() {
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    case "$1" in
+      ls) echo "mon-sbx  running  1h"; return 0 ;;
+      exec)
+        shift
+        local found=0
+        while [ $# -gt 0 ]; do
+          if [ "$1" = "ola" ]; then
+            shift
+            found=1
+            break
+          fi
+          shift
+        done
+        [ "$found" -eq 1 ] && { ola "$@"; return $?; }
+        return 0
+        ;;
+    esac
+    return 0
+  }
+  export -f sbx
+}
+
+_mock_write_auth_marker() {
+  local agent_dir="$1" ts="${2:-2026-01-01T00:00:00.000Z}"
+  mkdir -p "$agent_dir/monitor"
+  cat > "$agent_dir/monitor/auth-escalation.json" <<EOF
+{
+  "sandbox": "mon-sbx",
+  "ts": "$ts",
+  "message": "authentication_error: invalid_grant"
+}
+EOF
+}
+
+@test "monitor: acks the supervised command and returns ola's exit status" {
+  mkdir -p "$TMPDIR_TEST/mon_clean/agent" "$TMPDIR_TEST/mon_clean/code"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo "ola-ran $*" >> "$SBX_LOG"
+    return 0
+  }
+  export -f ola
+
+  export OLA_MONITOR_SANDBOX=mon-sbx
+  cd "$TMPDIR_TEST/mon_clean/code"
+  run ola-monitor -a cc -f ../agent -l 5
+
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "ola-monitor: supervising 'ola -a cc -f ../agent -l 5' in sandbox 'mon-sbx'" ]
+  grep -q "ola-ran -a cc -f ../agent -l 5" "$SBX_LOG"
+}
+
+@test "monitor: propagates ola's non-zero exit when there is no auth marker" {
+  mkdir -p "$TMPDIR_TEST/mon_fail/agent" "$TMPDIR_TEST/mon_fail/code"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    return 7
+  }
+  export -f ola
+
+  export OLA_MONITOR_SANDBOX=mon-sbx
+  cd "$TMPDIR_TEST/mon_fail/code"
+  run ola-monitor -a cc -f ../agent
+
+  [ "$status" -eq 7 ]
+}
+
+@test "monitor: errors when the -f agent folder can't be resolved" {
+  mkdir -p "$TMPDIR_TEST/mon_noagent/code"
+  cd "$TMPDIR_TEST/mon_noagent/code"
+  run ola-monitor -a cc -f ../nope
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"agent folder not found"* ]]
+}
+
+@test "monitor: self-heals once on auth escalation, then resumes and exits clean" {
+  mkdir -p "$TMPDIR_TEST/mon_heal/agent" "$TMPDIR_TEST/mon_heal/code"
+  export MON_AGENT_DIR="$TMPDIR_TEST/mon_heal/agent"
+  export CALLS_LOG="$TMPDIR_TEST/mon_heal/calls"; : > "$CALLS_LOG"
+  export CC_CALLS_LOG="$TMPDIR_TEST/mon_heal/cc_calls"; : > "$CC_CALLS_LOG"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo x >> "$CALLS_LOG"
+    if [ "$(wc -l < "$CALLS_LOG")" -eq 1 ]; then
+      _mock_write_auth_marker "$MON_AGENT_DIR"
+      return 40
+    fi
+    return 0
+  }
+  export -f ola
+
+  cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 0; }
+  export -f cc-credentials
+
+  export OLA_MONITOR_SANDBOX=mon-sbx
+  cd "$TMPDIR_TEST/mon_heal/code"
+  run ola-monitor -a cc -f ../agent
+
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$CALLS_LOG")" -eq 2 ]
+  # 1 from the initial _ola_sandbox_prepare launch + 1 heal.
+  [ "$(wc -l < "$CC_CALLS_LOG")" -eq 2 ]
+  [ ! -f "$MON_AGENT_DIR/monitor/auth-escalation.json" ]
+  [[ "$output" == *"auth escalation"* ]]
+}
+
+@test "monitor: thrash guard stops re-healing after repeated auth breaks in the window" {
+  mkdir -p "$TMPDIR_TEST/mon_thrash/agent" "$TMPDIR_TEST/mon_thrash/code"
+  export MON_AGENT_DIR="$TMPDIR_TEST/mon_thrash/agent"
+  export CALLS_LOG="$TMPDIR_TEST/mon_thrash/calls"; : > "$CALLS_LOG"
+  export CC_CALLS_LOG="$TMPDIR_TEST/mon_thrash/cc_calls"; : > "$CC_CALLS_LOG"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo x >> "$CALLS_LOG"
+    _mock_write_auth_marker "$MON_AGENT_DIR"
+    return 40
+  }
+  export -f ola
+
+  cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 0; }
+  export -f cc-credentials
+
+  export OLA_MONITOR_SANDBOX=mon-sbx
+  export OLA_MONITOR_THRASH_MAX=2
+  cd "$TMPDIR_TEST/mon_thrash/code"
+  run ola-monitor -a cc -f ../agent
+
+  [ "$status" -ne 0 ]
+  [ "$(wc -l < "$CALLS_LOG")" -eq 3 ]
+  # 1 from the initial _ola_sandbox_prepare launch + 2 heals (the 3rd break
+  # hits the thrash guard before a 3rd cc-credentials call).
+  [ "$(wc -l < "$CC_CALLS_LOG")" -eq 3 ]
+  [[ "$output" == *"something else is using this account"* ]]
+}
+
+@test "monitor: notifies and stops when cc-credentials finds no valid Keychain token" {
+  mkdir -p "$TMPDIR_TEST/mon_dead/agent" "$TMPDIR_TEST/mon_dead/code"
+  export MON_AGENT_DIR="$TMPDIR_TEST/mon_dead/agent"
+  export CALLS_LOG="$TMPDIR_TEST/mon_dead/calls"; : > "$CALLS_LOG"
+  export CC_CALLS_LOG="$TMPDIR_TEST/mon_dead/cc_calls"; : > "$CC_CALLS_LOG"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo x >> "$CALLS_LOG"
+    _mock_write_auth_marker "$MON_AGENT_DIR"
+    return 40
+  }
+  export -f ola
+
+  cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 1; }
+  export -f cc-credentials
+
+  export OLA_MONITOR_SANDBOX=mon-sbx
+  cd "$TMPDIR_TEST/mon_dead/code"
+  run ola-monitor -a cc -f ../agent
+
+  [ "$status" -ne 0 ]
+  [ "$(wc -l < "$CALLS_LOG")" -eq 1 ]
+  # 1 from the initial _ola_sandbox_prepare launch (harmless, non-fatal
+  # there) + 1 failed heal attempt that stops the watcher.
+  [ "$(wc -l < "$CC_CALLS_LOG")" -eq 2 ]
+  [ -f "$MON_AGENT_DIR/monitor/auth-escalation.json" ]
+  [[ "$output" == *"Keychain"* ]]
+}
+
+@test "monitor: OLA_MONITOR_SANDBOX overrides the derived sandbox name" {
+  mkdir -p "$TMPDIR_TEST/mon_override/agent" "$TMPDIR_TEST/mon_override/named-code-dir"
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    [ "$1" = "ls" ] && { echo "custom-name  running  1h"; return 0; }
+    return 0
+  }
+  export -f sbx
+  ola() { [ "$1" = "env" ] && return 0; return 0; }
+  export -f ola
+
+  export OLA_MONITOR_SANDBOX=custom-name
+  cd "$TMPDIR_TEST/mon_override/named-code-dir"
+  run ola-monitor -a cc -f ../agent
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"in sandbox 'custom-name'"* ]]
 }
