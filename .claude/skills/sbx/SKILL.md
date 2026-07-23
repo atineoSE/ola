@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.0.0
+version: 2.1.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -138,6 +138,31 @@ domains (`example.com`), wildcard subdomains (`*.example.com`), optional port
 suffix (`example.com:443`), bare IPv4 (`10.0.0.5` — do NOT append `*.<ip>`),
 and `**` for all hosts. Re-adding a covered resource is idempotent (exit 0,
 `Already covered: …`).
+
+#### Non-HTTP TCP egress (databases: Mongo/Postgres/…) (verified 2026-07-23, v0.35.0)
+A sandbox is **not** structurally limited to HTTP. Docker's own doc: *"Non-HTTP
+TCP traffic, including SSH, can be allowed by adding a policy rule for the
+destination IP and port."* This applies to database wire protocols too —
+`ola.sh`'s `allowlist.txt` → `sbx policy allow network` path already produces
+exactly the rule shape needed, no ola code change required.
+
+- **A bare-hostname allow rule does double duty**: it unblocks the sandbox's
+  DNS `A` lookup for that host *and* permits the raw TCP connect on any port
+  (e.g. Mongo's 27017). No `/etc/hosts` pin, no IP tracking needed.
+- **Do NOT use a `:port` suffix or an `IP:port` rule for a TLS service that
+  sends SNI** — the proxy matches on the SNI *hostname* when present, so an
+  `IP:port`/`host:port` rule never applies and the connect is denied. Use the
+  bare hostname instead. (`IP:port` is the right tool only for a non-SNI
+  service, e.g. the Docker-doc SSH example.)
+- **UDP and ICMP can never be unblocked**, so a `mongodb+srv://` URI (which
+  needs SRV/TXT DNS over UDP) can never resolve in-sandbox. The application
+  must connect with a **seedlist** URI instead
+  (`mongodb://h1,h2,h3/?tls=true&authSource=admin…`).
+- Sandbox egress still exits via the **host-side sbx proxy**, which follows
+  the *host's* routing table — any host-level route requirement (e.g. a VPN
+  bypass) still applies.
+- See the `mongo-vpn` skill for the concrete MongoDB-over-VPN + sandbox recipe
+  (host route + seedlist derivation) — don't duplicate it here.
 
 ### Credentials
 - **Claude subscription (OAuth)**: `ola-sandbox` copies `~/.claude/.credentials.json` from host into the sandbox at creation/reconnection time (via `sbx exec` + base64). No API key needed.
