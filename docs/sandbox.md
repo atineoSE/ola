@@ -129,7 +129,7 @@ cd project
 # -m mirrors what ola-sandbox sets automatically (80% of the Docker VM here);
 # omit it and sbx falls back to its 50% default.
 sbx create shell --name my-sandbox --template ghcr.io/$(whoami)/ola:latest -m 12g .
-sbx run my-sandbox
+sbx run --name my-sandbox   # re-attach by name (positional re-attach deprecated in sbx v0.33.0)
 ```
 
 ## Network policy

@@ -540,8 +540,11 @@ ola-sandbox() {
   local name="${1:?Usage: ola-sandbox <sandbox_name>}"
   _ola_sandbox_prepare "$name" || return 1
 
-  # Attach to the sandbox (foreground, interactive)
-  sbx run "$name"
+  # Attach to the sandbox (foreground, interactive). Re-attach by --name:
+  # the positional `sbx run <name>` re-attach form was deprecated in sbx
+  # v0.33.0 (the positional is now the agent), so identify the sandbox with
+  # --name; the agent is read from the existing sandbox spec.
+  sbx run --name "$name"
 }
 
 # ===== ola-monitor: host-side auth launcher-watcher =====

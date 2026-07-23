@@ -1,47 +1,50 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 1.4.0
+version: 2.0.0
 ---
 
 # sbx — Docker Sandbox CLI
 
-> **Contract validated against sbx CLI `v0.31.3`** (`8f15ed5dfabbdc512da2bbec59ff723da9390f64`, client).
-> The command shapes below were verified against this exact version. sbx makes
-> breaking CLI changes between releases (e.g. native git isolation moved from
-> `--branch` to `--clone`, and `policy rm network` dropped its positional form
-> in favour of `--resource`/`--id`). After upgrading sbx, run `sbx version` and
-> re-verify with `sbx <cmd> --help` before trusting this doc. A script that
-> discards stderr/exit codes will silently do nothing when an arg shape changes.
+> **Contract re-verified against sbx CLI `v0.35.0`** (`01e01520456e4126a9653471e7072e4d9b280321`, client).
+> The command shapes below were checked against this exact version. sbx makes
+> breaking CLI changes between releases — e.g. native git isolation moved from
+> `--branch` to `--clone`; `policy rm network` dropped its positional form for
+> `--resource`/`--id`; **`sbx run <SANDBOX>` positional re-attach was deprecated
+> in v0.33.0 in favour of `sbx run --name <SANDBOX>`**; and **`sbx policy
+> set-default` was renamed to `sbx policy init` in v0.34.0**. After upgrading
+> sbx, run `sbx version` and re-verify with `sbx <cmd> --help` before trusting
+> this doc. A script that discards stderr/exit codes will silently do nothing
+> when an arg shape changes.
 >
-> **Resource limits & swap (below) re-verified against sbx `v0.33.0`** — the
-> memory default (`50% of host, max 32 GiB`, unchanged in the v0.33.0 `--help`),
-> the **75%-of-host hard ceiling on `-m`**, and the no-swap hard-wall behavior
-> were confirmed empirically (the latter two on a 48 GB host; the rest of this
-> doc is still pinned to `v0.31.3`).
+> **Resource limits & swap (below):** the memory default (`50% of host, max
+> 32 GiB`) is unchanged through v0.35.0. The **75%-of-host hard ceiling on `-m`**
+> and the no-swap hard-wall behavior were confirmed empirically on a 48 GB host
+> at v0.33.0 and have no indication of change since — but were NOT re-run at
+> v0.35.0.
 >
-> **Network policy scope re-verified against sbx `v0.33.0`** — `policy
-> allow`/`deny`/`rm network` now default to **global** scope with `--sandbox`
-> for single-sandbox scoping; the old mandatory `-g`/`--global` flag is
-> deprecated. See *Network Policies*. (`secret` still uses `-g`/positional
-> SANDBOX — that scoping was NOT changed.)
+> **Network policy scope (v0.33.0, still current at v0.35.0)** — `policy
+> allow`/`deny`/`rm network` default to **global** scope with `--sandbox` for
+> single-sandbox scoping; the old mandatory `-g`/`--global` flag is deprecated
+> (still works, prints a deprecation notice). See *Network Policies*. (`secret`
+> still uses `-g`/positional SANDBOX — that scoping was NOT changed.)
 
 ## Quick Reference
 
 ### Lifecycle
 - `sbx run claude [path]` — start/reconnect Claude Code sandbox (creates if absent)
-- `sbx run <SANDBOX>` — reconnect to an existing sandbox by name (positional)
+- `sbx run --name <SANDBOX>` — reconnect to an existing sandbox by name (agent read from its spec). **The positional `sbx run <SANDBOX>` re-attach form was deprecated in v0.33.0** — the positional is now the *agent*, so a bare name re-attach is unreliable; use `--name`.
 - `sbx create shell --name <n> --template <img> [-q] <path> [<extra>:ro]` — create without attaching
 - `sbx ls [--json] [-q]` — list sandboxes (status, ports, workspace)
 - `sbx stop <name> [<name>...]` — pause sandbox(es), keep state
-- `sbx rm [--force] [--all] <name>...` — delete sandbox(es) + all state (`--force` for non-TTY)
+- `sbx rm [--force] [--all] <name>...` — delete sandbox(es) + all state (`--force` required to delete an **active/running** session, and for non-TTY)
 - `sbx exec [-it] [-d] [-u root] [-w DIR] <name> CMD [ARG...]` — run a command inside (docker-exec flags)
 - `sbx cp SRC DST` — copy files host⇄sandbox; sandbox side is `SANDBOX:PATH` (one side must be a sandbox)
 - `sbx diagnose` — diagnose common installation/connectivity issues
 - `sbx reset [--force] [--preserve-secrets]` — nuclear: stop all, clear ALL state/secrets/policies
 
 Resource flags on `create`/`run`: `-m`/`--memory` (e.g. `8g`, default 50% host max 32 GiB; hard ceiling 75% of host — above it `create` fails),
-`--cpus` (0 = auto: N-1 host CPUs), `--profile <governance-profile>`.
+`--cpus` (0 = auto: **all** host CPUs — was N-1 before v0.35.0), `--profile <governance-profile>`, `--kit <ref>` (experimental; repeatable — see *Custom Templates*).
 
 ### Stopping a process *inside* a sandbox
 A process launched with `sbx exec <name> CMD` keeps running in the sandbox after
@@ -112,20 +115,22 @@ pollutes captured error output and will break when the flag is removed.
 > requirement was reversed: bare is now the global default. Any script still
 > passing `-g`/`--global` should drop it.
 
-- `sbx policy set-default <allow-all|balanced|deny-all>` — set baseline (run BEFORE adding rules / first sandbox)
-- `sbx policy ls [SANDBOX] [--type network]` — show active rules (provenance, scope, decision, resources, IDs)
+- `sbx policy init <allow-all|balanced|deny-all>` — set the initial global baseline (run BEFORE adding rules / first sandbox). **Renamed from `sbx policy set-default` in v0.34.0** — the old name still works but prints a deprecation notice. One-time: use `sbx policy reset` to start over.
+- `sbx policy ls [SANDBOX] [--type network]` — summary of active policies. Add **`--wide`** for the rule-level table with **rule IDs and resources** (needed for `policy rm --id`); `--json` for the raw filtered response; `--source`/`--decision` to filter.
 - `sbx policy allow network "domain1,*.domain2"` — global allow rule (bare = global)
 - `sbx policy allow network --sandbox <SANDBOX> "domain"` — sandbox-scoped allow rule
 - `sbx policy deny network "domain"` — global deny rule (deny always > allow)
-- `sbx policy rm network --resource "domain"` — remove a global rule by resource (or `--id <uuid>`)
+- `sbx policy rm network --resource "domain"` — remove a global rule by resource (or `--id <uuid>` from `policy ls --wide`)
 - `sbx policy rm network --sandbox <SANDBOX> --resource "domain"` — remove a sandbox-scoped rule
 - `sbx policy log [SANDBOX] [--type network] [--limit N] [--json] [-q]` — view allowed/blocked requests
 - `sbx policy reset` — reset policies to defaults
 - `sbx policy profile ...` — manage reusable policy profiles
+- `sbx policy check network <host>` / `sbx policy inspect <policy-or-rule>` — (v0.35.0) test whether a request is allowed / show full detail on a policy or rule
 
 > **Removal changed (v0.31.x):** `policy rm network` no longer accepts a
 > positional RESOURCES argument. You MUST identify the rule with `--resource
-> <csv>` and/or `--id <uuid>` (find them via `sbx policy ls`). The old
+> <csv>` and/or `--id <uuid>` (find them via `sbx policy ls --wide` — plain
+> `sbx policy ls` is a summary as of v0.35.0 and does not show IDs). The old
 > `sbx policy rm network -g "domain"` form is no longer valid.
 
 RESOURCES is a comma-separated list of hostnames/domains/IPs. Supports exact
@@ -143,7 +148,8 @@ and `**` for all hosts. Re-adding a covered resource is idempotent (exit 0,
 - `sbx secret set <sandbox> <service>` — sandbox-scoped secret
 - `sbx secret ls [SANDBOX] [-g] [--service <name>]` — list stored secrets
 - `sbx secret rm -g <service> [-f]` — remove a global secret
-- v0.31.3 services: `anthropic, aws, bedrock, cursor, droid, github, google, groq, mistral, nebius, openai, xai`
+- `sbx secret import` — (v0.35.0) import credentials detected in host env vars into the keychain
+- v0.35.0 services: `anthropic, cursor, droid, github, google, groq, mistral, nebius, openai, openrouter, xai` (changed from v0.31.3: **`aws` and `bedrock` removed, `openrouter` added** — re-check with `sbx secret set --help` after upgrades)
 - **Registry secrets** (e.g. `ghcr.io`) authenticate private template/kit pulls:
   `gh auth token | sbx secret set --registry ghcr.io --password-stdin` (host-only;
   add `-g` to also write `~/.docker/config.json` into every new sandbox). Remove with
@@ -182,12 +188,14 @@ Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = eph
 - Use: `sbx run --template docker.io/org/img:tag claude` (or `sbx create shell --template ...`)
 - Snapshot a running sandbox into a reusable template: `sbx template save` / `sbx template ls` / `sbx template rm` / `sbx template load`
 - Private images: store a registry secret first (see Credentials → Registry secrets)
+- **Kits (experimental):** `--kit <ref>` on `create`/`run` (directory, ZIP, or OCI; repeatable) layers extra tooling/policy onto a sandbox. Since v0.34.0, kit installs are restricted to an allowlist configured via `sbx settings set kit.allowedSources`; private kit artifacts pull via the same registry secrets as templates. ola does not use kits — this is here so an unexpected `--kit`/allowlist error is legible.
 
 ## Debugging
 - `sbx diagnose` — first stop for installation/daemon/connectivity problems
 - `sbx policy log [SANDBOX]` — check what the proxy is blocking
 - `sbx exec -it <name> bash` — inspect sandbox state interactively
-- Clock drift after sleep? `sbx stop <name>` then `sbx run <name>` (reconnect by sandbox name)
+- Clock drift after sleep? `sbx stop <name>` then `sbx run --name <name>` (reconnect by sandbox name; positional re-attach deprecated in v0.33.0). Published ports are restored on restart as of v0.34.0.
+- Daemon issues? `sbx daemon status` / `sbx daemon start|stop` / `sbx daemon log-level` (v0.35.0 top-level command). A `database already in use` error from a policy/create call means another process (or a live sandbox) holds the daemon DB.
 - Corrupted state? `sbx reset` (add `--preserve-secrets` to keep stored secrets)
 - LLM calls fail with `Invalid port: ':1]'` (litellm/httpx)? sbx **v0.31.0** added a
   bracketed `[::1]` entry to the injected `NO_PROXY` ("Add bracketed [::1] to
@@ -202,5 +210,5 @@ Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = eph
 - Claude credentials: `~/.claude/.credentials.json` copied into sandbox by `ola-sandbox` (OAuth token, not API key)
 - `balanced` policy replaces manual `--allow-host` chains
 - Multiple mounts: `sbx run claude ~/a ~/b:ro`
-- Reconnect to an existing sandbox: `sbx run <SANDBOX>` (positional name; `sbx run claude --name <n>` creates-or-runs)
+- Reconnect to an existing sandbox: `sbx run --name <SANDBOX>` (agent read from spec). The positional `sbx run <SANDBOX>` form was deprecated in v0.33.0; `sbx run claude --name <n>` still creates-or-runs.
 - `sbx version` reports client+server version (there is no `--version` flag)

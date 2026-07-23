@@ -487,7 +487,7 @@ EOF
   grep -q 'sbx ls' "$SBX_LOG"
   grep -q 'sbx exec my-sandbox bash' "$SBX_LOG"
   grep -q '\.ola/agent.env' "$SBX_LOG"
-  [[ "$(tail -1 "$SBX_LOG")" == *"sbx run my-sandbox"* ]]
+  [[ "$(tail -1 "$SBX_LOG")" == *"sbx run --name my-sandbox"* ]]
 }
 
 @test "sandbox: reconnect re-patches agent_settings.json from resolved blob" {
@@ -550,7 +550,7 @@ _mock_sbx_new_sandbox() {
   grep -q "sbx_new$" "$SBX_LOG"
   ! grep -q 'agent:ro' "$SBX_LOG"
   grep -q "sbx exec new-sandbox bash" "$SBX_LOG"
-  grep -q 'sbx run new-sandbox' "$SBX_LOG"
+  grep -q 'sbx run --name new-sandbox' "$SBX_LOG"
 }
 
 @test "sandbox: OLA_SBX_IMAGE override" {
