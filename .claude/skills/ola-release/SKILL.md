@@ -1,7 +1,7 @@
 ---
 name: ola-release
 description: Cut a new ola release — bump the version, publish the multi-arch sandbox template image to GHCR, and tag the repo, so that a fresh install on any machine pulls a sandbox image matching its CLI. Use when the user says "release ola", "cut a release", "make a new version", "publish the image", or asks how ola versioning and the sandbox image line up.
-version: 1.0.0
+version: 1.0.1
 ---
 
 # ola-release
@@ -114,8 +114,32 @@ will point at, or the tag is a lie about what shipped.
 
 ### 5. Build + push the image
 
+Pushing needs the **`write:packages`** scope. The `gh` OAuth token does *not* carry
+it (`gh auth status` typically shows only `gist, read:org, repo`), so
+`gh auth token | docker login` is **not** enough. Use a classic PAT scoped to
+`write:packages` — create it at github.com/settings/tokens, then:
+
 ```bash
-gh auth token | docker login ghcr.io -u atineose --password-stdin
+echo <TOKEN> | docker login ghcr.io -u atineoSE --password-stdin
+```
+
+Prefer the PAT over `gh auth refresh -s write:packages`: the latter rotates the
+token `_ola_inject_gh` pushes into every sandbox, so every live sandbox would need
+reconnecting, and it hands package-write rights to every agent.
+
+Verify the credential *before* building — a stale one authenticates for pull and
+only fails at the final push, after the slow build:
+
+```bash
+CRED=$(echo ghcr.io | docker-credential-osxkeychain get)
+U=$(jq -r .Username <<<"$CRED"); P=$(jq -r .Secret <<<"$CRED")
+curl -s -u "$U:$P" 'https://ghcr.io/token?scope=repository:atineose/ola:push,pull&service=ghcr.io'
+# {"token":"..."} → good.  {"errors":[{"code":"DENIED"}]} → credential lacks push.
+```
+
+Then:
+
+```bash
 make release-image          # buildx, both platforms, tags X.Y.Z and latest, --push
 ```
 
@@ -129,19 +153,50 @@ Expect this to take a while — `--no-cache` plus an emulated amd64 leg.
 make release-verify         # asserts the manifest lists every target platform
 ```
 
-Then a real end-to-end check — pull the published image into an actual sandbox:
+Confirm the image really is anonymously pullable (i.e. the package is public — a
+private one fails only on the *consumer's* machine, which is the worst place to
+find out):
 
 ```bash
-sbx template rm ola:dev 2>/dev/null   # force the registry path, not the local dev image
-cd <project-checkout>
-ola-sandbox release-check
-# inside: ola --version   → must print X.Y.Z
+TOK=$(curl -s 'https://ghcr.io/token?scope=repository:atineose/ola:pull&service=ghcr.io' | jq -r .token)
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOK" \
+  -H 'Accept: application/vnd.oci.image.index.v1+json' \
+  https://ghcr.io/v2/atineose/ola/manifests/X.Y.Z   # want 200
+```
+
+Do this with `curl`, not `docker`/`buildx` — those prefer a stored `ghcr.io`
+credential, so a *stale* one yields a 403 that looks exactly like "the package is
+private" when the package is actually fine.
+
+Check the image contents on **both** arches:
+
+```bash
+for p in linux/arm64 linux/amd64; do
+  docker run --rm --platform "$p" ghcr.io/atineose/ola:X.Y.Z bash -lc 'ola --version'
+done
+```
+
+The emulated amd64 run is slow — allow several minutes on first pull, and don't
+mistake a 2-minute timeout for a failure. Pipe through `tail -1`: the OpenHands
+banner will otherwise bury the version line.
+
+Finally, the real consumer path — a genuine sandbox created from the registry
+image:
+
+```bash
+cd <project-checkout>   # must have ../agent alongside it
+zsh -c 'source ./ola.sh && OLA_SBX_IMAGE="ghcr.io/atineose/ola:X.Y.Z" _ola_sandbox_prepare release-check'
+sbx exec release-check bash -lc 'ola --version'   # must print X.Y.Z
 sbx rm -f release-check
 ```
 
-This is the step that catches the failure modes that matter: a private package
-(consumers get an auth error), a missing arch, or a CLI/image version mismatch.
-Restore your dev image afterwards with `make sandbox-dev`.
+Use the `OLA_SBX_IMAGE` override rather than `sbx template rm ola:dev` — the
+override wins outright and costs nothing, whereas deleting the dev template forces
+a full `make sandbox-dev` rebuild afterwards. And drive `_ola_sandbox_prepare` +
+`sbx exec` rather than `ola-sandbox`, which ends by attaching interactively.
+
+Together these catch the failure modes that matter: a private package, a missing
+arch, or a CLI/image version mismatch.
 
 ### 7. Tag and push
 
@@ -220,6 +275,8 @@ something the release procedure can toggle.
 |---|---|---|
 | `sbx create` → manifest not found for the host arch | Single-arch (arm64) push from a Mac | Re-run `make release-image`; confirm with `make release-verify` |
 | `sbx create` → unauthorized pulling from ghcr.io | GHCR package is private and no registry secret stored | Make the package public, or `gh auth token \| sbx secret set --registry ghcr.io --password-stdin` |
+| `imagetools inspect` → 403 on a package you know is public | Docker preferred a **stale** stored `ghcr.io` credential over anonymous access | Re-`docker login`; confirm the package is fine with the anonymous `curl` probe in step 6 |
+| `docker login` succeeds but `--push` is denied | Token lacks `write:packages` (the `gh` OAuth token does not have it) | Use a classic PAT scoped `write:packages`; run the push-scope probe in step 5 first |
 | Sandbox reports a different `ola --version` than the host | A stale `ola:dev` template outranks the registry image | `sbx template rm ola:dev`, recreate the sandbox |
 | Image contains uncommitted changes | Built from a dirty tree | `make release-image` refuses this; never bypass the guard |
 | `docker buildx build --platform` → "multiple platforms not supported" | Default `desktop-linux` driver | Use the `ola-release` container builder the make target creates |
