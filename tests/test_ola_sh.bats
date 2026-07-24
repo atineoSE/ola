@@ -688,7 +688,7 @@ _mock_sbx_new_sandbox() {
   grep -q 'sbx ls' "$SBX_LOG"
   grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
   grep -q "sbx policy allow network github.com,\*.github.com" "$SBX_LOG"
-  grep -q "sbx create shell --name new-sandbox --template ghcr.io/$(whoami)/ola:latest -m 12777m -q" "$SBX_LOG"
+  grep -q "sbx create shell --name new-sandbox --template ghcr.io/atineose/ola:latest -m 12777m -q" "$SBX_LOG"
   grep -q "sbx_new$" "$SBX_LOG"
   ! grep -q 'agent:ro' "$SBX_LOG"
   grep -q "sbx exec new-sandbox bash" "$SBX_LOG"
@@ -718,7 +718,7 @@ _mock_sbx_new_sandbox() {
   OLA_SBX_MEMORY="24g" ola-sandbox mem-sandbox
 
   # Override wins over the computed 80% (12777m), passed through verbatim.
-  grep -q "sbx create shell --name mem-sandbox --template ghcr.io/$(whoami)/ola:latest -m 24g -q" "$SBX_LOG"
+  grep -q "sbx create shell --name mem-sandbox --template ghcr.io/atineose/ola:latest -m 24g -q" "$SBX_LOG"
 }
 
 @test "sandbox: omits -m when Docker VM size is unreadable (sbx default applies)" {
@@ -739,7 +739,7 @@ _mock_sbx_new_sandbox() {
   cd "$TMPDIR_TEST/sbx_nomem/code"
   ola-sandbox nomem-sandbox
 
-  grep -q "sbx create shell --name nomem-sandbox --template ghcr.io/$(whoami)/ola:latest -q" "$SBX_LOG"
+  grep -q "sbx create shell --name nomem-sandbox --template ghcr.io/atineose/ola:latest -q" "$SBX_LOG"
   ! grep -qE 'sbx create .* -m ' "$SBX_LOG"
 }
 
@@ -764,6 +764,65 @@ _mock_sbx_new_sandbox() {
 
   grep -q '\--template ola:dev' "$SBX_LOG"
   ! grep -q 'ghcr.io' "$SBX_LOG"
+}
+
+# The release image tag is derived from `ola --version`, so the sandbox
+# template and the installed package are always the same release. The tests
+# above land on `:latest` because the default `ola` mock prints nothing on
+# stdout — that is the documented fallback for a host with no ola on PATH.
+
+@test "sandbox: release image tag is derived from ola --version" {
+  mkdir -p "$TMPDIR_TEST/sbx_ver/agent" "$TMPDIR_TEST/sbx_ver/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_ver/agent/allowlist.txt"
+
+  _mock_sbx_new_sandbox
+  ola() {
+    if [ "$1" = "env" ]; then return 0; fi
+    if [ "$1" = "--version" ]; then echo "ola 4.2.0"; return 0; fi
+    echo "ola $*" >> "$SBX_LOG"
+  }
+  export -f ola
+
+  cd "$TMPDIR_TEST/sbx_ver/code"
+  ola-sandbox ver-sandbox
+
+  grep -q '\--template ghcr.io/atineose/ola:4.2.0' "$SBX_LOG"
+}
+
+@test "sandbox: OLA_IMAGE_REPO overrides the registry namespace" {
+  mkdir -p "$TMPDIR_TEST/sbx_repo/agent" "$TMPDIR_TEST/sbx_repo/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_repo/agent/allowlist.txt"
+
+  _mock_sbx_new_sandbox
+  ola() {
+    if [ "$1" = "env" ]; then return 0; fi
+    if [ "$1" = "--version" ]; then echo "ola 4.2.0"; return 0; fi
+    echo "ola $*" >> "$SBX_LOG"
+  }
+  export -f ola
+
+  cd "$TMPDIR_TEST/sbx_repo/code"
+  OLA_IMAGE_REPO="ghcr.io/fork/ola" ola-sandbox repo-sandbox
+
+  grep -q '\--template ghcr.io/fork/ola:4.2.0' "$SBX_LOG"
+}
+
+@test "sandbox: falls back to :latest when ola --version is unparseable" {
+  mkdir -p "$TMPDIR_TEST/sbx_badver/agent" "$TMPDIR_TEST/sbx_badver/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_badver/agent/allowlist.txt"
+
+  _mock_sbx_new_sandbox
+  ola() {
+    if [ "$1" = "env" ]; then return 0; fi
+    if [ "$1" = "--version" ]; then echo "command not found"; return 127; fi
+    echo "ola $*" >> "$SBX_LOG"
+  }
+  export -f ola
+
+  cd "$TMPDIR_TEST/sbx_badver/code"
+  ola-sandbox badver-sandbox
+
+  grep -q '\--template ghcr.io/atineose/ola:latest' "$SBX_LOG"
 }
 
 # ===== ola-monitor: deterministic helpers =====

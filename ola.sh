@@ -516,6 +516,30 @@ _ola_sbx_memory() {
   printf '%dm' "$mb"
 }
 
+# Published sandbox template image, and the tag to pull from it.
+#
+# The repo is FIXED, not derived from $(whoami): that only ever worked on a
+# machine whose local username happened to equal the GitHub namespace, so a
+# checkout on any other machine resolved a registry path that does not exist.
+# Override OLA_IMAGE_REPO for a fork or a private registry.
+_ola_image_repo() {
+  printf '%s' "${OLA_IMAGE_REPO:-ghcr.io/atineose/ola}"
+}
+
+# The tag is derived from the *installed* ola CLI (`ola --version` prints
+# "ola X.Y.Z"), so the sandbox template and the Python package are the same
+# release by construction — bumping pyproject.toml is the only version edit a
+# release needs. Falls back to `latest` when ola is not on PATH (a host that
+# only drives the sandbox) or prints an unexpected format.
+_ola_image_tag() {
+  local v
+  v="$(ola --version 2>/dev/null | awk 'NF{print $NF}')"
+  case "$v" in
+    [0-9]*.[0-9]*) printf '%s' "$v" ;;
+    *) printf 'latest' ;;
+  esac
+}
+
 # Ensure a sandbox is ready to run ola in: authenticated sbx, agent/.env
 # resolved + network policy synced, sandbox created (fresh) or reconnected,
 # credentials/sidecar/oh-settings injected. Everything `ola-sandbox` does up
@@ -585,13 +609,14 @@ _ola_sandbox_prepare() {
   # Create sandbox non-interactively, then attach.
   # Image precedence: explicit OLA_SBX_IMAGE override, else the local dev
   # image (ola:dev) if 'make sandbox-dev' loaded it into sbx's template
-  # store, else the registry image pulled on demand.
+  # store, else the released registry image (pinned to this ola's version)
+  # pulled on demand.
   local image="$OLA_SBX_IMAGE"
   if [ -z "$image" ]; then
     if sbx template ls 2>/dev/null | grep -qE '^ola[[:space:]]+dev[[:space:]]'; then
       image="ola:dev"
     else
-      image="ghcr.io/$(whoami)/ola:latest"
+      image="$(_ola_image_repo):$(_ola_image_tag)"
     fi
   fi
 

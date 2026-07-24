@@ -151,6 +151,28 @@ notifies the human instead. **(5) Notifies** if `cc-credentials` finds no
 valid Keychain token (user logged out) rather than looping. **(6) Exits**
 with ola's own exit code once ola completes without dropping a marker.
 
+## Releases and the sandbox image
+
+**`pyproject.toml`'s `version` is the only place a version is written.**
+`ola --version` reads it via `importlib.metadata`; `ola.sh`'s `_ola_image_tag`
+shells out to `ola --version` and resolves the sandbox template to
+`ghcr.io/atineose/ola:<that version>` (`_ola_image_repo`, overridable with
+`OLA_IMAGE_REPO`). So the CLI and the sandbox image it runs agents in are the
+same release *by construction* — bumping `pyproject.toml` re-points both. Never
+add a second place that spells out the version.
+
+Image precedence in `_ola_sandbox_prepare`: `$OLA_SBX_IMAGE` → local `ola:dev`
+(from `make sandbox-dev`) → `$OLA_IMAGE_REPO:$(ola --version)` → `:latest`
+(fallback only, for a host with no `ola` on `PATH`). The `ola:dev` rung
+deliberately outranks the released image so a developer's local build always
+wins.
+
+sbx pulls templates from an **OCI registry**, not the local Docker image store,
+so publishing *is* pushing — `make release-image` builds `linux/amd64,linux/arm64`
+(an arm64-only push from a Mac hard-fails `sbx create` on x86) and pushes both
+`X.Y.Z` and `latest`. Releases are local and `make`-driven; there is no CI. Full
+procedure in `.claude/skills/ola-release/SKILL.md`.
+
 ### Layout
 
 - `ola.sh` — the harness entrypoint (installed as the `ola` CLI via `uv tool install .`); also provides the `ola-sandbox` and `ola-monitor` shell functions.
@@ -170,6 +192,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 1.0.2 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
+| `ola-release` | 1.0.0 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
 | `sbx` | 2.3.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule), secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), and `ola-monitor` (host-side auth launcher-watcher). Contract pinned to sbx v0.35.0; re-verify on sbx upgrade. |

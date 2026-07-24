@@ -13,8 +13,16 @@ There are 3 agents currently supported:
 ## Install
 
 ```bash
+git clone git@github.com:atineoSE/ola.git && cd ola
+git checkout vX.Y.Z        # or stay on main for the development version
 uv tool install .
 ```
+
+The checkout determines everything: `ola --version` reports the version in
+`pyproject.toml`, and `ola-sandbox` pulls the matching sandbox template image
+(`ghcr.io/atineose/ola:<that version>`) — you never type an image tag. See
+[docs/sandbox.md](./docs/sandbox.md) for the full resolution order, and
+`.claude/skills/ola-release/SKILL.md` for how releases are cut.
 
 ## Usage
 

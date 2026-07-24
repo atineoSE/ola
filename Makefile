@@ -1,4 +1,11 @@
-.PHONY: install install-skill test test-py test-sh test-e2e test-integration sandbox-dev dashboard dashboard-test
+.PHONY: install install-skill test test-py test-sh test-e2e test-integration sandbox-dev dashboard dashboard-test release-image release-verify
+
+# Version and image coordinates for a release. VERSION is read from
+# pyproject.toml — the single source of truth that `ola --version` and
+# ola.sh's _ola_image_tag both resolve to.
+VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+IMAGE_REPO ?= ghcr.io/atineose/ola
+PLATFORMS ?= linux/amd64,linux/arm64
 
 install: sandbox-dev ## Install ola CLI globally and build local dev sandbox image
 	uv tool install --editable .
@@ -13,6 +20,26 @@ dashboard: ## Build the ola-dashboard SPA (then run it with: ola-dashboard -f <a
 dashboard-test: ## Run the dashboard SPA's lint + unit tests
 	npm --prefix dashboard run lint
 	npm --prefix dashboard test
+
+release-image: ## Build + push the multi-arch release image ($(IMAGE_REPO):$(VERSION) and :latest)
+	@test -n "$(VERSION)" || { echo "Could not read version from pyproject.toml" >&2; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "Working tree is dirty; the image COPYs the tree verbatim. Commit first." >&2; exit 1; }
+	@docker buildx inspect ola-release >/dev/null 2>&1 || docker buildx create --name ola-release --driver docker-container >/dev/null
+	docker buildx build --builder ola-release --no-cache \
+		--platform $(PLATFORMS) \
+		-f docker/Dockerfile \
+		-t $(IMAGE_REPO):$(VERSION) \
+		-t $(IMAGE_REPO):latest \
+		--push .
+
+release-verify: ## Check the pushed release image exists for every target platform
+	@test -n "$(VERSION)" || { echo "Could not read version from pyproject.toml" >&2; exit 1; }
+	docker buildx imagetools inspect $(IMAGE_REPO):$(VERSION)
+	@for p in $$(echo $(PLATFORMS) | tr ',' ' '); do \
+		docker buildx imagetools inspect $(IMAGE_REPO):$(VERSION) | grep -q "$$p" \
+			|| { echo "Missing platform $$p in $(IMAGE_REPO):$(VERSION)" >&2; exit 1; }; \
+		echo "ok: $$p"; \
+	done
 
 test: test-py test-sh ## Run python + shell tests (default; test-py includes e2e)
 

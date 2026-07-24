@@ -11,13 +11,28 @@ Note the isolation provided by docker sandboxes is much more strict that the Cla
 * Install sbx, login, and set your default policy. The recommended policy is "balanced", which defaults to deny traffic except for approved service providers and package managers. See [here](https://docs.docker.com/ai/sandboxes/security/policy/#network-policies) for more information about policies.
 * Add an `allowlist.txt` file in the agent folder to allow traffic to specific domains. They apply globally to all local sandboxes and include all subdomains.
 
-## Build and push the template image
+## The template image
 
-The template extends `docker/sandbox-templates:shell-docker` (the `-docker` variant bundles Docker Engine, so agents can run containers inside the sandbox) and must be pushed to an OCI registry — sbx normally pulls templates from a registry directly and does not use the local Docker daemon's image store.
+The template extends `docker/sandbox-templates:shell-docker` (the `-docker` variant bundles Docker Engine, so agents can run containers inside the sandbox) and must live in an OCI registry — sbx pulls templates from a registry directly and does not use the local Docker daemon's image store.
+
+**You do not normally build this yourself.** Released images are published to `ghcr.io/atineose/ola`, and `ola-sandbox` resolves the tag from the installed CLI:
+
+```
+$OLA_SBX_IMAGE                            # explicit override, wins outright
+  → ola:dev                               # if `make sandbox-dev` loaded a local build into sbx
+    → ghcr.io/atineose/ola:$(ola --version)   # the released, version-pinned image
+      → ghcr.io/atineose/ola:latest       # fallback when ola isn't on PATH
+```
+
+So the sandbox image always matches the ola you installed — check out `vX.Y.Z`, `uv tool install .`, and the right image follows. Point `OLA_IMAGE_REPO` at a different namespace for a fork or private registry.
+
+If the GHCR package is private, store a registry secret once before the first pull:
 
 ```bash
-docker build --no-cache -f docker/Dockerfile -t ghcr.io/$(whoami)/ola:latest --push .
+gh auth token | sbx secret set --registry ghcr.io --password-stdin
 ```
+
+To publish a new release image, see `.claude/skills/ola-release/SKILL.md` (`make release-image` builds and pushes `linux/amd64,linux/arm64`).
 
 ## Dev flow (local image, no registry push)
 
@@ -128,7 +143,7 @@ If you prefer not to use the helper:
 cd project
 # -m mirrors what ola-sandbox sets automatically (80% of the Docker VM here);
 # omit it and sbx falls back to its 50% default.
-sbx create shell --name my-sandbox --template ghcr.io/$(whoami)/ola:latest -m 12g .
+sbx create shell --name my-sandbox --template ghcr.io/atineose/ola:$(ola --version | awk '{print $NF}') -m 12g .
 sbx run --name my-sandbox   # re-attach by name (positional re-attach deprecated in sbx v0.33.0)
 ```
 
