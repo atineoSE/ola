@@ -56,6 +56,101 @@ setup() {
   > "$SBX_LOG"
 }
 
+# ===== cc-credentials: stale per-config-dir Keychain sweep =====
+
+# Mock the three `security` subcommands the sweep uses, backed by a flat
+# "<service>|<expiresAt_ms>" table in $KEYCHAIN_DB ("none" = no expiry field).
+# Pipe-separated, not space: the service names themselves contain a space.
+# Deleted services are appended to $DELETED_LOG.
+_mock_security() {
+  security() {
+    local want svc exp
+    case "$1" in
+      dump-keychain)
+        while IFS='|' read -r svc exp; do
+          [ -z "$svc" ] && continue
+          printf '    "svce"<blob>="%s"\n' "$svc"
+        done < "$KEYCHAIN_DB"
+        ;;
+      find-generic-password)
+        want="$3"  # always: -s <service> [...] -w
+        while IFS='|' read -r svc exp; do
+          [ "$svc" = "$want" ] || continue
+          if [ "$exp" = "none" ]; then
+            echo '{"claudeAiOauth":{"scopes":[]}}'
+          else
+            printf '{"claudeAiOauth":{"expiresAt":%s,"scopes":[]}}\n' "$exp"
+          fi
+          return 0
+        done < "$KEYCHAIN_DB"
+        return 1
+        ;;
+      delete-generic-password)
+        echo "$3" >> "$DELETED_LOG"
+        ;;
+    esac
+    return 0
+  }
+}
+
+@test "keychain sweep: drops expired per-config-dir entries, keeps live ones" {
+  export KEYCHAIN_DB="$TMPDIR_TEST/keychain_db"
+  export DELETED_LOG="$TMPDIR_TEST/deleted"; : > "$DELETED_LOG"
+  local future=$(( ($(date +%s) + 86400) * 1000 ))
+  cat > "$KEYCHAIN_DB" <<EOF
+Claude Code-credentials|$future
+Claude Code-credentials-aaaaaaaa|1000
+Claude Code-credentials-bbbbbbbb|$future
+Claude Code-credentials-cccccccc|none
+EOF
+  _mock_security
+
+  run _cc_clear_stale_keychain_entries
+  [ "$status" -eq 0 ]
+
+  # Expired (aaaaaaaa) and expiry-less (cccccccc) go; live (bbbbbbbb) stays.
+  grep -qx "Claude Code-credentials-aaaaaaaa" "$DELETED_LOG"
+  grep -qx "Claude Code-credentials-cccccccc" "$DELETED_LOG"
+  ! grep -q "bbbbbbbb" "$DELETED_LOG"
+  # The default entry is the source of truth — it must never be swept.
+  ! grep -qx "Claude Code-credentials" "$DELETED_LOG"
+  [ "$(wc -l < "$DELETED_LOG")" -eq 2 ]
+  [[ "$output" == *"Cleared 2 stale"* ]]
+}
+
+@test "keychain sweep: silent no-op when there are no per-config-dir entries" {
+  export KEYCHAIN_DB="$TMPDIR_TEST/keychain_db_empty"
+  export DELETED_LOG="$TMPDIR_TEST/deleted_empty"; : > "$DELETED_LOG"
+  echo "Claude Code-credentials|99999999999999" > "$KEYCHAIN_DB"
+  _mock_security
+
+  run _cc_clear_stale_keychain_entries
+  [ "$status" -eq 0 ]
+  [ ! -s "$DELETED_LOG" ]
+  [ -z "$output" ]
+}
+
+@test "cc-credentials: refreshing the file also sweeps the Keychain" {
+  export SWEEP_LOG="$TMPDIR_TEST/sweep"; : > "$SWEEP_LOG"
+  security() { echo '{"claudeAiOauth":{"expiresAt":1}}'; }
+  _cc_clear_stale_keychain_entries() { echo swept >> "$SWEEP_LOG"; }
+
+  run cc-credentials
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Restored"* ]]
+  [ "$(cat "$SWEEP_LOG")" = "swept" ]
+}
+
+@test "cc-credentials: no Keychain token means no sweep and a nonzero exit" {
+  export SWEEP_LOG="$TMPDIR_TEST/sweep_none"; : > "$SWEEP_LOG"
+  security() { return 1; }
+  _cc_clear_stale_keychain_entries() { echo swept >> "$SWEEP_LOG"; }
+
+  run cc-credentials
+  [ "$status" -ne 0 ]
+  [ ! -s "$SWEEP_LOG" ]
+}
+
 # ===== _ola_host_from_url =====
 
 @test "host_from_url: https" {

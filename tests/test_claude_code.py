@@ -2,6 +2,7 @@
 
 import json
 import logging
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,19 @@ from ola.agents.claude_code import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_keychain(monkeypatch):
+    """Default every test to "no macOS Keychain" (i.e. the sandbox).
+
+    The OAuth path shells out to `security` to drop the entry shadowing the
+    per-task .credentials.json. Most tests here patch subprocess.Popen module-
+    wide — which subprocess.run uses internally — so leaving the real binary
+    discoverable would route that cleanup through their mock. Tests that
+    actually exercise the cleanup re-patch shutil.which themselves.
+    """
+    monkeypatch.setattr("ola.agents.claude_code.shutil.which", lambda _name: None)
 
 
 def _make_proc(lines: list[str], returncode: int = 0) -> MagicMock:
@@ -1536,3 +1550,111 @@ def test_bootstrap_copy_against_per_task_state_dir(monkeypatch, tmp_path):
     assert (sd / "settings.json").exists()
     # And the subprocess saw CLAUDE_CONFIG_DIR pointing at the per-task dir
     assert captured["env"]["CLAUDE_CONFIG_DIR"] == str(sd)
+
+
+# ---------------------------------------------------------------------------
+# Shadowing per-CLAUDE_CONFIG_DIR Keychain entry (macOS)
+# ---------------------------------------------------------------------------
+
+
+def _keychain_calls(monkeypatch, tmp_path, *, self_hosted=False, security="/usr/bin/security"):
+    """Run _run_once on a per-task state dir; return `security` argv lists."""
+    from ola.agents import claude_code as cc
+
+    for k in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_SKIP_TLS_VERIFY"):
+        monkeypatch.delenv(k, raising=False)
+    if self_hosted:
+        monkeypatch.setenv("LLM_BASE_URL", "https://my-host.example.com")
+
+    fake_claude = tmp_path / "fake_home" / ".claude"
+    fake_claude.mkdir(parents=True)
+    (fake_claude / ".credentials.json").write_text('{"token": "x"}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "fake_home"))
+
+    monkeypatch.setattr(cc.shutil, "which", lambda _name: security)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    monkeypatch.setattr(cc.subprocess, "Popen", lambda cmd, **kw: _make_proc([_result()]))
+
+    state_dir = tmp_path / "phase" / ".claude" / "t-abc1234"
+    state_dir.mkdir(parents=True)
+    ClaudeCodeAgent()._run_once("hi", str(tmp_path), state_dir=str(state_dir))
+    return calls, state_dir
+
+
+def test_keychain_service_name_matches_claude_code():
+    """Service name is sha256(config_dir)[:8] — pinned to observed real names.
+
+    These three (dir, service) pairs were read back off a live macOS Keychain;
+    if Claude Code ever changes the derivation this test is the canary, because
+    a wrong name silently deletes nothing and the shadowing bug returns.
+    """
+    from ola.agents.claude_code import _keychain_service
+
+    base = (
+        "/Users/atineose/dev/ML_projects/Agents/ola/agent/"
+        "09-worktree-launch-and-commit-msg/.claude"
+    )
+    assert _keychain_service(f"{base}/t-c9b60c28") == "Claude Code-credentials-c60886a2"
+    assert _keychain_service(f"{base}/t-c2e6e959") == "Claude Code-credentials-f6c324c4"
+    assert _keychain_service(f"{base}/t-f821828b") == "Claude Code-credentials-31499ffd"
+
+
+def test_oauth_path_deletes_shadowing_keychain_entry(monkeypatch, tmp_path):
+    """The refreshed .credentials.json must not stay shadowed by the Keychain."""
+    from ola.agents.claude_code import _keychain_service
+
+    calls, state_dir = _keychain_calls(monkeypatch, tmp_path)
+
+    expected = _keychain_service(str(state_dir))
+    assert [
+        "/usr/bin/security",
+        "delete-generic-password",
+        "-s",
+        expected,
+    ] in calls
+
+
+def test_self_hosted_skips_keychain_delete(monkeypatch, tmp_path):
+    """Self-hosted uses ANTHROPIC_AUTH_TOKEN — no OAuth entry to clear."""
+    calls, _ = _keychain_calls(monkeypatch, tmp_path, self_hosted=True)
+
+    assert not [c for c in calls if "delete-generic-password" in c]
+
+
+def test_keychain_delete_noop_without_security_binary(monkeypatch, tmp_path):
+    """In the Linux sandbox there is no `security` — the file already wins."""
+    calls, _ = _keychain_calls(monkeypatch, tmp_path, security=None)
+
+    assert not [c for c in calls if "delete-generic-password" in c]
+
+
+def test_keychain_delete_failure_does_not_fail_the_task(monkeypatch, tmp_path):
+    """A Keychain hiccup is a stale-cache problem, not a task failure."""
+    from ola.agents import claude_code as cc
+
+    for k in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_SKIP_TLS_VERIFY"):
+        monkeypatch.delenv(k, raising=False)
+    fake_claude = tmp_path / "fake_home" / ".claude"
+    fake_claude.mkdir(parents=True)
+    (fake_claude / ".credentials.json").write_text('{"token": "x"}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "fake_home"))
+    monkeypatch.setattr(cc.shutil, "which", lambda _n: "/usr/bin/security")
+
+    def boom(cmd, **kwargs):
+        raise OSError("keychain unavailable")
+
+    monkeypatch.setattr(cc.subprocess, "run", boom)
+    monkeypatch.setattr(cc.subprocess, "Popen", lambda cmd, **kw: _make_proc([_result()]))
+
+    state_dir = tmp_path / "phase" / ".claude" / "t-abc1234"
+    state_dir.mkdir(parents=True)
+    resp = ClaudeCodeAgent()._run_once("hi", str(tmp_path), state_dir=str(state_dir))
+
+    assert resp.success

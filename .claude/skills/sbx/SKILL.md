@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.2.0
+version: 2.3.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -166,6 +166,21 @@ exactly the rule shape needed, no ola code change required.
 
 ### Credentials
 - **Claude subscription (OAuth)**: `ola-sandbox` copies `~/.claude/.credentials.json` from host into the sandbox at creation/reconnection time (via `sbx exec` + base64). No API key needed.
+- **macOS Keychain shadows the file — host runs only.** Claude Code caches OAuth
+  credentials *per `CLAUDE_CONFIG_DIR`* in the macOS Keychain under
+  `Claude Code-credentials-<sha256(dir)[:8]>`, and that entry **outranks** the
+  `.credentials.json` inside that dir. Because ola's per-task config dirs are
+  derived from the task id they are stable across runs, so a run whose token
+  expired mid-flight leaves a dead entry that poisons that task **permanently**:
+  every later run fails locally in ~40ms with `Failed to authenticate: OAuth
+  session expired and could not be refreshed` — `duration_api_ms: 0`, no API call
+  made — and re-running `cc-credentials` alone cannot fix it, because the file it
+  refreshes is never read. Two guards, both automatic: `cc-credentials` sweeps
+  *expired* `Claude Code-credentials-*` entries (leaving the default entry and any
+  live one alone), and the `cc` backend deletes the entry keyed to a task's config
+  dir whenever it refreshes that dir's credentials. **This is host-only** — inside
+  the sandbox there is no Keychain, so the injected file is already the sole
+  credential source and the failure cannot occur. It bites `ola --skip-sandbox`.
 - **GitHub CLI (`gh`) auth**: on every create **and** reconnect, `ola-sandbox` also
   reads the host's `gh auth token` and injects it as `GH_TOKEN` into the sandbox
   sidecar (`~/.ola/agent.env`), then runs `gh auth setup-git` inside the sandbox

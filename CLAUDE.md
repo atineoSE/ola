@@ -57,6 +57,25 @@ intentional.** The host's `gh` (GitHub CLI) auth is injected into every
 sandbox the same way, on the same create/reconnect path — see the `sbx`
 skill's *Credentials* section.
 
+Gotcha (macOS host only): Claude Code also caches OAuth credentials **per
+`CLAUDE_CONFIG_DIR`** in the Keychain, under
+`Claude Code-credentials-<sha256(config_dir)[:8]>` — and that entry **outranks
+the `.credentials.json` file inside that same dir**. ola's per-task config dirs
+are derived from the task id, so they are stable across runs: a run whose token
+expires mid-flight leaves a dead entry behind that poisons that task
+*permanently*. The signature is a sub-second failure with
+`Failed to authenticate: OAuth session expired and could not be refreshed`,
+`duration_api_ms: 0` and no API call made — and `cc-credentials` alone cannot fix
+it, because the file it refreshes is never read. Two automatic guards:
+`cc-credentials` sweeps *expired* `Claude Code-credentials-*` entries (recovery;
+the default entry and any live one are left alone —
+`_cc_clear_stale_keychain_entries` in `ola.sh`), and the `cc` backend deletes the
+entry keyed to a task's config dir whenever it refreshes that dir's credentials
+(prevention — `_clear_shadowing_keychain_entry` in `claude_code.py`). Both are
+no-ops without a `security` binary, so **the sandbox path is unaffected**: there
+is no Keychain in the container and the injected file is already the sole
+credential source. This only ever bit `ola --skip-sandbox`.
+
 Gotcha: the subscription OAuth **refresh token rotates** on every refresh, so a
 copied credential snapshot is invalidated the moment any *other* client sharing
 the account refreshes. Running `ola -a cc` **from inside an active Claude Code
@@ -153,7 +172,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-plan` | 1.0.2 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.2.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule), secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, and `ola-monitor` (host-side auth launcher-watcher). Contract pinned to sbx v0.35.0; re-verify on sbx upgrade. |
+| `sbx` | 2.3.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule), secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), and `ola-monitor` (host-side auth launcher-watcher). Contract pinned to sbx v0.35.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

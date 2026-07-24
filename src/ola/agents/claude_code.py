@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -135,6 +136,45 @@ def _self_hosted_env_overlay(model: str | None) -> dict[str, str]:
     return overlay
 
 
+def _keychain_service(config_dir: str) -> str:
+    """Claude Code's per-CLAUDE_CONFIG_DIR macOS Keychain service name."""
+    return f"Claude Code-credentials-{hashlib.sha256(config_dir.encode()).hexdigest()[:8]}"
+
+
+def _clear_shadowing_keychain_entry(config_dir: Path) -> None:
+    """Drop the Keychain entry that would shadow <config_dir>/.credentials.json.
+
+    On macOS Claude Code caches OAuth credentials per config dir in the
+    Keychain and *prefers* them over the file we just refreshed. Per-task
+    config dirs are derived from the task id and so are stable across runs:
+    a run whose token expired mid-flight leaves a dead entry behind that
+    poisons that task forever after — every later run fails locally in ~40ms
+    with "OAuth session expired and could not be refreshed", no API call made,
+    and no amount of re-running cc-credentials helps because the file is never
+    read. Deleting it makes the freshly copied file authoritative again.
+
+    Unconditional: a *live* entry holds the same credential we just wrote, so
+    dropping it only forces a re-read. Best-effort and silent — losing the
+    race here is a stale-cache problem, not a reason to fail the task. No-op
+    wherever `security` is absent (i.e. the Linux sandbox, where the file is
+    already the only credential source).
+    """
+    security = shutil.which("security")
+    if not security:
+        return
+    service = _keychain_service(str(config_dir))
+    try:
+        subprocess.run(
+            [security, "delete-generic-password", "-s", service],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        logger.debug("Cleared shadowing Keychain entry %s", service)
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("Keychain cleanup skipped for %s", service)
+
+
 class ClaudeCodeAgent(Agent):
     """Agent that delegates to the Claude Code CLI."""
 
@@ -210,6 +250,9 @@ class ClaudeCodeAgent(Agent):
                     if src.exists() and (fname in _ALWAYS_REFRESH or not dst.exists()):
                         shutil.copy2(src, dst)
                         logger.debug("Copied %s -> %s", src, dst)
+                # The copy above is only authoritative once the Keychain entry
+                # keyed to this dir is gone — see _clear_shadowing_keychain_entry.
+                _clear_shadowing_keychain_entry(sd)
             env = {**os.environ, "CLAUDE_CONFIG_DIR": str(sd)}
             logger.debug("CLAUDE_CONFIG_DIR=%s", sd)
 

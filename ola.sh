@@ -9,6 +9,51 @@ _OLA_DIR="${${(%):-%x}:A:h}"
 # Restore ~/.claude/.credentials.json from macOS Keychain.
 # Claude Code stores its OAuth token in the Keychain; this extracts it to a
 # file so it can be copied into sandboxes.
+# Drop expired per-CLAUDE_CONFIG_DIR Keychain entries.
+#
+# Claude Code caches OAuth credentials per config dir in the Keychain under
+# "Claude Code-credentials-<sha256(CLAUDE_CONFIG_DIR)[:8]>", and that entry
+# OUTRANKS the .credentials.json file inside the same dir. ola's per-task
+# config dirs are derived from the task id, so they are stable across runs:
+# a run whose token expired mid-flight leaves a dead entry behind that
+# poisons that task for every future run — the file cc-credentials refreshes
+# is never consulted, and the run fails locally in ~40ms with
+# "OAuth session expired and could not be refreshed", no API call made.
+#
+# Only *expired* entries are dropped, so a live session under some other
+# CLAUDE_CONFIG_DIR is left alone. Claude Code recreates an entry from the
+# file on demand, so removal is non-destructive. Host-only by construction:
+# `security` exists solely on macOS, and inside the sandbox the file is
+# already the only credential source.
+_cc_clear_stale_keychain_entries() {
+  local now_ms svc exp cleared=0 entries
+  now_ms=$(( $(date +%s) * 1000 ))
+
+  # The default "Claude Code-credentials" entry has no -<hash> suffix and so
+  # never matches — it is the source of truth and must survive.
+  entries="$(security dump-keychain 2>/dev/null \
+    | sed -n 's/.*"svce"<blob>="\(Claude Code-credentials-[^"]*\)".*/\1/p' \
+    | sort -u)"
+  [ -z "$entries" ] && return 0
+
+  while IFS= read -r svc; do
+    [ -z "$svc" ] && continue
+    # Flat-JSON field extraction, no jq dependency (mirrors _ola_blob_val).
+    exp="$(security find-generic-password -s "$svc" -w 2>/dev/null \
+      | sed -n 's/.*"expiresAt"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' \
+      | head -1)"
+    # No parseable expiry → treat as dead; a live entry always carries one.
+    if [ -z "$exp" ] || [ "$exp" -le "$now_ms" ]; then
+      security delete-generic-password -s "$svc" >/dev/null 2>&1 \
+        && cleared=$((cleared + 1))
+    fi
+  done <<< "$entries"
+
+  [ "$cleared" -gt 0 ] \
+    && echo "Cleared $cleared stale per-config-dir Keychain entry(ies)"
+  return 0
+}
+
 cc-credentials() {
   local cred_file="$HOME/.claude/.credentials.json"
   local service="Claude Code-credentials"
@@ -26,6 +71,11 @@ cc-credentials() {
   printf '%s' "$data" > "$cred_file"
   chmod 600 "$cred_file"
   echo "Restored $cred_file from Keychain"
+
+  # Refreshing the file is not enough on macOS — a stale per-config-dir entry
+  # would still shadow it. Sweep here so "auth broke → run cc-credentials"
+  # stays true on the host too, not just inside the sandbox.
+  _cc_clear_stale_keychain_entries
 }
 
 # Extract hostname from a URL string (strips scheme, port, path).
