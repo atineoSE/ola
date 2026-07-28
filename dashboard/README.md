@@ -42,21 +42,20 @@ A probe is **any executable** that, when run, prints a JSON object to stdout:
 
 ### Configuration
 
-Configure the probe on the harness, via flags or environment variables:
+Configure the probe on the harness, via flag:
 
-| Flag | Env var | Default | Meaning |
-|------|---------|---------|---------|
-| `--metric-cmd <cmd>` | `OLA_METRIC_CMD` | _unset_ | The probe command to run. |
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--metric-cmd <cmd>` | _unset_ | The probe command to run. |
 
-The flag takes precedence over the environment variable when both are set. There
-is no interval knob — the probe fires on merge-back progress, not a timer.
+There is no interval knob — the probe fires on merge-back progress, not a timer.
 
 ### Fallback when no probe is configured
 
-If `--metric-cmd` / `OLA_METRIC_CMD` is not set, the harness writes no
-`metrics.jsonl`, the snapshot's `progress` field stays empty, and the dashboard
-renders **nothing extra** — the standard layout (counters, clock, tokens/sec,
-heatmap, feed) is unchanged. The progress tile is strictly additive.
+If `--metric-cmd` is not set, the harness writes no `metrics.jsonl`, the
+snapshot's `progress` field stays empty, and the dashboard renders **nothing
+extra** — the standard layout (counters, clock, tokens/sec, heatmap, feed) is
+unchanged. The progress tile is strictly additive.
 
 ---
 

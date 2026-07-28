@@ -105,12 +105,14 @@ ola-monitor -a cc -f ../agent -l 5
 ```
 
 The sandbox name isn't part of `ola`'s own arguments, so `ola-monitor` derives it
-from the project checkout directory's name; set `OLA_MONITOR_SANDBOX` if the
-sandbox you want it to use was created under a different name. If the same
-credential breaks repeatedly in a short window (a concurrent `claude` session
-sharing the account, which a mechanical re-pull can't win) or the Keychain has no
-valid token at all (you've logged out), `ola-monitor` stops and tells you rather
-than looping forever. See CLAUDE.md for the full contract.
+from the project checkout directory's name; pass `--monitor-sandbox NAME` if the
+sandbox you want it to use was created under a different name (also
+`--monitor-thrash-max` / `--monitor-thrash-window` to tune the thrash guard
+below — all three are stripped from argv before the rest is forwarded to
+`ola`). If the same credential breaks repeatedly in a short window (a concurrent
+`claude` session sharing the account, which a mechanical re-pull can't win) or
+the Keychain has no valid token at all (you've logged out), `ola-monitor` stops
+and tells you rather than looping forever. See CLAUDE.md for the full contract.
 
 ## Sandbox memory
 

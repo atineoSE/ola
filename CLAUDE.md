@@ -132,8 +132,12 @@ watcher runs on the host and launches `ola` *into* the sandbox, rather than
 living in-sandbox. Invoke it with the same arguments you'd give `ola`:
 `ola-monitor -a cc -f ../agent`. The sandbox to launch into isn't part of
 `ola`'s own argv, so it's derived from the project checkout directory's
-basename (override with `OLA_MONITOR_SANDBOX` if the sandbox was created
-under a different name).
+basename (override with `--monitor-sandbox NAME` if the sandbox was created
+under a different name). `ola-monitor` strips its own flags
+(`--monitor-sandbox`, `--monitor-thrash-max`, `--monitor-thrash-window`) out
+of argv before forwarding the rest to `ola` unchanged — deliberately CLI
+flags rather than env vars, so the knobs are visible in the invocation
+itself instead of ambient shell state.
 
 It: **(1) Launches** — ensures/creates the sandbox and injects fresh
 credentials (`_ola_sandbox_prepare`, shared with `ola-sandbox`), then execs
@@ -143,8 +147,8 @@ untouched. **(2) Watches** the host-visible auth-escalation marker above.
 **(3) Self-heals first** on the marker: re-pulls Keychain credentials
 (`cc-credentials`) and re-injects them (`_ola_inject_credentials`), deletes
 the marker, and relaunches `ola <args>` to resume the plan. **(4) Thrash
-guards:** if the same account re-heals `OLA_MONITOR_THRASH_MAX` times
-(default 3) within `OLA_MONITOR_THRASH_WINDOW` seconds (default 300) — the
+guards:** if the same account re-heals `--monitor-thrash-max` times
+(default 3) within `--monitor-thrash-window` seconds (default 300) — the
 signature of a concurrent rotator, e.g. a live `claude` session sharing the
 account, which a mechanical re-pull cannot win — it stops re-healing and
 notifies the human instead. **(5) Notifies** if `cc-credentials` finds no

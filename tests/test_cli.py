@@ -163,7 +163,8 @@ class TestMetricProbe:
             main()
             assert mock_loop.call_args.kwargs["metric_cmd"] == "echo hi"
 
-    def test_env_fallback_honored(self, tmp_path):
+    def test_env_var_no_longer_honored(self, tmp_path):
+        """OLA_METRIC_CMD is not a fallback any more — --metric-cmd only."""
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         with (
@@ -177,26 +178,7 @@ class TestMetricProbe:
             patch("ola.cli.run_outer_loop") as mock_loop,
         ):
             main()
-            assert mock_loop.call_args.kwargs["metric_cmd"] == "probe.sh"
-
-    def test_flag_overrides_env(self, tmp_path):
-        agent_dir = tmp_path / "agent"
-        agent_dir.mkdir()
-        with (
-            patch.dict(
-                os.environ,
-                {"SANDBOX": "1", "OLA_METRIC_CMD": "from-env"},
-                clear=True,
-            ),
-            patch(
-                "sys.argv",
-                ["ola", "-f", str(agent_dir), "--metric-cmd", "from-flag"],
-            ),
-            patch("ola.cli.create_agent"),
-            patch("ola.cli.run_outer_loop") as mock_loop,
-        ):
-            main()
-            assert mock_loop.call_args.kwargs["metric_cmd"] == "from-flag"
+            assert mock_loop.call_args.kwargs["metric_cmd"] is None
 
 
 class TestAgentSelection:

@@ -70,30 +70,13 @@ _BOOTSTRAP_FILES = (".credentials.json", "settings.json")
 _ALWAYS_REFRESH = {".credentials.json"}
 
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ[name])
-    except (KeyError, ValueError):
-        return default
-
-
 # Tunables (seconds). Turn timeout is generous — interactive tasks can be long.
-def _ready_timeout() -> float:
-    return _env_float("OLA_CT_READY_TIMEOUT_SEC", 90.0)
-
-
-def _turn_timeout() -> float:
-    return _env_float("OLA_CT_TURN_TIMEOUT_SEC", 3600.0)
-
-
-def _ready_quiescence() -> float:
-    return _env_float("OLA_CT_READY_QUIESCENCE_SEC", 1.5)
-
-
-def _done_quiescence() -> float:
-    # Conservative: the spinner animates while the model thinks or a tool runs,
-    # so the pty only goes silent this long when the turn is genuinely over.
-    return _env_float("OLA_CT_DONE_QUIESCENCE_SEC", 5.0)
+_READY_TIMEOUT_SEC = 90.0
+_TURN_TIMEOUT_SEC = 3600.0
+_READY_QUIESCENCE_SEC = 1.5
+# Conservative: the spinner animates while the model thinks or a tool runs, so
+# the pty only goes silent this long when the turn is genuinely over.
+_DONE_QUIESCENCE_SEC = 5.0
 
 
 _CSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
@@ -579,7 +562,7 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
 
     def _await_ready(self, child: _PtyProcess) -> bool:
         """Wait until the input box appears, clearing the trust dialog if shown."""
-        deadline = time.monotonic() + _ready_timeout()
+        deadline = time.monotonic() + _READY_TIMEOUT_SEC
         trust_handled = False
         while time.monotonic() < deadline:
             if not child.alive():
@@ -594,7 +577,7 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                 child.send(b"\r")
                 time.sleep(1.0)
                 continue
-            if child.idle_for() > _ready_quiescence() and is_ready(screen):
+            if child.idle_for() > _READY_QUIESCENCE_SEC and is_ready(screen):
                 return True
             time.sleep(0.3)
         return False
@@ -606,12 +589,12 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
 
         Quiescence is the reliable end-of-turn signal: the spinner animates
         continuously while the model thinks or a tool runs, so the pty only stays
-        silent for ``_done_quiescence`` once the turn is actually over. We do NOT
+        silent for ``_DONE_QUIESCENCE_SEC`` once the turn is actually over. We do NOT
         gate on the on-screen "esc to interrupt" footer — ``tail()`` is the raw,
         cumulative byte stream (no terminal emulation), so a stale frame lingers
         in the window and that footer would never clear.
         """
-        deadline = time.monotonic() + _turn_timeout()
+        deadline = time.monotonic() + _TURN_TIMEOUT_SEC
         saw_activity = False
         last_ping = 0.0
         while time.monotonic() < deadline:
@@ -630,7 +613,7 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                     on_progress("working (interactive TUI)…", None)
                 except Exception:
                     logger.exception("on_progress raised; continuing")
-            if saw_activity and idle > _done_quiescence():
+            if saw_activity and idle > _DONE_QUIESCENCE_SEC:
                 return True
             time.sleep(0.5)
         return False

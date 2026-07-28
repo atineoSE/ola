@@ -251,7 +251,7 @@ def test_run_not_ready_fails(monkeypatch):
     fake = FakePty(never_ready=True)
     monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: fake)
     # Make the ready wait expire immediately.
-    monkeypatch.setattr(ct, "_ready_timeout", lambda: 0.0)
+    monkeypatch.setattr(ct, "_READY_TIMEOUT_SEC", 0.0)
 
     resp = ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
     assert resp.success is False

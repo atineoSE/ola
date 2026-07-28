@@ -30,7 +30,6 @@ teardown_file() {
 setup() {
   export HOME="$TMPDIR_TEST/fake_home"
   unset OLA_SBX_IMAGE
-  unset OLA_MONITOR_SANDBOX OLA_MONITOR_THRASH_MAX OLA_MONITOR_THRASH_WINDOW
 
   # Re-source ola.sh (functions don't survive subshells in bats)
   local ola_sh="$(cd "$BATS_TEST_DIRNAME/.." && pwd)/ola.sh"
@@ -875,36 +874,33 @@ EOF
 }
 
 @test "monitor_prune_window: drops epochs older than the window, keeps the rest" {
-  export OLA_MONITOR_THRASH_WINDOW=300
   local out
-  out="$(_ola_monitor_prune_window 1000 600 800 950)"
+  out="$(_ola_monitor_prune_window 1000 300 600 800 950)"
   [ "$out" = "$(printf '800\n950')" ]
 }
 
 @test "monitor_prune_window: window is overridable" {
-  export OLA_MONITOR_THRASH_WINDOW=60
   local out
-  out="$(_ola_monitor_prune_window 1000 950 990)"
+  out="$(_ola_monitor_prune_window 1000 60 950 990)"
   [ "$out" = "$(printf '950\n990')" ]
 }
 
 @test "monitor_prune_window: empty input yields nothing" {
-  [ -z "$(_ola_monitor_prune_window 1000)" ]
+  [ -z "$(_ola_monitor_prune_window 1000 300)" ]
 }
 
 @test "monitor_decide: heals under the default threshold" {
-  [ "$(_ola_monitor_decide 0)" = "heal" ]
-  [ "$(_ola_monitor_decide 2)" = "heal" ]
+  [ "$(_ola_monitor_decide 0 3)" = "heal" ]
+  [ "$(_ola_monitor_decide 2 3)" = "heal" ]
 }
 
 @test "monitor_decide: thrashes at the default threshold (3)" {
-  [ "$(_ola_monitor_decide 3)" = "thrash" ]
+  [ "$(_ola_monitor_decide 3 3)" = "thrash" ]
 }
 
 @test "monitor_decide: threshold is overridable" {
-  export OLA_MONITOR_THRASH_MAX=2
-  [ "$(_ola_monitor_decide 1)" = "heal" ]
-  [ "$(_ola_monitor_decide 2)" = "thrash" ]
+  [ "$(_ola_monitor_decide 1 2)" = "heal" ]
+  [ "$(_ola_monitor_decide 2 2)" = "thrash" ]
 }
 
 # ===== ola-monitor: control loop =====
@@ -959,9 +955,8 @@ EOF
   }
   export -f ola
 
-  export OLA_MONITOR_SANDBOX=mon-sbx
   cd "$TMPDIR_TEST/mon_clean/code"
-  run ola-monitor -a cc -f ../agent -l 5
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent -l 5
 
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "ola-monitor: supervising 'ola -a cc -f ../agent -l 5' in sandbox 'mon-sbx'" ]
@@ -978,9 +973,8 @@ EOF
   }
   export -f ola
 
-  export OLA_MONITOR_SANDBOX=mon-sbx
   cd "$TMPDIR_TEST/mon_fail/code"
-  run ola-monitor -a cc -f ../agent
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
 
   [ "$status" -eq 7 ]
 }
@@ -1014,9 +1008,8 @@ EOF
   cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 0; }
   export -f cc-credentials
 
-  export OLA_MONITOR_SANDBOX=mon-sbx
   cd "$TMPDIR_TEST/mon_heal/code"
-  run ola-monitor -a cc -f ../agent
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
 
   [ "$status" -eq 0 ]
   [ "$(wc -l < "$CALLS_LOG")" -eq 2 ]
@@ -1044,10 +1037,8 @@ EOF
   cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 0; }
   export -f cc-credentials
 
-  export OLA_MONITOR_SANDBOX=mon-sbx
-  export OLA_MONITOR_THRASH_MAX=2
   cd "$TMPDIR_TEST/mon_thrash/code"
-  run ola-monitor -a cc -f ../agent
+  run ola-monitor --monitor-sandbox mon-sbx --monitor-thrash-max 2 -a cc -f ../agent
 
   [ "$status" -ne 0 ]
   [ "$(wc -l < "$CALLS_LOG")" -eq 3 ]
@@ -1075,9 +1066,8 @@ EOF
   cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 1; }
   export -f cc-credentials
 
-  export OLA_MONITOR_SANDBOX=mon-sbx
   cd "$TMPDIR_TEST/mon_dead/code"
-  run ola-monitor -a cc -f ../agent
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
 
   [ "$status" -ne 0 ]
   [ "$(wc -l < "$CALLS_LOG")" -eq 1 ]
@@ -1088,7 +1078,7 @@ EOF
   [[ "$output" == *"Keychain"* ]]
 }
 
-@test "monitor: OLA_MONITOR_SANDBOX overrides the derived sandbox name" {
+@test "monitor: --monitor-sandbox overrides the derived sandbox name" {
   mkdir -p "$TMPDIR_TEST/mon_override/agent" "$TMPDIR_TEST/mon_override/named-code-dir"
   sbx() {
     echo "sbx $*" >> "$SBX_LOG"
@@ -1099,9 +1089,8 @@ EOF
   ola() { [ "$1" = "env" ] && return 0; return 0; }
   export -f ola
 
-  export OLA_MONITOR_SANDBOX=custom-name
   cd "$TMPDIR_TEST/mon_override/named-code-dir"
-  run ola-monitor -a cc -f ../agent
+  run ola-monitor --monitor-sandbox custom-name -a cc -f ../agent
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"in sandbox 'custom-name'"* ]]

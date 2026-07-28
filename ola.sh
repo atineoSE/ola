@@ -711,13 +711,12 @@ _ola_monitor_epoch() {
 
 # Prune a list of prior heal epochs down to those still inside the thrash
 # window ending at $now. Pure function so the thrash counter/window logic is
-# testable without waiting real wall-clock time. Window is
-# OLA_MONITOR_THRASH_WINDOW seconds (default 300 = 5 minutes), read at call
-# time so tests can override it per-case.
+# testable without waiting real wall-clock time. Window (seconds) is passed
+# explicitly by the caller (see --monitor-thrash-window on ola-monitor).
 _ola_monitor_prune_window() {
-  local now="$1"
-  shift
-  local window="${OLA_MONITOR_THRASH_WINDOW:-300}" t
+  local now="$1" window="$2"
+  shift 2
+  local t
   for t in "$@"; do
     [ $((now - t)) -le "$window" ] && printf '%s\n' "$t"
   done
@@ -728,9 +727,10 @@ _ola_monitor_prune_window() {
 # again or stop and flag thrash. Repeated re-heals in a short window are the
 # signature of a concurrent rotator (another live `claude` session sharing
 # the account) that a mechanical re-pull cannot win — see design-notes.md.
-# Threshold is OLA_MONITOR_THRASH_MAX (default 3), read at call time.
+# Threshold is passed explicitly by the caller (see --monitor-thrash-max on
+# ola-monitor).
 _ola_monitor_decide() {
-  local count="$1" max="${OLA_MONITOR_THRASH_MAX:-3}"
+  local count="$1" max="$2"
   if [ "$count" -ge "$max" ]; then
     echo "thrash"
   else
@@ -740,7 +740,11 @@ _ola_monitor_decide() {
 
 # Launch `ola <args>` into a sandbox and keep it authenticated unsupervised.
 # Takes the SAME arguments as `ola` (see design-notes.md — "Decided —
-# ola-monitor, reborn as the host-side auth launcher-watcher"):
+# ola-monitor, reborn as the host-side auth launcher-watcher"), plus three
+# flags of its own (stripped out before the rest is forwarded to `ola`):
+#   --monitor-sandbox NAME          sandbox to target (default: basename of cwd)
+#   --monitor-thrash-max N          re-heals before giving up (default: 3)
+#   --monitor-thrash-window SEC     thrash-detection window (default: 300)
 #   (1) Launch  — ensure/create the sandbox + inject fresh credentials, then
 #                 exec `ola <args>` inside it.
 #   (2) Watch   — for the host-visible auth-escalation marker ola drops on a
@@ -751,29 +755,66 @@ _ola_monitor_decide() {
 #   (6) Exit    — when ola completes cleanly (no marker), return its exit code.
 # Scope is auth-only: no progress reporting of its own (that's ola-top's job)
 # beyond the one-line launch ack and the heal/thrash/notify events themselves.
-# The sandbox name isn't part of ola's own argv, so it's derived from the
-# project checkout directory name (override with OLA_MONITOR_SANDBOX if the
-# sandbox was created under a different name).
 ola-monitor() {
   local code_dir="$(pwd)"
-  local name="${OLA_MONITOR_SANDBOX:-$(basename "$code_dir")}"
+  local name="$(basename "$code_dir")"
+  local thrash_max=3
+  local thrash_window=300
+  local -a ola_args=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --monitor-sandbox)
+        name="$2"
+        shift 2
+        ;;
+      --monitor-sandbox=*)
+        name="${1#--monitor-sandbox=}"
+        shift
+        ;;
+      --monitor-thrash-max)
+        thrash_max="$2"
+        shift 2
+        ;;
+      --monitor-thrash-max=*)
+        thrash_max="${1#--monitor-thrash-max=}"
+        shift
+        ;;
+      --monitor-thrash-window)
+        thrash_window="$2"
+        shift 2
+        ;;
+      --monitor-thrash-window=*)
+        thrash_window="${1#--monitor-thrash-window=}"
+        shift
+        ;;
+      *)
+        ola_args+=("$1")
+        shift
+        ;;
+    esac
+  done
 
   local agent_dir
-  agent_dir="$(_ola_monitor_agent_folder "$@")"
+  agent_dir="$(_ola_monitor_agent_folder "${ola_args[@]}")"
   agent_dir="$(cd "$agent_dir" 2>/dev/null && pwd)" || {
     echo "Error: agent folder not found (resolved from -f/--agent-folder)." >&2
     return 1
   }
   local marker="$agent_dir/monitor/auth-escalation.json"
 
-  echo "ola-monitor: supervising 'ola $*' in sandbox '$name'"
+  echo "ola-monitor: supervising 'ola ${ola_args[*]}' in sandbox '$name'"
 
   _ola_sandbox_prepare "$name" || return 1
 
   local -a heal_epochs=()
   local rc
   while true; do
-    sbx exec -w "$code_dir" "$name" env "OLA_SANDBOX_NAME=$name" ola "$@"
+    # SANDBOX=1 is normally exported by ~/.bashrc on login, which `sbx exec`
+    # never sources (non-interactive, no shell) — so ola's is_sandbox() check
+    # would otherwise see an unset var and refuse to run. Set it explicitly.
+    sbx exec -w "$code_dir" "$name" env "OLA_SANDBOX_NAME=$name" SANDBOX=1 \
+      ola "${ola_args[@]}"
     rc=$?
 
     # No marker: ola exited on its own (clean completion or an unrelated
@@ -790,12 +831,12 @@ ola-monitor() {
     local line
     while IFS= read -r line; do
       [ -n "$line" ] && kept+=("$line")
-    done < <(_ola_monitor_prune_window "$now" "${heal_epochs[@]}")
+    done < <(_ola_monitor_prune_window "$now" "$thrash_window" "${heal_epochs[@]}")
     heal_epochs=("${kept[@]}")
 
-    if [ "$(_ola_monitor_decide "${#heal_epochs[@]}")" = "thrash" ]; then
+    if [ "$(_ola_monitor_decide "${#heal_epochs[@]}" "$thrash_max")" = "thrash" ]; then
       echo "ola-monitor: auth broke ${#heal_epochs[@]} times in the last" \
-        "${OLA_MONITOR_THRASH_WINDOW:-300}s — something else is using this" \
+        "${thrash_window}s — something else is using this" \
         "account (a concurrent claude session?). Run ola alone. Stopping." >&2
       return 1
     fi

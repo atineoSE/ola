@@ -2,7 +2,6 @@
 
 import argparse
 import logging
-import os
 import sys
 from importlib.metadata import version
 from pathlib import Path
@@ -127,11 +126,11 @@ def main() -> None:
     parser.add_argument(
         "--metric-cmd",
         type=str,
-        default=os.getenv("OLA_METRIC_CMD"),
+        default=None,
         help="Shell command run in the project base branch after each "
         "merge-back (and once as a baseline); its JSON stdout ({name, value} "
         "object or array) is appended to .ola/metrics.jsonl. Expected to be "
-        "idempotent. Falls back to OLA_METRIC_CMD; disabled when unset.",
+        "idempotent. Disabled when unset.",
     )
     parser.add_argument(
         "--skip-sandbox",
