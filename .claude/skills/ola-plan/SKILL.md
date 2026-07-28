@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Create an ola plan
@@ -39,6 +39,11 @@ so the skill is self-contained.)
   conversation history. Whatever context the task needs, it must be able to
   recover from the current state of the code — so each task description must be
   self-contained and point at the files/interfaces it touches.
+- **A worktree contains only committed files.** `git worktree add … HEAD` checks
+  out the tracked tree and nothing else, so an untracked or gitignored file
+  exists solely in the user's main working copy and is **invisible to every
+  task** — as is anything an earlier task produced but did not commit. No task
+  can fix this from inside a plan; it has to be true of the repo before the run.
 - **Checkbox is truth.** A task is complete only when its `- [ ]` becomes
   `- [x]`. Plans are markdown todo lists, nothing more.
 
@@ -169,6 +174,20 @@ At the **agent-folder root** (not per stage), one more file may be needed:
   the spec the tasks read, so a fresh-context agent fails with a clear message
   instead of an inscrutable one.
 
+**Input data is the prerequisite most often missed.** If the plan reads a file
+the user supplied — an export, a fixture, a dump — walk the path from that file
+to the task that opens it, and make sure it is *committed* before the run starts.
+Vendoring it into the repo is not enough; a `.gitignore` rule for the directory
+it lands in silently un-does the vendoring, and the task sees an empty folder.
+The same applies between stages: if stage 02 writes a dataset that stage 03
+reads, that dataset must be tracked, or it dies with the worktree that made it.
+
+When the data is sensitive and ignoring it was the point, resolve the conflict
+*with the user* before writing the plan — commit it to a private repo, or accept
+that the run cannot see it — rather than writing a task that will block. Do not
+plan a workaround that copies the file between worktrees at runtime; it makes the
+run depend on state no worktree owns.
+
 Do **not** write any `PLAN.md` for work that genuinely needs a human decision
 that was never resolved in planning — leave it out and tell the user, rather
 than encoding a guess as a task.
@@ -198,6 +217,10 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
   confirmed the default sandbox policy covers it or listed it in
   `allowlist.txt`? State the conclusion to the user either way — "nothing
   needed, the defaults cover it" is a real answer, silence is not.
+- Is **every file a task reads committed**, including the user's input data and
+  anything an earlier stage hands to a later one? Run `git check-ignore` over
+  those paths rather than assuming — a file present in the user's checkout tells
+  you nothing about whether a worktree will have it.
 
 ## Example shape
 
