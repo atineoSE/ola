@@ -1045,7 +1045,29 @@ EOF
   # 1 from the initial _ola_sandbox_prepare launch + 2 heals (the 3rd break
   # hits the thrash guard before a 3rd cc-credentials call).
   [ "$(wc -l < "$CC_CALLS_LOG")" -eq 3 ]
-  [[ "$output" == *"something else is using this account"* ]]
+  [[ "$output" == *"cc-credentials isn't fixing it"* ]]
+}
+
+@test "monitor: strips placeholder provider API keys from its sbx exec launch" {
+  mkdir -p "$TMPDIR_TEST/mon_keys/agent" "$TMPDIR_TEST/mon_keys/code"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    return 0
+  }
+  export -f ola
+
+  cd "$TMPDIR_TEST/mon_keys/code"
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
+
+  [ "$status" -eq 0 ]
+  local exec_line
+  exec_line="$(grep 'sbx exec .* ola -a cc' "$SBX_LOG")"
+  while IFS= read -r k; do
+    [[ "$exec_line" == *"-u $k"* ]]
+  done < <(_ola_placeholder_keys)
+  [[ "$exec_line" == *"SANDBOX=1"* ]]
 }
 
 @test "monitor: notifies and stops when cc-credentials finds no valid Keychain token" {

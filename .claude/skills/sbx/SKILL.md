@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.3.0
+version: 2.3.1
 ---
 
 # sbx — Docker Sandbox CLI
@@ -207,9 +207,18 @@ exactly the rule shape needed, no ola code change required.
 path (`_ola_sandbox_prepare`) plus a non-interactive `sbx exec` of `ola <args>` to
 keep an ola run authenticated unsupervised: on the host-visible auth-escalation
 marker, it re-pulls Keychain credentials, re-injects them into the sandbox, and
-relaunches `ola` — with a thrash guard (repeated re-heals in a short window means a
-concurrent rotator, not a one-off) and a notify-fallback for a dead Keychain token.
-Auth-only scope — no progress reporting of its own. Full contract in CLAUDE.md.
+relaunches `ola` — with a thrash guard (repeated re-heals in a short window that
+cc-credentials isn't fixing — most often a concurrent rotator, but not always) and
+a notify-fallback for a dead Keychain token. Because `sbx exec` never sources
+`~/.bashrc`, `ola-monitor`'s exec line also re-applies what login shells get for
+free: `SANDBOX=1`, and stripping the placeholder provider API keys `sbx` injects
+into every sandbox (`sbx secret import`'s services above) via `env -u` — a live
+placeholder `ANTHROPIC_API_KEY` makes the `cc` backend fail with `Invalid API key`
+regardless of OAuth token freshness, which looks like but isn't the concurrent-
+rotator case. Both env fixups read `docker/placeholder-api-keys.txt` /
+`_ola_placeholder_keys` so the key list is declared once, not duplicated between
+the Dockerfile's `~/.bashrc` and `ola.sh`. Auth-only scope — no progress reporting
+of its own. Full contract in CLAUDE.md.
 
 ### Ports
 Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = ephemeral; loopback by default).

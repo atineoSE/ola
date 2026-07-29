@@ -85,6 +85,23 @@ artifact, not a `cc` bug; the fix is to re-run `cc-credentials` (reconnect the
 sandbox) and/or run ola outside a live `claude` session — not to bypass the
 isolated config dir.
 
+Gotcha: `sbx` injects placeholder provider API keys (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, etc. — the full list is `docker/placeholder-api-keys.txt`)
+into every sandbox for generic downstream-tool support. Claude Code prefers
+`ANTHROPIC_API_KEY` over its own OAuth `.credentials.json` whenever both are
+present, so a live placeholder breaks the `cc` backend with `Invalid API key ·
+Fix external API key` — a sub-second failure that looks identical to a dead
+OAuth token but has nothing to do with credential freshness; re-running
+`cc-credentials` does not touch it, because Claude Code never reads the file.
+The sandbox image's `~/.bashrc` unsets these on every interactive login (see
+the Dockerfile), which is why an interactive `ola-sandbox` attach followed by
+`ola` at the prompt works even when the exact same run through `ola-monitor`
+fails: `ola-monitor` launches `ola` via a non-interactive `sbx exec`, which
+never sources `~/.bashrc`, so it strips the same keys itself with `env -u`
+(reading the same tracked file, so the list is declared once — see
+`_ola_placeholder_keys` in `ola.sh`). If you ever see `Invalid API key` instead
+of an OAuth-shaped auth error, suspect this before suspecting the token.
+
 ### `cc` failure classification
 
 The `cc` backend (`src/ola/agents/claude_code.py`) differentiates three
@@ -199,7 +216,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-release` | 1.0.1 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.3.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule), secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), and `ola-monitor` (host-side auth launcher-watcher). Contract pinned to sbx v0.35.0; re-verify on sbx upgrade. |
+| `sbx` | 2.3.1 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule), secrets, templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), and `ola-monitor` (host-side auth launcher-watcher). Contract pinned to sbx v0.35.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

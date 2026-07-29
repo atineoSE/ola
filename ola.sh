@@ -668,6 +668,23 @@ ola-sandbox() {
 # the Keychain and re-inject into the sandbox, so the watcher runs here and
 # launches ola *into* the sandbox, rather than living in-sandbox.
 
+# Placeholder provider API keys `sbx` injects into every sandbox (for generic
+# downstream-tool support) that Claude Code prefers over its own OAuth
+# credentials.json whenever present — see docker/Dockerfile, which unsets the
+# same list in ~/.bashrc for interactive shells. ola-monitor's `sbx exec`
+# launch is non-interactive and never sources ~/.bashrc, so it strips them
+# itself via `env -u`; docker/placeholder-api-keys.txt is the single tracked
+# list both paths read, so adding/removing a provider key never needs a
+# second edit.
+_ola_placeholder_keys() {
+  local f="$_OLA_DIR/docker/placeholder-api-keys.txt"
+  [ -f "$f" ] || return 0
+  local k
+  while IFS= read -r k; do
+    [ -n "$k" ] && printf '%s\n' "$k"
+  done < "$f"
+}
+
 # Extract the -f/--agent-folder value from an `ola` argv, defaulting to
 # ../agent (mirrors cli.py's own default) so the watcher polls the same
 # marker path ola itself resolves and writes to.
@@ -724,9 +741,11 @@ _ola_monitor_prune_window() {
 
 # Heal/relaunch decision: given the count of heals already inside the thrash
 # window (NOT counting the one about to happen), decide whether to self-heal
-# again or stop and flag thrash. Repeated re-heals in a short window are the
-# signature of a concurrent rotator (another live `claude` session sharing
-# the account) that a mechanical re-pull cannot win — see design-notes.md.
+# again or stop and flag thrash. Repeated re-heals in a short window mean
+# cc-credentials isn't fixing whatever's wrong — most often a concurrent
+# rotator (another live `claude` session sharing the account), but it can
+# also be a non-credential cause (e.g. a shadowing env var) that re-pulling
+# the Keychain token can never fix either way — see design-notes.md.
 # Threshold is passed explicitly by the caller (see --monitor-thrash-max on
 # ola-monitor).
 _ola_monitor_decide() {
@@ -807,14 +826,24 @@ ola-monitor() {
 
   _ola_sandbox_prepare "$name" || return 1
 
+  # SANDBOX=1 and the placeholder-key unsets are normally applied by
+  # ~/.bashrc on login, which `sbx exec` never sources (non-interactive, no
+  # shell) — so ola's is_sandbox() check would otherwise see SANDBOX unset
+  # and refuse to run, and Claude Code would see a live placeholder
+  # ANTHROPIC_API_KEY and use that instead of OAuth. Apply both explicitly via
+  # `env` (see _ola_placeholder_keys for why the key list itself isn't
+  # duplicated here).
+  local -a unset_flags=()
+  local _k
+  while IFS= read -r _k; do
+    unset_flags+=(-u "$_k")
+  done < <(_ola_placeholder_keys)
+
   local -a heal_epochs=()
   local rc
   while true; do
-    # SANDBOX=1 is normally exported by ~/.bashrc on login, which `sbx exec`
-    # never sources (non-interactive, no shell) — so ola's is_sandbox() check
-    # would otherwise see an unset var and refuse to run. Set it explicitly.
-    sbx exec -w "$code_dir" "$name" env "OLA_SANDBOX_NAME=$name" SANDBOX=1 \
-      ola "${ola_args[@]}"
+    sbx exec -w "$code_dir" "$name" env "${unset_flags[@]}" \
+      "OLA_SANDBOX_NAME=$name" SANDBOX=1 ola "${ola_args[@]}"
     rc=$?
 
     # No marker: ola exited on its own (clean completion or an unrelated
@@ -836,8 +865,10 @@ ola-monitor() {
 
     if [ "$(_ola_monitor_decide "${#heal_epochs[@]}" "$thrash_max")" = "thrash" ]; then
       echo "ola-monitor: auth broke ${#heal_epochs[@]} times in the last" \
-        "${thrash_window}s — something else is using this" \
-        "account (a concurrent claude session?). Run ola alone. Stopping." >&2
+        "${thrash_window}s — cc-credentials isn't fixing it. Likely a" \
+        "concurrent claude session rotating the account's token, but could" \
+        "also be non-credential (e.g. a shadowing env var in the sandbox)." \
+        "Run ola alone to see the underlying error. Stopping." >&2
       return 1
     fi
 

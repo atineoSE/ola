@@ -54,10 +54,19 @@ RUN git config --global user.name "ola" && \
     git config --global --add safe.directory '*'
 
 # Unset proxy-managed API keys injected by sbx — they are placeholders that
-# confuse downstream tools. Claude uses OAuth credentials instead; OpenHands
-# gets its key from the agent .env via ola.
+# confuse downstream tools; Claude prefers ANTHROPIC_API_KEY over its own OAuth
+# credentials.json whenever both are present, so a placeholder left in scope
+# silently breaks the `cc` backend with "Invalid API key" regardless of how
+# fresh the OAuth token is. OpenHands gets its key from the agent .env via ola.
+#
+# docker/placeholder-api-keys.txt is the single source of truth for this list
+# — ola.sh's ola-monitor reads the same file to strip these vars from its
+# non-interactive `sbx exec` launch, which (unlike an interactive attach)
+# never sources ~/.bashrc and so would otherwise miss this unset entirely.
+COPY docker/placeholder-api-keys.txt /tmp/placeholder-api-keys.txt
 RUN echo 'export SANDBOX=1' >> ~/.bashrc && \
-    echo 'unset ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY XAI_API_KEY MISTRAL_API_KEY NEBIUS_API_KEY' >> ~/.bashrc && \
+    echo "unset $(tr '\n' ' ' < /tmp/placeholder-api-keys.txt)" >> ~/.bashrc && \
+    rm /tmp/placeholder-api-keys.txt && \
     echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc && \
     echo "alias cx='codex exec --json --ephemeral'" >> ~/.bashrc
 
