@@ -592,8 +592,14 @@ _ola_sandbox_prepare() {
     return 1
   }
 
-  # Reconnect if sandbox already exists
-  if sbx ls 2>&1 | grep -q "$name"; then
+  # Reconnect if sandbox already exists. Anchor the match to the start of
+  # the SANDBOX column (name followed by whitespace) — a plain substring
+  # grep here false-positives against any other sandbox whose name contains
+  # this one (e.g. "reference-checker" against an already-running
+  # "reference-checker-dashboard"), which skips `sbx create` entirely and
+  # leaves every later `sbx exec "$name"` failing with "no sandbox named"
+  # for a sandbox that was never created.
+  if sbx ls 2>&1 | grep -qE "^${name}[[:space:]]"; then
     # Refresh credentials and the resolved env snapshot on reconnect.
     # agent_settings.json is re-patched too: the substrate endpoint may
     # have rotated since the sandbox was created, symmetric with the
@@ -823,6 +829,19 @@ ola-monitor() {
   local marker="$agent_dir/monitor/auth-escalation.json"
 
   echo "ola-monitor: supervising 'ola ${ola_args[*]}' in sandbox '$name'"
+
+  # A marker left by an earlier, unrelated invocation (e.g. one that hit the
+  # auth-escalation exit code and was never resumed) must not be mistaken
+  # for evidence from *this* invocation — the loop below only checks
+  # whether the marker file exists, so any leftover marker turns the very
+  # first sbx-exec-level failure (missing sandbox, docker hiccup, etc.) into
+  # a bogus "auth escalation" that re-heals credentials that were never the
+  # problem.
+  if [ -f "$marker" ]; then
+    echo "ola-monitor: clearing stale auth-escalation marker from a" \
+      "previous invocation before starting." >&2
+    rm -f "$marker"
+  fi
 
   _ola_sandbox_prepare "$name" || return 1
 

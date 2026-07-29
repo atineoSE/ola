@@ -630,6 +630,30 @@ EOF
   [[ "$(tail -1 "$SBX_LOG")" == *"sbx run --name my-sandbox"* ]]
 }
 
+@test "sandbox: does not false-positive reconnect against a superstring sandbox name" {
+  # Regression: an unanchored `grep -q "$name"` against `sbx ls` output
+  # matched "my-sandbox" inside an unrelated, already-running
+  # "my-sandbox-dashboard", skipping `sbx create` entirely.
+  mkdir -p "$TMPDIR_TEST/sbx_superstring/agent" "$TMPDIR_TEST/sbx_superstring/code"
+
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  docker() { [ "$1" = "info" ] && echo "16748113920"; }
+  export -f docker
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    if [ "$1" = "ls" ]; then echo "my-sandbox-dashboard  running  1h"; return 0; fi
+  }
+  export -f sbx
+  export OLA_ENV_BLOB='LLM_API_KEY="tok"'
+
+  cd "$TMPDIR_TEST/sbx_superstring/code"
+  ola-sandbox my-sandbox
+
+  grep -q "sbx create shell --name my-sandbox" "$SBX_LOG"
+  grep -q 'sbx exec my-sandbox bash' "$SBX_LOG"
+}
+
 @test "sandbox: reconnect re-patches agent_settings.json from resolved blob" {
   export HOME="$TMPDIR_TEST/rc_oh_home"
   mkdir -p "$HOME/.claude" "$HOME/.openhands"
@@ -1017,6 +1041,37 @@ EOF
   [ "$(wc -l < "$CC_CALLS_LOG")" -eq 2 ]
   [ ! -f "$MON_AGENT_DIR/monitor/auth-escalation.json" ]
   [[ "$output" == *"auth escalation"* ]]
+}
+
+@test "monitor: clears a stale marker from a previous invocation instead of misdiagnosing an unrelated failure" {
+  # Regression: a marker left behind by an earlier, already-resolved auth
+  # escalation (e.g. that invocation was interrupted before its own
+  # `rm -f "$marker"`) must not be picked up as evidence for a failure in
+  # *this* invocation — otherwise an unrelated ola failure (here: plain
+  # exit 7) gets misreported as an auth escalation and pointlessly re-heals
+  # credentials that were never the problem.
+  mkdir -p "$TMPDIR_TEST/mon_stale/agent" "$TMPDIR_TEST/mon_stale/code"
+  _mock_sbx_for_monitor
+  _mock_write_auth_marker "$TMPDIR_TEST/mon_stale/agent"
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    return 7
+  }
+  export -f ola
+
+  cc-credentials() { echo x >> "$TMPDIR_TEST/mon_stale/cc_calls"; return 0; }
+  export -f cc-credentials
+
+  cd "$TMPDIR_TEST/mon_stale/code"
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
+
+  [ "$status" -eq 7 ]
+  [[ "$output" != *"auth escalation"* ]]
+  [ ! -f "$TMPDIR_TEST/mon_stale/agent/monitor/auth-escalation.json" ]
+  # 1 from the legitimate _ola_sandbox_prepare startup call; a bogus
+  # re-heal driven by the stale marker would add a second.
+  [ "$(wc -l < "$TMPDIR_TEST/mon_stale/cc_calls")" -eq 1 ]
 }
 
 @test "monitor: thrash guard stops re-healing after repeated auth breaks in the window" {
