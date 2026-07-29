@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.3.1
+version: 2.3.3
 ---
 
 # sbx — Docker Sandbox CLI
@@ -164,6 +164,24 @@ exactly the rule shape needed, no ola code change required.
 - See the `mongo-vpn` skill for the concrete MongoDB-over-VPN + sandbox recipe
   (host route + seedlist derivation) — don't duplicate it here.
 
+#### Reaching a service running on the host (verified 2026-07-29, v0.35.0)
+`host.docker.internal` resolves in-sandbox out of the box (`/etc/resolv.conf`'s
+`docker.internal` search domain), so DNS is never the blocker — but the policy
+engine evaluates the connection under the resource name **`localhost`**, not
+`host.docker.internal`. An allow rule for `host.docker.internal` alone still
+403s (`Blocked by network policy: domain localhost:...`); confirmed live that
+`sbx policy allow network --sandbox <SANDBOX> localhost` is what clears it —
+after that rule, a probe past the policy layer surfaced a host-side `connection
+refused` (nothing listening on the probed port), proving the dial happens from
+the host, not looped back inside the sandbox.
+
+- **Connect to** `host.docker.internal:<port>` from inside the sandbox.
+- **Allow rule targets** `localhost`, scoped to the sandbox
+  (`--sandbox <name>`) or global — the DNS name and the policy resource name
+  deliberately diverge here, unlike every other egress case in this doc.
+- Same non-HTTP-TCP caveats as above apply (no SNI issue for a bare `localhost`
+  rule since no port/IP suffix is used).
+
 ### Credentials
 - **Claude subscription (OAuth)**: `ola-sandbox` copies `~/.claude/.credentials.json` from host into the sandbox at creation/reconnection time (via `sbx exec` + base64). No API key needed.
 - **macOS Keychain shadows the file — host runs only.** Claude Code caches OAuth
@@ -219,6 +237,22 @@ rotator case. Both env fixups read `docker/placeholder-api-keys.txt` /
 `_ola_placeholder_keys` so the key list is declared once, not duplicated between
 the Dockerfile's `~/.bashrc` and `ola.sh`. Auth-only scope — no progress reporting
 of its own. Full contract in CLAUDE.md.
+
+**Two gotchas fixed 2026-07-29** (both in `_ola_sandbox_prepare`/`ola-monitor`,
+`ola.sh`): (1) the create-vs-reconnect check used a plain `grep -q "$name"`
+against `sbx ls` output — an unanchored substring match, so an unrelated,
+already-running sandbox whose name merely *contains* the target (e.g.
+`reference-checker` against `reference-checker-dashboard`) false-positived
+into the reconnect branch, `sbx create` was never called, and every later `sbx
+exec "$name"` failed with `no sandbox named`. Fixed to anchor on the SANDBOX
+column (`grep -qE "^${name}[[:space:]]"`). (2) `ola-monitor`'s only signal
+that `ola` hit a real auth escalation is "does the marker file exist" — a
+marker left behind by an earlier, unrelated invocation (e.g. one interrupted
+before its own cleanup) was indistinguishable from a fresh one, so any
+unrelated `sbx exec`-level failure (like bug 1) got misdiagnosed as an auth
+escalation and pointlessly re-healed credentials that were never the problem.
+Fixed by clearing any marker present before the launch loop starts, so only a
+marker written during *this* invocation's own run is ever trusted.
 
 ### Ports
 Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = ephemeral; loopback by default).
