@@ -1,21 +1,40 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.3.3
+version: 2.4.0
 ---
 
 # sbx — Docker Sandbox CLI
 
-> **Contract re-verified against sbx CLI `v0.35.0`** (`01e01520456e4126a9653471e7072e4d9b280321`, client).
-> The command shapes below were checked against this exact version. sbx makes
-> breaking CLI changes between releases — e.g. native git isolation moved from
-> `--branch` to `--clone`; `policy rm network` dropped its positional form for
-> `--resource`/`--id`; **`sbx run <SANDBOX>` positional re-attach was deprecated
-> in v0.33.0 in favour of `sbx run --name <SANDBOX>`**; and **`sbx policy
-> set-default` was renamed to `sbx policy init` in v0.34.0**. After upgrading
-> sbx, run `sbx version` and re-verify with `sbx <cmd> --help` before trusting
-> this doc. A script that discards stderr/exit codes will silently do nothing
-> when an arg shape changes.
+> **Contract re-verified against sbx CLI `v0.37.1`** (`2d4f32448c7a94d7fa525517dfca21aa36599829`, client;
+> previously verified at v0.35.0). All of ola's actual invocations
+> (`create shell`, `run --name`, `exec`, `ls`, `policy allow/ls network`,
+> `template ls`) are byte-for-byte unchanged between v0.35.0 and v0.37.1 — no
+> ola-side fix was needed for this bump. New since v0.35.0, none of it used by
+> ola today: a `kit` command family (add/inspect/pack/pull/push/validate — richer
+> than the `--kit` flag on `create`/`run`, and `kit add` can now attach a kit to
+> an *already-running* sandbox), `login`/`logout` (Docker sign-in; `logout` also
+> stops every running sandbox), `setup` (experimental interactive host-detection
+> + secret-import wizard, plus `setup ssh`), `skills` (experimental — `skills
+> import` copies skill folders from host dirs like `~/.claude/skills` — the
+> **global** `~/.claude/skills`, not this repo's project-local
+> `.claude/skills/` — into a store new sandboxes read; irrelevant to ola since
+> the project's `.claude/skills/` is already visible to an agent via the normal
+> workspace bind-mount), and `tui` (interactive dashboard). `policy ls` gained
+> `--type filesystem`, `--source kit`, and `--include-inactive` (hides
+> org-governance-inactive rules by default). `secret import` gained a
+> positional `[SERVICE]`, `--all`, `--dry-run`, `--force`, and now documents
+> that a service with an OAuth token already configured is skipped (OAuth wins
+> over an api-key import at runtime).
+>
+> sbx makes breaking CLI changes between releases — e.g. native git isolation
+> moved from `--branch` to `--clone`; `policy rm network` dropped its
+> positional form for `--resource`/`--id`; **`sbx run <SANDBOX>` positional
+> re-attach was deprecated in v0.33.0 in favour of `sbx run --name
+> <SANDBOX>`**; and **`sbx policy set-default` was renamed to `sbx policy init`
+> in v0.34.0**. After upgrading sbx, run `sbx version` and re-verify with `sbx
+> <cmd> --help` before trusting this doc. A script that discards stderr/exit
+> codes will silently do nothing when an arg shape changes.
 >
 > **Resource limits & swap (below):** the memory default (`50% of host, max
 > 32 GiB`) is unchanged through v0.35.0. The **75%-of-host hard ceiling on `-m`**
@@ -116,7 +135,7 @@ pollutes captured error output and will break when the flag is removed.
 > passing `-g`/`--global` should drop it.
 
 - `sbx policy init <allow-all|balanced|deny-all>` — set the initial global baseline (run BEFORE adding rules / first sandbox). **Renamed from `sbx policy set-default` in v0.34.0** — the old name still works but prints a deprecation notice. One-time: use `sbx policy reset` to start over.
-- `sbx policy ls [SANDBOX] [--type network]` — summary of active policies. Add **`--wide`** for the rule-level table with **rule IDs and resources** (needed for `policy rm --id`); `--json` for the raw filtered response; `--source`/`--decision` to filter.
+- `sbx policy ls [SANDBOX] [--type network]` — summary of active policies. Add **`--wide`** for the rule-level table with **rule IDs and resources** (needed for `policy rm --id`); `--json` for the raw filtered response; `--source`/`--decision` to filter. `--type` also accepts `filesystem` (v0.37.1); `--source` also accepts `kit`. `--include-inactive` (v0.37.1) shows rules an org's remote governance has made inactive, hidden by default — irrelevant unless remote governance is in play.
 - `sbx policy allow network "domain1,*.domain2"` — global allow rule (bare = global)
 - `sbx policy allow network --sandbox <SANDBOX> "domain"` — sandbox-scoped allow rule
 - `sbx policy deny network "domain"` — global deny rule (deny always > allow)
