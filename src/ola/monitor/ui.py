@@ -726,12 +726,17 @@ def run_live(agent_path: Path, refresh_interval: float = 2.0) -> None:
     table so long iteration lists never overflow the terminal.
     """
     expanded: set[str] = set()
-    cursor = 0  # display row index (folder + iter rows in visual order)
-    offset = 0  # first display row currently visible
     mode = ViewMode.TASK
     active_col = "Folder"  # column whose full value the detail line shows
 
     folders = read_agent_folder(agent_path)
+
+    # Start scrolled to the bottom (most recent folders) rather than the top:
+    # with more folders than fit on screen, the tail is the actionable end of
+    # a lexicographically-ordered run, same as pressing End on load.
+    _initial_rows = _build_display_rows(folders, expanded)
+    cursor = max(0, len(_initial_rows) - 1)  # display row index (folder + iter rows in visual order)
+    offset = 0  # first display row currently visible; clamp_view() scrolls it to match cursor below
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)

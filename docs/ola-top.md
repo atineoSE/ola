@@ -15,6 +15,10 @@ Only subfolders that contain a `PLAN.md` are listed — that file is the task
 spine ola-top reads, so a directory without one (e.g. a `bin/` of helper
 scripts living beside the numbered folders) is not a run and never appears.
 
+When there are more folders than fit on one screen, ola-top starts scrolled to
+the bottom — the last (most recent) folders, not the first — same as pressing
+`G` on load.
+
 ## Keybindings
 
 | Key | Action |
