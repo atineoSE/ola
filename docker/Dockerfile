@@ -44,6 +44,24 @@ RUN curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh && \
 # Install OpenHands CLI
 RUN $HOME/.local/bin/uv tool install openhands --python 3.12
 
+# Playwright (headless Chromium): a project's own CLAUDE.md sometimes carries
+# browser-screenshot instructions written for a macOS host (e.g. hardcoding
+# /Applications/Google Chrome.app), which doesn't exist in this Linux sandbox
+# — an in-sandbox task then has no way to actually verify a UI change and can
+# only report "not available." Not `apt install chromium`: on modern Ubuntu
+# that package is a snap-wrapper stub that fails outright without snapd
+# (unavailable in a container). Playwright's `install --with-deps` instead
+# downloads a self-contained Chromium build plus the system libs it needs, so
+# it works regardless of the base image's apt-repo chromium situation.
+# `chromium-headless` is a stable wrapper script so a Linux fallback command
+# doesn't need to track Playwright's revision-numbered install path (it
+# changes across Playwright versions).
+RUN $HOME/.local/bin/uv tool install playwright --python 3.12 && \
+    $HOME/.local/bin/playwright install --with-deps chromium && \
+    printf '#!/bin/bash\nexec "$(find "$HOME/.cache/ms-playwright" -maxdepth 3 -type f -iname chrome -perm -u+x | head -1)" --headless=new --disable-gpu --no-sandbox "$@"\n' | \
+        sudo tee /usr/local/bin/chromium-headless > /dev/null && \
+    sudo chmod +x /usr/local/bin/chromium-headless
+
 # Copy project and install ola (brings in openhands-sdk as a dependency)
 COPY --chown=1000:1000 . /tmp/ola-src
 RUN $HOME/.local/bin/uv tool install /tmp/ola-src && rm -rf /tmp/ola-src
@@ -63,7 +81,7 @@ RUN git config --global user.name "ola" && \
 # — ola.sh's ola-monitor reads the same file to strip these vars from its
 # non-interactive `sbx exec` launch, which (unlike an interactive attach)
 # never sources ~/.bashrc and so would otherwise miss this unset entirely.
-COPY docker/placeholder-api-keys.txt /tmp/placeholder-api-keys.txt
+COPY --chown=1000:1000 docker/placeholder-api-keys.txt /tmp/placeholder-api-keys.txt
 RUN echo 'export SANDBOX=1' >> ~/.bashrc && \
     echo "unset $(tr '\n' ' ' < /tmp/placeholder-api-keys.txt)" >> ~/.bashrc && \
     rm /tmp/placeholder-api-keys.txt && \
@@ -86,7 +104,10 @@ RUN set -e && \
     docker --version && \
     jq --version && \
     gh --version && \
+    playwright --version && \
     git config --global user.name | grep -q ola && \
     d="$(mktemp -d)" && cd "$d" && git init -q && git config user.email ola@localhost && \
     git config user.name ola && git commit -q --allow-empty -m init && \
-    git worktree add -q wt HEAD && git worktree remove wt && cd / && rm -rf "$d"
+    git worktree add -q wt HEAD && git worktree remove wt && cd / && rm -rf "$d" && \
+    d2="$(mktemp -d)" && chromium-headless --screenshot="$d2/smoke.png" --window-size=800,600 about:blank && \
+    [ -s "$d2/smoke.png" ] && rm -rf "$d2"
