@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Create an ola plan
@@ -174,6 +174,18 @@ At the **agent-folder root** (not per stage), one more file may be needed:
   the spec the tasks read, so a fresh-context agent fails with a clear message
   instead of an inscrutable one.
 
+  **UI-verification tasks specifically**: the sandbox is a Linux container, so
+  any task that must visually verify a change (screenshot, render a page,
+  check a UI diff) cannot use a macOS browser path like
+  `/Applications/Google Chrome.app` — that instruction, if it lives in the
+  project's own `CLAUDE.md`, silently doesn't apply in-sandbox. The sandbox
+  image ships a real headless browser for this: `chromium-headless
+  --screenshot=out.png --window-size=W,H <url>` (Playwright's self-contained
+  Chromium, not an apt package). If a task needs it, say so explicitly in the
+  task text or `TASK-PROMPT.md` — a fresh-context agent has no way to discover
+  it otherwise and may conclude "no browser available" instead. Screenshotting
+  a `localhost` dev server needs no `allowlist.txt` entry; a remote URL does.
+
 **Input data is the prerequisite most often missed.** If the plan reads a file
 the user supplied — an export, a fixture, a dump — walk the path from that file
 to the task that opens it, and make sure it is *committed* before the run starts.
@@ -217,6 +229,10 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
   confirmed the default sandbox policy covers it or listed it in
   `allowlist.txt`? State the conclusion to the user either way — "nothing
   needed, the defaults cover it" is a real answer, silence is not.
+- Does any task need to **visually verify a UI change**? If so, does it name
+  `chromium-headless` (the sandbox's baked-in headless Chromium) rather than a
+  macOS-only browser path, and does a remote URL it screenshots appear in
+  `allowlist.txt`?
 - Is **every file a task reads committed**, including the user's input data and
   anything an earlier stage hands to a later one? Run `git check-ignore` over
   those paths rather than assuming — a file present in the user's checkout tells
