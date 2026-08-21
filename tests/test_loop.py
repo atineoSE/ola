@@ -619,6 +619,14 @@ def test_process_folder_writes_events_jsonl(tmp_path):
 # --- Stale git lock tests ---
 
 
+def _fake_git_path_run(*args, **kwargs):
+    """subprocess.run stand-in resolving `git rev-parse --git-path X` like a plain repo."""
+    cmd = args[0] if args else kwargs.get("args")
+    if cmd[:3] == ["git", "rev-parse", "--git-path"]:
+        return MagicMock(returncode=0, stdout=f".git/{cmd[3]}".encode())
+    return MagicMock(returncode=0)
+
+
 def test_git_commit_removes_stale_lock(tmp_path, caplog):
     """_git_commit removes index.lock and logs a warning when it exists."""
     git_dir = tmp_path / ".git"
@@ -629,7 +637,7 @@ def test_git_commit_removes_stale_lock(tmp_path, caplog):
     with (
         caplog.at_level(logging.WARNING, logger="ola.loop"),
         patch("ola.loop._git"),
-        patch("ola.loop.subprocess.run", return_value=MagicMock(returncode=0)),
+        patch("ola.loop.subprocess.run", side_effect=_fake_git_path_run),
     ):
         _git_commit(tmp_path, "test message")
 
@@ -645,7 +653,7 @@ def test_git_commit_no_lock_no_warning(tmp_path, caplog):
     with (
         caplog.at_level(logging.WARNING, logger="ola.loop"),
         patch("ola.loop._git"),
-        patch("ola.loop.subprocess.run", return_value=MagicMock(returncode=0)),
+        patch("ola.loop.subprocess.run", side_effect=_fake_git_path_run),
     ):
         _git_commit(tmp_path, "test message")
 
@@ -742,6 +750,36 @@ def test_exclude_ola_artifacts_noop_without_git(tmp_path):
 
     _exclude_ola_artifacts(tmp_path)  # no .git → silently does nothing
     assert not (tmp_path / ".git").exists()
+
+
+def test_exclude_ola_artifacts_in_linked_worktree(tmp_path):
+    """project_path may itself be a linked git worktree — .git is a gitlink
+    file there, not a directory. The shared info/exclude lives in the main
+    repo's common git dir and must still get the .ola/ entry."""
+    import subprocess
+
+    from ola.loop import _exclude_ola_artifacts
+
+    main_repo = tmp_path / "main"
+    main_repo.mkdir()
+    subprocess.run(["git", "init"], cwd=main_repo, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit",
+         "--allow-empty", "-m", "init"],
+        cwd=main_repo, capture_output=True, check=True,
+    )
+
+    worktree = tmp_path / "wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature", str(worktree)],
+        cwd=main_repo, capture_output=True, check=True,
+    )
+    assert (worktree / ".git").is_file()  # gitlink, not a directory
+
+    _exclude_ola_artifacts(worktree)
+
+    exclude = (main_repo / ".git" / "info" / "exclude").read_text()
+    assert ".ola/" in exclude.splitlines()
 
 
 # --- BLOCKERS.md folders are skipped quietly ---

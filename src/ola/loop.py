@@ -41,6 +41,25 @@ def _ensure_git(cwd: Path) -> None:
     _exclude_ola_artifacts(cwd)
 
 
+def _git_path(cwd: Path, relpath: str) -> Path | None:
+    """Resolve a path inside the real git dir, honouring linked worktrees.
+
+    ``cwd / ".git"`` is a *file* (a gitlink), not a directory, when ``cwd``
+    is itself a linked worktree — see ``worktree.py``'s module docstring.
+    ``git rev-parse --git-path`` resolves through the gitlink and also
+    picks the shared vs. per-worktree location correctly (e.g.
+    ``info/exclude`` is shared; ``index.lock`` is per-worktree).
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-path", relpath],
+        cwd=cwd,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return None
+    return cwd / result.stdout.decode().strip()
+
+
 def _exclude_ola_artifacts(cwd: Path) -> None:
     """Idempotently exclude ``.ola/`` runtime artifacts from git.
 
@@ -49,8 +68,8 @@ def _exclude_ola_artifacts(cwd: Path) -> None:
     ``.ola/bin/ola-blocked`` script and other sidecar files would be swept
     into ``git add -A`` commits.
     """
-    exclude = cwd / ".git" / "info" / "exclude"
-    if not exclude.parent.is_dir():
+    exclude = _git_path(cwd, "info/exclude")
+    if exclude is None or not exclude.parent.is_dir():
         return
     existing = exclude.read_text() if exclude.exists() else ""
     if ".ola/" in existing.splitlines():
@@ -62,8 +81,8 @@ def _exclude_ola_artifacts(cwd: Path) -> None:
 
 
 def _clear_lock(cwd: Path) -> None:
-    lock = cwd / ".git" / "index.lock"
-    if lock.exists():
+    lock = _git_path(cwd, "index.lock")
+    if lock is not None and lock.exists():
         logger.warning("Removing stale git lock file %s", lock)
         lock.unlink()
 
