@@ -111,10 +111,6 @@ class FolderStatus:
     # is only written at iteration end. Empty for sequential folders (no events)
     # and before the first event lands. See :attr:`agent_display`.
     event_agent_backend: str = ""
-    # Parallel-mode wall-clock span across all events (earliest→latest ts),
-    # recomputed each read. 0.0 for sequential folders or before two events
-    # land. See :attr:`display_wall_ms`.
-    events_elapsed_s: float = 0.0
 
     @property
     def is_parallel(self) -> bool:
@@ -123,15 +119,18 @@ class FolderStatus:
 
     @property
     def display_wall_ms(self) -> int:
-        """Wall time for the folder row's Time column.
+        """Agent time for the folder row's Time column.
 
-        Parallel folders use the live events span (``events_elapsed_s``), so an
-        interrupt/resume can't leave a stale ``STATS.jsonl``-summed number that
-        reads shorter than a single task. Sequential folders fall back to the
-        summed per-iteration wall time.
+        Parallel folders sum each task's own worked time (``task_rows[].elapsed_s``,
+        live from ``events.jsonl``), so N tasks running concurrently for a minute
+        read as N minutes — agent-seconds spent, not the wall-clock span the run
+        took. Being derived from live events rather than ``STATS.jsonl`` also means
+        an interrupt/resume can't leave a stale, iteration-only sum that reads
+        shorter than a single task. Sequential folders (no parallelism to sum
+        across) keep the summed per-iteration wall time.
         """
-        if self.is_parallel and self.events_elapsed_s > 0:
-            return int(self.events_elapsed_s * 1000)
+        if self.is_parallel:
+            return int(sum(tr.elapsed_s for tr in self.task_rows) * 1000)
         return self.total_wall_ms
 
     @property
@@ -311,7 +310,6 @@ def read_folder_status(folder: Path) -> FolderStatus:
 
         status.concurrency_cap = read_concurrency(folder)
         status.task_rows = read_task_rows(folder, status.iterations)
-        status.events_elapsed_s = _events_elapsed_s(folder)
         status.event_agent_backend = _latest_event_backend(folder)
 
     return status
@@ -447,24 +445,6 @@ def _read_progress(folder: Path) -> dict[str, dict]:
         }
         for name, points in series.items()
     }
-
-
-def _events_elapsed_s(folder: Path) -> float:
-    """Worked time across ``<folder>/.ola/events.jsonl`` (gaps-excluded span).
-
-    Recomputed on every read so an interrupted-then-resumed run reports its true
-    elapsed time, rather than a stale ``STATS.jsonl``-derived number that can
-    read shorter than a single task. Idle/dead stretches longer than
-    :data:`_STALE_AFTER_S` — e.g. the gap between an aborted run and a re-run
-    sharing this file — are excluded, so a dangling run can't inflate the span.
-    Returns 0.0 with fewer than two parsable timestamps.
-    """
-    timestamps = [
-        t for t in (_parse_ts(e.get("ts", "")) for e in _read_events(folder)) if t
-    ]
-    if len(timestamps) < 2:
-        return 0.0
-    return _worked_seconds(timestamps)
 
 
 def _latest_event_backend(folder: Path) -> str:

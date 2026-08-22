@@ -866,12 +866,12 @@ def test_task_row_defaults():
     assert row.stats is None
 
 
-# --- folder wall-time (events span vs stale STATS) ---
+# --- folder agent-time (sum of per-task worked time, not wall-clock span) ---
 
 
-def test_read_folder_status_parallel_elapsed_from_events(tmp_path: Path):
-    """A parallel folder's wall time spans all events (earliest→latest ts),
-    recomputed each read — so it never reads shorter than a single task."""
+def test_read_folder_status_parallel_elapsed_sums_tasks(tmp_path: Path):
+    """A parallel folder's Time is the sum of each task's own worked time, not
+    the wall-clock span of the run — concurrent tasks add, they don't overlap."""
     folder = tmp_path / "01-task"
     folder.mkdir()
     _write_tasks_json(
@@ -896,9 +896,10 @@ def test_read_folder_status_parallel_elapsed_from_events(tmp_path: Path):
     )
     status = read_folder_status(folder)
     assert status.is_parallel
-    # span = 14:00:00 → 14:01:40 = 100s, wider than either task's own elapsed.
-    assert status.events_elapsed_s == 100.0
-    assert status.display_wall_ms == 100_000
+    # t-aaa worked 30s (14:00:00→14:00:30), t-bbb worked 80s (14:00:20→14:01:40);
+    # they overlap in wall-clock time (span is only 100s) but agent-time sums
+    # to 110s — the point of this metric.
+    assert status.display_wall_ms == 110_000
 
 
 def test_read_folder_status_agent_from_events_before_stats(tmp_path: Path):
@@ -927,16 +928,17 @@ def test_read_folder_status_agent_from_events_before_stats(tmp_path: Path):
     assert status.agent_display == "Claude Code"
 
 
-def test_display_wall_ms_prefers_events_span_over_stale_stats():
-    """After interrupt/resume the STATS sum can read short; events span wins."""
+def test_display_wall_ms_prefers_task_rows_over_stale_stats():
+    """After interrupt/resume the STATS sum can read short; the live per-task
+    events sum wins."""
     fs = FolderStatus(
         name="01-task",
         concurrency_cap=2,
         iterations=[IterationStatus(phase="task-t-aaa-1", wall_ms=5_000)],
-        events_elapsed_s=42.0,
+        task_rows=[TaskRow(task_id="t-aaa", text="A", status="running", elapsed_s=42.0)],
     )
     assert fs.total_wall_ms == 5_000  # stale STATS sum
-    assert fs.display_wall_ms == 42_000  # live events span wins
+    assert fs.display_wall_ms == 42_000  # live per-task events sum wins
 
 
 def test_display_wall_ms_sequential_uses_stats_sum():
@@ -949,15 +951,16 @@ def test_display_wall_ms_sequential_uses_stats_sum():
     assert fs.display_wall_ms == 7_000
 
 
-def test_display_wall_ms_parallel_no_events_falls_back():
-    """A parallel folder with no measurable span falls back to the STATS sum."""
+def test_display_wall_ms_parallel_no_task_rows_is_zero():
+    """A parallel folder with no task rows yet (no events landed) reads 0, even
+    with a stale STATS sum from a prior run."""
     fs = FolderStatus(
         name="01-task",
         concurrency_cap=1,
         iterations=[IterationStatus(phase="task-t-aaa-1", wall_ms=3_000)],
-        events_elapsed_s=0.0,
+        task_rows=[],
     )
-    assert fs.display_wall_ms == 3_000
+    assert fs.display_wall_ms == 0
 
 
 def test_read_task_rows_folds_in_stats_summed_across_attempts(tmp_path: Path):

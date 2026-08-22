@@ -1,6 +1,6 @@
 # ola-top
 
-A `top`-like terminal dashboard for monitoring agent progress in real time. Shows task completion, token usage, cache hit rates, and wall time for each phase — with per-iteration and per-task drill-down.
+A `top`-like terminal dashboard for monitoring agent progress in real time. Shows task completion, token usage, cache hit rates, and worked time for each phase — with per-iteration and per-task drill-down.
 
 ```bash
 ola-top [-f <agent-folder>] [-r <refresh-seconds>]
@@ -46,7 +46,7 @@ task description without widening the terminal.
 
 ola-top has two column layouts, toggled with `m`:
 
-* **Task view** (default) — folder/task progress: agent, model, tasks done, turns, wall time.
+* **Task view** (default) — folder/task progress: agent, model, tasks done, turns, worked time.
 * **Metrics view** — token economics: input/output tokens, average and max context, cache hit rate, in/out ratio, LLM-vs-tool time, TTFT, tokens/sec.
 
 In a parallel folder the **Agent** fills from the `started` event the moment a task begins (mnemonic only — the agent version arrives with the first `STATS.jsonl` row). **Model** is not in the event stream, so it stays blank until that first `STATS.jsonl` row lands.
@@ -73,7 +73,7 @@ ola-top adapts what it shows when you expand a folder, based on whether the fold
 
 > Elapsed time comes from the `events.jsonl` stream and populates as the run emits events; a folder that has only just started shows its tasks from `tasks.json` with an empty Time column until the first events land.
 
-> For a parallel folder, the **Folder row's Time** is the worked span across *all* its events — the sum of gaps between consecutive events, **excluding any gap longer than two minutes** — recomputed on every refresh. Dropping long gaps means an idle stretch, or the gap between an aborted run and a re-run that share one `events.jsonl`, doesn't inflate the number into a wall-clock span (so a dangling/aborted run no longer shows a runaway clock). It is derived from `events.jsonl` rather than summed from `STATS.jsonl`, so an interrupted-then-resumed run reports its true elapsed time instead of a stale number that can read shorter than a single task. Sequential folders keep summing per-iteration wall time from `STATS.jsonl`.
+> For a parallel folder, the **Folder row's Time** is **agent time**, not wall-clock time: it sums each task sub-row's own worked time (`elapsed_s`, gaps over two minutes excluded per task). Two tasks that each ran for a minute concurrently read as 2m total, not 1m — the point is to show how much agent-seconds the run actually spent, which can exceed the clock-on-the-wall duration whenever more than one task is in flight. It's derived live from `events.jsonl` rather than summed from `STATS.jsonl`, so an interrupted-then-resumed run reports true worked time instead of a stale number that can read shorter than a single task. Sequential folders (no concurrency to sum across) keep summing per-iteration wall time from `STATS.jsonl`.
 
 ## Example output
 
@@ -82,7 +82,7 @@ ola-top adapts what it shows when you expand a folder, based on whether the fold
 
  # │ Folder                          │ Agent │ Model         │ Tasks │ Turns │  Time
  1 │ 01-setup                        │ cc    │ claude-opus-4 │   5/5 │    18 │  3m12s
- 2 │ ▼ 02-implement                  │ cc    │ claude-opus-4 │   1/3 │    24 │  4m20s
+ 2 │ ▼ 02-implement                  │ cc    │ claude-opus-4 │   1/3 │    24 │  1m47s
    │   └ Task 1 (t-1a2b3c4d): Add r… │       │               │       │       │  0m42s
    │   └ Task 2 (t-9f8e7d6c): Wire … │       │               │       │       │  1m05s
 
