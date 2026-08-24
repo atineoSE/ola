@@ -351,7 +351,7 @@ ola-policy-review() {
       echo "  [covered] $host"
       covered=$((covered + 1))
     else
-      echo "  [MISSING] $host — run: sbx policy allow network -g \"$host,*.$host\""
+      echo "  [MISSING] $host — run: sbx policy allow network \"$host,*.$host\""
       missing=$((missing + 1))
     fi
   done < "$allowlist"

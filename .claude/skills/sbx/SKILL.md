@@ -1,52 +1,64 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.4.0
+version: 2.5.0
 ---
 
 # sbx — Docker Sandbox CLI
 
-> **Contract re-verified against sbx CLI `v0.37.1`** (`2d4f32448c7a94d7fa525517dfca21aa36599829`, client;
-> previously verified at v0.35.0). All of ola's actual invocations
+> **Contract re-verified against sbx CLI `v0.39.0`** (`def8cb0523a77e757bdd6ef52b459fe374f3783e`,
+> client; previously verified at v0.37.1). All of ola's actual invocations
 > (`create shell`, `run --name`, `exec`, `ls`, `policy allow/ls network`,
-> `template ls`) are byte-for-byte unchanged between v0.35.0 and v0.37.1 — no
-> ola-side fix was needed for this bump. New since v0.35.0, none of it used by
-> ola today: a `kit` command family (add/inspect/pack/pull/push/validate — richer
-> than the `--kit` flag on `create`/`run`, and `kit add` can now attach a kit to
-> an *already-running* sandbox), `login`/`logout` (Docker sign-in; `logout` also
-> stops every running sandbox), `setup` (experimental interactive host-detection
-> + secret-import wizard, plus `setup ssh`), `skills` (experimental — `skills
-> import` copies skill folders from host dirs like `~/.claude/skills` — the
-> **global** `~/.claude/skills`, not this repo's project-local
-> `.claude/skills/` — into a store new sandboxes read; irrelevant to ola since
-> the project's `.claude/skills/` is already visible to an agent via the normal
-> workspace bind-mount), and `tui` (interactive dashboard). `policy ls` gained
-> `--type filesystem`, `--source kit`, and `--include-inactive` (hides
-> org-governance-inactive rules by default). `secret import` gained a
-> positional `[SERVICE]`, `--all`, `--dry-run`, `--force`, and now documents
-> that a service with an OAuth token already configured is skipped (OAuth wins
-> over an api-key import at runtime).
+> `template ls`) are byte-for-byte unchanged from v0.35.0 through v0.39.0 — no
+> ola-side fix was needed for this bump.
 >
+> **The one contract change that matters at v0.39.0: `secret` scoping flipped
+> to global-by-default**, the same reversal `policy` got at v0.33.0. `-g`/
+> `--global` and the positional SANDBOX form both still work but now print a
+> deprecation to **stderr**; use `--sandbox <name>` to scope, and
+> `--all-sandboxes` (registry only) for what `-g` used to mean there. See
+> *Credentials*. This supersedes the note in earlier versions of this skill
+> that `secret` scoping had NOT changed.
+>
+> Also present at v0.39.0 but absent from this skill's v0.37.1 pass — landing
+> in v0.38.0 or v0.39.0, not distinguished here — and **none of it used by ola
+> today**: top-level `prune`
+> (remove all *stopped* sandboxes — never a running one), `mcp` (register/
+> authorize/load MCP servers, paired with a `--static-mcp` flag on
+> `create`/`run`), and `env` (experimental declarative `.sbxenv.yaml`
+> environments). `create`/`run` gained `-e`/`--env`, `--env-file`, and
+> `--deny-network`; `secret set` gained dynamic secrets (`--ref`/`--command`/
+> `--refresh`); `secret set-custom` (experimental) proxies a placeholder for a
+> service sbx doesn't know about. Carried over from v0.37.1 and still unused by
+> ola: the `kit` family, `login`/`logout`, `setup`, `skills`, `tui`.
+>
+> Cosmetic sbx quirk, not a contract change: `sbx create shell --help` prints
+> the *root* help instead of the subcommand's (use `sbx help create shell`),
+> and `sbx run -d` parses but is absent from the flag list. `sbx create shell`
+> itself is unaffected.
+
 > sbx makes breaking CLI changes between releases — e.g. native git isolation
 > moved from `--branch` to `--clone`; `policy rm network` dropped its
 > positional form for `--resource`/`--id`; **`sbx run <SANDBOX>` positional
 > re-attach was deprecated in v0.33.0 in favour of `sbx run --name
-> <SANDBOX>`**; and **`sbx policy set-default` was renamed to `sbx policy init`
-> in v0.34.0**. After upgrading sbx, run `sbx version` and re-verify with `sbx
-> <cmd> --help` before trusting this doc. A script that discards stderr/exit
-> codes will silently do nothing when an arg shape changes.
->
+> <SANDBOX>`**; **`sbx policy set-default` was renamed to `sbx policy init`
+> in v0.34.0**; and **`secret` scoping went global-by-default in v0.39.0**.
+> After upgrading sbx, run `sbx version` and re-verify with `sbx <cmd> --help`
+> before trusting this doc. A script that discards stderr/exit codes will
+> silently do nothing when an arg shape changes — and a script that *captures*
+> stderr will find a deprecation notice mixed into its error text.
+
 > **Resource limits & swap (below):** the memory default (`50% of host, max
-> 32 GiB`) is unchanged through v0.35.0. The **75%-of-host hard ceiling on `-m`**
-> and the no-swap hard-wall behavior were confirmed empirically on a 48 GB host
-> at v0.33.0 and have no indication of change since — but were NOT re-run at
-> v0.35.0.
->
-> **Network policy scope (v0.33.0, still current at v0.35.0)** — `policy
+> 32 GiB`) is unchanged through v0.39.0 (re-read from `create --help`). The
+> **75%-of-host hard ceiling on `-m`** and the no-swap hard-wall behavior were
+> confirmed empirically on a 48 GB host at v0.33.0 and have no indication of
+> change since — but were NOT re-run at v0.37.1 or v0.39.0.
+
+> **Network policy scope (v0.33.0, still current at v0.39.0)** — `policy
 > allow`/`deny`/`rm network` default to **global** scope with `--sandbox` for
 > single-sandbox scoping; the old mandatory `-g`/`--global` flag is deprecated
-> (still works, prints a deprecation notice). See *Network Policies*. (`secret`
-> still uses `-g`/positional SANDBOX — that scoping was NOT changed.)
+> (still works, prints a deprecation notice). See *Network Policies*. As of
+> v0.39.0 `secret` follows the same rule — see *Credentials*.
 
 ## Quick Reference
 
@@ -60,10 +72,25 @@ version: 2.4.0
 - `sbx exec [-it] [-d] [-u root] [-w DIR] <name> CMD [ARG...]` — run a command inside (docker-exec flags)
 - `sbx cp SRC DST` — copy files host⇄sandbox; sandbox side is `SANDBOX:PATH` (one side must be a sandbox)
 - `sbx diagnose` — diagnose common installation/connectivity issues
+- `sbx prune [--dry-run] [--force] [--filter since=DURATION]` — (v0.39.0) remove **stopped** sandboxes only; a running one is never touched, so it is safe to run habitually. Confirms unless `--force`. Use `sbx rm` to remove a specific sandbox regardless of state.
 - `sbx reset [--force] [--preserve-secrets]` — nuclear: stop all, clear ALL state/secrets/policies
 
 Resource flags on `create`/`run`: `-m`/`--memory` (e.g. `8g`, default 50% host max 32 GiB; hard ceiling 75% of host — above it `create` fails),
 `--cpus` (0 = auto: **all** host CPUs — was N-1 before v0.35.0), `--profile <governance-profile>`, `--kit <ref>` (experimental; repeatable — see *Custom Templates*).
+
+Env and policy flags on `create`/`run` (verified at v0.39.0, not covered by this skill's v0.37.1 pass; **none used by ola today**):
+- `-e`/`--env KEY=VALUE` or bare `-e KEY` (takes the value from the host environment); repeatable.
+- `--env-file FILE`; repeatable. `--env` beats any file; a later file beats an earlier one.
+- On **`run`** both apply to the *agent session*, so they take effect on a re-attach too, and are baked into the sandbox when that run creates it. On **`create`** they are baked in at creation.
+- `--deny-network HOST` — per-sandbox deny rule at creation time; repeatable. Later visible via `sbx policy ls <NAME>` and removable with `sbx policy rm network --sandbox <NAME> --resource <HOST>`. A local deny can only narrow egress, so it is safe under centralized governance.
+- `--static-mcp a,b` — fix the sandbox's MCP server set at creation; cannot be changed on re-attach. See `sbx mcp` under *MCP servers*.
+
+> **Relevance to ola:** ola injects env through its own `~/.ola/agent.env` sidecar
+> (written with `sbx exec` + base64) and strips placeholder provider keys with
+> `env -u` on the `ola-monitor` exec line. `-e`/`--env-file` could in principle
+> replace part of that, but they can only *set* variables — there is no
+> "unset" form — so the `env -u` strip still has no sbx-native equivalent.
+> Treat this as a known alternative, not a pending migration.
 
 ### Stopping a process *inside* a sandbox
 A process launched with `sbx exec <name> CMD` keeps running in the sandbox after
@@ -139,6 +166,7 @@ pollutes captured error output and will break when the flag is removed.
 - `sbx policy allow network "domain1,*.domain2"` — global allow rule (bare = global)
 - `sbx policy allow network --sandbox <SANDBOX> "domain"` — sandbox-scoped allow rule
 - `sbx policy deny network "domain"` — global deny rule (deny always > allow)
+- `sbx create|run --deny-network <host>` — (verified v0.39.0) add the per-sandbox deny rule **at creation time**, repeatable, instead of a follow-up `policy deny` call. Equivalent to a `--sandbox`-scoped deny: list it with `sbx policy ls <NAME>`, drop it with `sbx policy rm network --sandbox <NAME> --resource <HOST>`. There is no matching `--allow-network`.
 - `sbx policy rm network --resource "domain"` — remove a global rule by resource (or `--id <uuid>` from `policy ls --wide`)
 - `sbx policy rm network --sandbox <SANDBOX> --resource "domain"` — remove a sandbox-scoped rule
 - `sbx policy log [SANDBOX] [--type network] [--limit N] [--json] [-q]` — view allowed/blocked requests
@@ -150,7 +178,10 @@ pollutes captured error output and will break when the flag is removed.
 > positional RESOURCES argument. You MUST identify the rule with `--resource
 > <csv>` and/or `--id <uuid>` (find them via `sbx policy ls --wide` — plain
 > `sbx policy ls` is a summary as of v0.35.0 and does not show IDs). The old
-> `sbx policy rm network -g "domain"` form is no longer valid.
+> `sbx policy rm network -g "domain"` form is no longer valid. `--id` wants the
+> **RULE_ID** column, not the rule's *name* — passing a name fails with an error
+> that names the actual ID and, for a removable rule, prints the corrected
+> command verbatim, so read the error rather than guessing.
 
 RESOURCES is a comma-separated list of hostnames/domains/IPs. Supports exact
 domains (`example.com`), wildcard subdomains (`*.example.com`), optional port
@@ -225,19 +256,40 @@ the host, not looped back inside the sandbox.
   credentials flow above. It also auto-allows `github.com,*.github.com` egress.
   Non-fatal when the host has no `gh` login (or no `gh` installed): a warning is
   printed and the sandbox still comes up, just without `gh`/git-over-HTTPS auth.
-- Service secrets are held by the sbx proxy (NOT the agent / not the OS keychain); the proxy injects them into outbound API calls. Scope `-g`/global or per-sandbox.
-- `sbx secret set -g <service>` — store a global secret (interactive prompt)
-- `echo "$KEY" | sbx secret set -g <service>` — non-interactive via stdin
-- `sbx secret set -g openai --oauth` — start an OAuth flow instead of a key (openai/global only)
-- `sbx secret set <sandbox> <service>` — sandbox-scoped secret
-- `sbx secret ls [SANDBOX] [-g] [--service <name>]` — list stored secrets
-- `sbx secret rm -g <service> [-f]` — remove a global secret
-- `sbx secret import` — (v0.35.0) import credentials detected in host env vars into the keychain
-- v0.35.0 services: `anthropic, cursor, droid, github, google, groq, mistral, nebius, openai, openrouter, xai` (changed from v0.31.3: **`aws` and `bedrock` removed, `openrouter` added** — re-check with `sbx secret set --help` after upgrades)
+- Service secrets are held by the sbx proxy (NOT the agent / not the OS keychain); the proxy injects them into outbound API calls.
+
+**Scoping reversed in v0.39.0 — global is now the default.** `secret` caught up
+with the change `policy` made in v0.33.0: pass the service bare for a global
+secret, and use the `--sandbox <name>` **flag** to scope one. Both old forms
+still work but print a deprecation to **stderr** — which matters for any script
+that captures stderr into its error text:
+
+- `-g`/`--global` → `Flag --global has been deprecated, global is now the default for service secrets; omit --global, use --sandbox to target one sandbox, or use --all-sandboxes with --registry`
+- positional SANDBOX (`sbx secret set my-sandbox openai`) → `Warning: positional sandbox scope is deprecated; use: sbx secret set openai --sandbox my-sandbox`. Note the usage is now `sbx secret set [SERVICE] [flags]` — the single positional is the **service**, so drop the sandbox positional before sbx removes the shim.
+
+- `sbx secret set <service>` — store a global secret (interactive prompt)
+- `echo "$KEY" | sbx secret set <service>` — non-interactive via stdin
+- `sbx secret set openai --oauth` — start an OAuth flow instead of a key (openai/global only)
+- `sbx secret set <service> --sandbox <name>` — sandbox-scoped secret
+- `sbx secret ls [-g] [--sandbox <name>] [--service <name>]` — list stored secrets. Here `-g`/`--global` is a **filter, not scoping**, and is *not* deprecated: it narrows the listing to global secrets.
+- `sbx secret rm <service> [--sandbox <name>] [-f]` — remove a secret (global by default)
+- `sbx secret import [SERVICE] [--all] [--dry-run] [--force]` — import credentials detected in host env vars into the keychain. A service that already has an OAuth token is skipped (OAuth wins at runtime); `sbx secret rm <service>` first to switch to an api key.
+- **Dynamic secrets (verified v0.39.0)** — store a *source* instead of a value, resolved on the host when needed: `--ref` takes a 1Password `op://` reference or an AWS Secrets Manager ARN (the `op`/`aws` CLI must be installed and authenticated), `--command` uses a shell command's stdout (`sbx secret set github --command 'gh auth token'`). `--refresh` sets the cache policy (`on-demand`, or a duration; default 55m); `--no-verify` skips the store-time source check.
+- `sbx secret set-custom --host <pat> --env <VAR> --value <secret>` — (experimental) a secret for a service sbx doesn't know about. The sandbox only ever sees a generated **placeholder** in `<VAR>`; the proxy swaps in the real value on outbound requests to `--host` (repeatable; `*` matches one label, `**` any number). Remove with `sbx secret rm --placeholder <value>`.
+- v0.39.0 services (unchanged since v0.35.0): `anthropic, cursor, droid, github, google, groq, mistral, nebius, openai, openrouter, xai` — re-check with `sbx secret set --help` after upgrades.
 - **Registry secrets** (e.g. `ghcr.io`) authenticate private template/kit pulls:
-  `gh auth token | sbx secret set --registry ghcr.io --password-stdin` (host-only;
-  add `-g` to also write `~/.docker/config.json` into every new sandbox). Remove with
-  `sbx secret rm --registry ghcr.io -f`.
+  `gh auth token | sbx secret set --registry ghcr.io --password-stdin`. Host-only
+  by default — the credential is used for host-side pulls and never enters a
+  sandbox. Use **`--all-sandboxes`** (this is what `-g` used to mean here) to also
+  inject it into every new sandbox's registry login, or `--sandbox <name>` for one.
+  Remove with `sbx secret rm --registry ghcr.io -f` (add `--all-sandboxes` to drop
+  only the injected copy). `docs/sandbox.md` uses the host-only form, which is
+  still correct.
+
+> **ola is unaffected by this reversal** — ola never calls `sbx secret`. Claude
+> OAuth and `gh` auth are injected by `ola-sandbox` directly (above), and the
+> only `sbx secret` line in the repo is the host-only registry example in
+> `docs/sandbox.md`, which needs no change.
 
 ### `ola-monitor` (host-side auth launcher-watcher)
 `ola-monitor` (in `ola.sh`) wraps `ola-sandbox`'s create/reconnect + credential-inject
@@ -298,6 +350,22 @@ Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = eph
 - Snapshot a running sandbox into a reusable template: `sbx template save` / `sbx template ls` / `sbx template rm` / `sbx template load`
 - Private images: store a registry secret first (see Credentials → Registry secrets)
 - **Kits (experimental):** `--kit <ref>` on `create`/`run` (directory, ZIP, or OCI; repeatable) layers extra tooling/policy onto a sandbox. Since v0.34.0, kit installs are restricted to an allowlist configured via `sbx settings set kit.allowedSources`; private kit artifacts pull via the same registry secrets as templates. ola does not use kits — this is here so an unexpected `--kit`/allowlist error is legible.
+
+### MCP servers and declarative environments (verified v0.39.0, unused by ola)
+
+Two command families ola does not touch. Documented so an unexpected flag or
+error is legible, not as a recommendation to adopt them.
+
+- **`sbx mcp`** — `add` / `auth` / `inspect` / `load` / `ls` / `rm` register MCP
+  servers for sandbox sessions; `sbx mcp ls` groups them by serving gateway and
+  `sbx mcp load` pushes an already-registered server into a *running* sandbox.
+  Pairs with `--static-mcp a,b` on `create`/`run`, which fixes a sandbox's MCP
+  set at creation — that set **cannot be changed on re-attach**.
+- **`sbx env`** — experimental; `create` / `exec` / `rm` / `run` drive a sandbox
+  declared in a `.sbxenv.yaml` (agent, mixin kits, mounts, env vars, secrets,
+  per-service credential bindings). Secrets are provisioned at the environment's
+  sandbox scope so `sbx env rm` can tear down everything it created. Note the
+  name collision with the unrelated `-e`/`--env` flags on `create`/`run`.
 
 ## Debugging
 - `sbx diagnose` — first stop for installation/daemon/connectivity problems
