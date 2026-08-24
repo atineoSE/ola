@@ -196,3 +196,97 @@ class TestAgentSelection:
         ):
             main()
             mock_create.assert_called_once_with(flag, model=None)
+
+
+class TestRunInit:
+    """``<agent-folder>/run-init.sh``: project-declared preconditions, run once."""
+
+    def _agent_dir(self, tmp_path, body):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        (agent_dir / "run-init.sh").write_text(body)
+        return agent_dir
+
+    def test_runs_before_the_loop(self, tmp_path, monkeypatch):
+        marker = tmp_path / "ran"
+        agent_dir = self._agent_dir(
+            tmp_path, f"#!/usr/bin/env bash\ntouch {marker}\n"
+        )
+        seen = {}
+
+        def _loop(*args, **kwargs):
+            seen["marker_existed"] = marker.exists()
+
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop", side_effect=_loop),
+        ):
+            main()
+        # Ordering is the point: preconditions hold before the first task runs.
+        assert seen["marker_existed"] is True
+
+    def test_runs_from_the_project_repo(self, tmp_path, monkeypatch):
+        """cwd is the project repo, so a script can reach .ola/worktrees."""
+        agent_dir = self._agent_dir(
+            tmp_path, "#!/usr/bin/env bash\npwd > cwd.txt\n"
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop"),
+        ):
+            main()
+        assert (project / "cwd.txt").read_text().strip() == str(project)
+
+    def test_failure_aborts_before_the_loop(self, tmp_path, monkeypatch):
+        agent_dir = self._agent_dir(tmp_path, "#!/usr/bin/env bash\nexit 3\n")
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop") as loop,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 1
+        loop.assert_not_called()
+
+    def test_absent_script_is_a_no_op(self, tmp_path, monkeypatch):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop") as loop,
+        ):
+            main()
+        loop.assert_called_once()
+
+    def test_skipped_outside_the_sandbox(self, tmp_path, monkeypatch):
+        """--skip-sandbox must not point project shell code at the host."""
+        marker = tmp_path / "ran"
+        agent_dir = self._agent_dir(
+            tmp_path, f"#!/usr/bin/env bash\ntouch {marker}\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "sys.argv", ["ola", "-f", str(agent_dir), "--skip-sandbox"]
+            ),
+            patch("ola.cli.create_agent"),
+            patch("ola.cli.run_outer_loop") as loop,
+        ):
+            main()
+        assert not marker.exists()
+        loop.assert_called_once()

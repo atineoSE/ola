@@ -47,6 +47,8 @@ project/                # workspace root (the example ships this as dummy-projec
   agent/                # ola agent folder (git repo created by ola if missing)
     .env                # LLM_BASE_URL, LMNR_BASE_URL, etc. (gitignored)
     allowlist.txt       # Optional: Domain list to allow inside the sandbox
+    provision.sh        # Optional: extra tooling, installed into the sandbox
+    run-init.sh         # Optional: preconditions, run once before each ola run
     01-setup/           # Plan subfolder
       PLAN.md           # Required: markdown todo list of independent tasks
       TASK-PROMPT.md    # Optional: per-task prompt template

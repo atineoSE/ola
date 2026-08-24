@@ -69,12 +69,21 @@ From your project repo directory (the code dir, e.g. `dummy-project/dummy-projec
 ola-sandbox my-sandbox
 ```
 
+The agent folder defaults to `../agent`. A project that keeps several agent
+folders side by side (one per epic) names the one to use as a second argument —
+the same folder `ola -f` will be pointed at:
+
+```bash
+ola-sandbox my-sandbox ../agent-frontend-backend-split
+```
+
 This will:
 1. Extract Claude OAuth credentials from macOS Keychain (`cc-credentials`)
 2. Resolve & validate `agent/.env` on the host (`ola env`) — **fails fast** if a mandatory `${VAR}` is unset
 3. Apply the network policy from `agent/allowlist.txt` **and** the resolved `.env` endpoints (additive to default policy)
 4. Create a sandbox with the workspace root (parent of the project repo) as workspace — both the project repo and `agent/` are writable, sized to **80% of the Docker VM** (see [Sandbox memory](#sandbox-memory) below)
 5. Copy credentials into the sandbox, write the resolved env snapshot to `~/.ola/agent.env`, and set the shell to land in the project repo
+6. Run the agent folder's `provision.sh` inside the sandbox, if it has one (see [Per-project provisioning](#per-project-provisioning))
 
 > Claude Code config: ola injects its own **minimal** `~/.claude/settings.json`
 > (`bypassPermissions` + `skipDangerousModePermissionPrompt`, nothing else) — it
@@ -83,7 +92,83 @@ This will:
 > to the worktree cwd and silently blocks cross-worktree writes such as the
 > `ola-blocked` marker (which lands in the agent folder, above the worktree).
 
-Running `ola-sandbox my-sandbox` again reconnects to the existing sandbox and re-runs steps 2–3 and the snapshot refresh (picking up changed host values).
+Running `ola-sandbox my-sandbox` again reconnects to the existing sandbox and re-runs steps 2–3, the snapshot refresh (picking up changed host values), and step 6.
+
+## Per-project provisioning
+
+The released image is deliberately generic. When a project's tasks need tooling
+it does not ship — a database server, an extra runtime, a CLI — put a
+`provision.sh` in the agent folder. `ola-sandbox`/`ola-monitor` run it inside
+the sandbox on **every create and reconnect**, right after credentials and
+before attaching; a non-zero exit aborts, rather than handing you a sandbox
+missing what the plan assumes.
+
+It is the same shape as `allowlist.txt`: a file in the agent folder, applied
+automatically, so the project declares its own needs instead of every unrelated
+sandbox carrying them.
+
+Contract:
+
+- runs as `agent`, non-interactive, with passwordless `sudo`;
+- **must be idempotent** — it re-runs on every reconnect and ola keeps no
+  "already provisioned" marker (a marker keyed to the script would hide a
+  broken internal fast-path guard behind a cheap no-op);
+- must exit non-zero on failure;
+- if it uses apt, pass `-o DPkg::Lock::Timeout=120`. sbx runs its own
+  `apt-get update` in the background on every sandbox *start*, so a provision
+  that runs right after create/reconnect races it for the apt lock.
+
+Anything the agent folder needs at run time is reachable: the folder lives
+under the mounted project dir. An agent folder *outside* that dir still
+provisions (the script is injected, not read from a path in-sandbox) but is
+invisible to `ola -f` in the sandbox, and `ola-sandbox` warns about it.
+
+```bash
+# agent/provision.sh — a throwaway PostgreSQL per task worktree
+set -euo pipefail
+if ! ls /usr/lib/postgresql/*/bin/initdb >/dev/null 2>&1; then
+  APT="sudo apt-get -o DPkg::Lock::Timeout=120"
+  $APT update -qq
+  DEBIAN_FRONTEND=noninteractive $APT install -y --no-install-recommends postgresql-18
+fi
+```
+
+Guard on the artifact the install actually produces, not on `command -v` of a
+binary the distro keeps off `PATH` — that test never fires and re-runs the
+install on every reconnect.
+
+### `provision.sh` vs `run-init.sh`
+
+They answer different questions and run at different times:
+
+| | `provision.sh` | `run-init.sh` |
+|---|---|---|
+| question | what does this sandbox need *installed*? | what must be true before the tasks start? |
+| run by | `ola-sandbox` / `ola-monitor`, at prepare | `ola` itself, at startup |
+| when | every sandbox create and reconnect | every run, including re-runs in an attached shell |
+| cwd | sandbox home | the **project repo** |
+
+`run-init.sh` is where per-run reclamation belongs — for example killing a
+long-lived server a previous run leaked. A task's server daemonizes and
+reparents to PID 1, so nothing that kills a task agent, ola, or the `sbx exec`
+stops it, and removing the worktree doesn't either; it keeps running on
+unlinked inodes until something sweeps it up. Same contract as `provision.sh`
+(sandbox-only, idempotent, non-zero exit aborts) — under `--skip-sandbox` it is
+skipped with a warning rather than pointed at the developer's own machine.
+
+```bash
+# agent/run-init.sh — reap postgres clusters leaked by an earlier run
+set -euo pipefail
+for pid in $(pgrep -x postgres 2>/dev/null || true); do
+  [ "$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)" = "1" ] || continue  # postmaster only
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || echo)"
+  case "$cwd" in */.ola/worktrees/*|*"(deleted)") kill -QUIT "$pid" 2>/dev/null || true ;; esac
+done
+```
+
+Two caveats worth knowing: it reclaims at run *boundaries*, so anything leaked
+mid-run survives until the next run; and two concurrent `ola` runs in one
+sandbox would sweep up each other's processes.
 
 Inside the sandbox:
 

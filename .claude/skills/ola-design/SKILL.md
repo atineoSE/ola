@@ -1,7 +1,12 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.5.0
+version: 1.6.0
+# 1.6.0: add the agent-folder-declares-its-own-environment principle —
+#         allowlist.txt, provision.sh and run-init.sh are agent-folder files
+#         the harness only executes, so the released image stays generic and
+#         workload-specific reclamation stays out of ola (minor: new
+#         compatible guidance, no existing rule changed).
 # 1.5.0: add the distinct-exit-code-per-terminal-state checklist item —
 #         RunInterrupted/FolderIncompleteError/AuthEscalation each exit with
 #         their own code so a caller can tell terminal run-states apart (minor:
@@ -32,6 +37,22 @@ parallel-safe, every task runs with a fresh context in its own worktree, and
 a ticked checkbox is the only completion signal the harness accepts. When a
 task cannot proceed, the harness unblocks it automatically (the janitor)
 before ever waiting on a human.
+
+**The agent folder declares its own environment.** The folder is the database
+for *how the work runs*, not only for the work itself: `allowlist.txt` names the
+egress the plan needs, `provision.sh` names the tooling it needs (applied by
+the sandbox helpers on every create and reconnect), and `run-init.sh` names the
+preconditions that must hold before dispatch (run by ola itself at startup). This is what keeps
+the released image generic — a project that needs a database server or an extra
+runtime declares it in its own folder instead of every unrelated sandbox
+carrying the weight. Same discipline as the rest of the harness: declarative
+file in the folder, applied mechanically, idempotent, and a failure refuses to
+start rather than deferring the error into a task's logs.
+
+The corollary is a boundary worth defending: when a task leaks state the
+harness cannot name — a daemonized server, a lockfile, a cache — the fix is a
+seam the project's own script fills, not workload knowledge inside ola. The
+harness deletes worktrees; it does not learn what a worktree might have started.
 
 **Two repos, one owner.** ola runs from inside the **project repo** — its
 working directory is the project being worked on. The **agent folder** is the

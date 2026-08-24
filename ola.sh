@@ -540,6 +540,48 @@ _ola_image_tag() {
   esac
 }
 
+# Run the agent folder's provision.sh inside the sandbox, if it has one.
+#
+# Optional per-project post-config, symmetric with allowlist.txt: a file in
+# the agent folder, applied on every create AND reconnect. It exists so the
+# released image stays generic — a project that needs extra tooling (a
+# database server, a language runtime, a CLI) declares it here instead of
+# every unrelated sandbox paying for it.
+#
+# Contract for the script:
+#   - runs as `agent`, non-interactive, with passwordless sudo;
+#   - must be idempotent — it re-runs on every reconnect and ola keeps no
+#     "already provisioned" marker, deliberately: a marker keyed to the
+#     script would mask a broken internal guard (a fast path that never
+#     fires) behind a cheap no-op, and the cost of getting it wrong is
+#     paid silently on every later run;
+#   - must exit non-zero on failure;
+#   - should tolerate a busy apt: sbx runs its own `apt-get update` in the
+#     background on every sandbox *start*, so anything apt-based here races
+#     it and wants `-o DPkg::Lock::Timeout=<seconds>`.
+#
+# Injected as base64 through `sbx exec` (the same idiom as the credential
+# injectors) rather than executed by path: the agent folder is only visible
+# inside the sandbox when it sits under the bind-mounted project dir, which
+# a custom agent dir need not.
+#
+# Failure aborts the prepare, like _ola_apply_policy — a sandbox missing the
+# tooling its plan assumes fails later, deeper, and far less legibly.
+_ola_provision() {
+  local name="$1" agent_dir="$2"
+  local script="$agent_dir/provision.sh"
+  [ -f "$script" ] || return 0
+
+  echo "ola-sandbox: provisioning '$name' from $script" >&2
+  local data
+  data="$(base64 < "$script")"
+  if ! sbx exec "$name" bash -c \
+    "echo '$data' | base64 -d > /tmp/ola-provision.sh && bash /tmp/ola-provision.sh"; then
+    echo "Error: provision.sh failed in '$name'; not starting." >&2
+    return 1
+  fi
+}
+
 # Ensure a sandbox is ready to run ola in: authenticated sbx, agent/.env
 # resolved + network policy synced, sandbox created (fresh) or reconnected,
 # credentials/sidecar/oh-settings injected. Everything `ola-sandbox` does up
@@ -548,10 +590,15 @@ _ola_image_tag() {
 # run`) without duplicating it. Callers attach (or exec into) "$name" on
 # success.
 _ola_sandbox_prepare() {
-  local name="${1:?Usage: _ola_sandbox_prepare <sandbox_name>}"
+  local name="${1:?Usage: _ola_sandbox_prepare <sandbox_name> [agent_dir]}"
+  # Agent folder, defaulting to ../agent (mirrors cli.py's own -f default).
+  # Not hard-coded: a project can hold several agent folders side by side
+  # (one per epic), and ola itself already takes -f — a sandbox helper that
+  # only ever looked at ../agent could not prepare those projects at all.
+  local agent_arg="${2:-../agent}"
   local code_dir="$(pwd)"
   local project_dir="$(cd .. && pwd)"
-  local agent_dir="$(cd ../agent 2>/dev/null && pwd)"
+  local agent_dir="$(cd "$agent_arg" 2>/dev/null && pwd)"
 
   # Fail fast if sbx is not authenticated — unauthenticated sbx commands stall.
   local _sbx_out
@@ -564,9 +611,18 @@ _ola_sandbox_prepare() {
   fi
 
   if [ -z "$agent_dir" ]; then
-    echo "Error: ../agent directory not found relative to $(pwd)" >&2
+    echo "Error: agent directory not found: '$agent_arg' (relative to $(pwd))" >&2
     return 1
   fi
+
+  # Only the project dir is bind-mounted, so an agent folder outside it is
+  # invisible in-sandbox — ola would then fail on its own -f path. Warn
+  # rather than abort: provisioning and policy still work from the host copy.
+  case "$agent_dir/" in
+    "$project_dir"/*) ;;
+    *) echo "Warning: agent folder $agent_dir is outside the mounted project" \
+         "dir $project_dir — it will not be visible inside the sandbox." >&2 ;;
+  esac
 
   # Extract fresh credentials from Keychain
   cc-credentials || true
@@ -609,6 +665,7 @@ _ola_sandbox_prepare() {
     _ola_inject_sidecar "$name" "$_env_blob"
     _ola_inject_gh "$name"
     _ola_inject_oh_settings "$name" "$_env_blob"
+    _ola_provision "$name" "$agent_dir" || return 1
     return 0
   fi
 
@@ -650,6 +707,7 @@ _ola_sandbox_prepare() {
   _ola_inject_sidecar "$name" "$_env_blob"
   _ola_inject_gh "$name"
   _ola_inject_oh_settings "$name" "$_env_blob"
+  _ola_provision "$name" "$agent_dir" || return 1
 
   # Export the resolved env into the login shell and land in the project repo.
   _ola_setup_shell_rc "$name" "$code_dir"
@@ -657,8 +715,8 @@ _ola_sandbox_prepare() {
 }
 
 ola-sandbox() {
-  local name="${1:?Usage: ola-sandbox <sandbox_name>}"
-  _ola_sandbox_prepare "$name" || return 1
+  local name="${1:?Usage: ola-sandbox <sandbox_name> [agent_dir]}"
+  _ola_sandbox_prepare "$name" "$2" || return 1
 
   # Attach to the sandbox (foreground, interactive). Re-attach by --name:
   # the positional `sbx run <name>` re-attach form was deprecated in sbx
@@ -843,7 +901,9 @@ ola-monitor() {
     rm -f "$marker"
   fi
 
-  _ola_sandbox_prepare "$name" || return 1
+  # Same agent folder ola itself will use (-f/--agent-folder), so the
+  # sandbox is prepared and provisioned against the plan being run.
+  _ola_sandbox_prepare "$name" "$agent_dir" || return 1
 
   # SANDBOX=1 and the placeholder-key unsets are normally applied by
   # ~/.bashrc on login, which `sbx exec` never sources (non-interactive, no

@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import subprocess
 import sys
 from importlib.metadata import version
 from pathlib import Path
@@ -52,6 +53,48 @@ def _env_command(argv: list[str]) -> int:
     for line in format_sidecar(resolved):
         print(line)
     return 0
+
+
+RUN_INIT_SCRIPT = "run-init.sh"
+
+
+def _run_init(plan_path: Path, project_path: Path) -> None:
+    """Run the agent folder's ``run-init.sh`` once, before any task is dispatched.
+
+    The seam for project-level preconditions the harness itself must not know
+    about: reclaiming a server a previous run leaked, clearing a cache, seeding
+    a fixture. The agent folder declares them and ola only executes them — the
+    same division as ``allowlist.txt`` (egress) and ``provision.sh`` (tooling),
+    which keeps workload-specific knowledge out of the harness.
+
+    Runs from the *project* repo, so a script can reach ``.ola/worktrees`` the
+    way the rest of the run does. Output is not captured: it belongs in ola's
+    log, interleaved with the run it precedes.
+
+    Sandbox-only. Under ``--skip-sandbox`` this would execute project shell
+    code against the developer's own machine, where the very thing it is most
+    useful for — sweeping up stray processes — is the thing you least want
+    aimed at a live workstation.
+
+    A non-zero exit aborts the run: a precondition that failed is not a
+    precondition, and discovering it task-by-task is strictly worse.
+    """
+    script = plan_path / RUN_INIT_SCRIPT
+    if not script.is_file():
+        return
+    if not is_sandbox():
+        logger.warning(
+            "Skipping %s — it runs inside the sandbox only (see --skip-sandbox).",
+            script,
+        )
+        return
+    logger.info("Running %s", script)
+    result = subprocess.run(["bash", str(script)], cwd=str(project_path))
+    if result.returncode != 0:
+        logger.error(
+            "%s failed (exit %d); not starting the run.", script, result.returncode
+        )
+        sys.exit(1)
 
 
 def main() -> None:
@@ -167,6 +210,8 @@ def main() -> None:
     if not plan_path.is_dir():
         logger.error("%s is not a directory.", plan_path)
         sys.exit(1)
+
+    _run_init(plan_path, project_path)
 
     agent = create_agent(args.agent, model=args.model)
     try:

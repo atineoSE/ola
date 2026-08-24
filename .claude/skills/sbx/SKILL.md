@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.5.0
+version: 2.6.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -91,6 +91,21 @@ Env and policy flags on `create`/`run` (verified at v0.39.0, not covered by this
 > replace part of that, but they can only *set* variables — there is no
 > "unset" form — so the `env -u` strip still has no sbx-native equivalent.
 > Treat this as a known alternative, not a pending migration.
+
+### sbx runs its own `apt-get update` at every start (verified 2026-08-24, v0.37.1)
+Every sandbox *start* — including the one an `sbx exec` triggers on a stopped
+sandbox — kicks off, in the background:
+```
+sh -c 'command -v apt-get >/dev/null 2>&1 && (apt-get update -qq -y >/dev/null 2>&1 || true) &'
+```
+It is detached and fire-and-forget, with **no readiness signal**, so anything
+apt-based you run in the first seconds of a sandbox's life races it and fails
+with `Could not get lock /var/lib/apt/lists/lock. It is held by process <pid>
+(apt-get)`. Ordering your own work "after setup" does not help — this *is* the
+image's boot. Pass `apt-get -o DPkg::Lock::Timeout=120` (apt's own wait) rather
+than sleeping or polling. Note the image has no systemd and no apt periodic
+timers (`docker-disable-periodic-update` is in `apt.conf.d`) — this one job is
+the whole story.
 
 ### Stopping a process *inside* a sandbox
 A process launched with `sbx exec <name> CMD` keeps running in the sandbox after
@@ -308,6 +323,15 @@ rotator case. Both env fixups read `docker/placeholder-api-keys.txt` /
 `_ola_placeholder_keys` so the key list is declared once, not duplicated between
 the Dockerfile's `~/.bashrc` and `ola.sh`. Auth-only scope — no progress reporting
 of its own. Full contract in CLAUDE.md.
+
+`_ola_sandbox_prepare` (and `ola-sandbox`) take the **agent folder as an
+optional second argument**, defaulting to `../agent` — a project may hold one
+agent folder per epic, and `ola-monitor` passes whatever it resolved from ola's
+own `-f`. If that folder holds a **`provision.sh`**, prepare runs it inside the
+sandbox on every create and reconnect (base64 through `sbx exec`, so an agent
+folder outside the bind-mounted project dir still works), aborting on a non-zero
+exit. That is the seam for per-project tooling the generic image does not ship;
+apt-based scripts there must handle the boot-time apt lock above.
 
 **Two gotchas fixed 2026-07-29** (both in `_ola_sandbox_prepare`/`ola-monitor`,
 `ola.sh`): (1) the create-vs-reconnect check used a plain `grep -q "$name"`

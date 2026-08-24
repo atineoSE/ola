@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 1.3.0
+version: 1.4.0
 ---
 
 # Create an ola plan
@@ -186,6 +186,53 @@ At the **agent-folder root** (not per stage), one more file may be needed:
   it otherwise and may conclude "no browser available" instead. Screenshotting
   a `localhost` dev server needs no `allowlist.txt` entry; a remote URL does.
 
+- **`provision.sh`** — tooling the sandbox image does **not** ship. If the plan's
+  tasks need a binary, service or runtime that is not already there (a database
+  server, a language toolchain, a vendor CLI), the project installs it here
+  rather than every unrelated sandbox carrying the weight. `ola-sandbox` /
+  `ola-monitor` run it inside the sandbox on every create **and** reconnect, as
+  the `agent` user with passwordless sudo, before any task starts; a non-zero
+  exit refuses to start the sandbox. It must be **idempotent** — ola keeps no
+  "already provisioned" marker, deliberately, so a broken internal fast-path
+  guard shows up as a slow reconnect instead of hiding forever. Anything it
+  downloads needs its host in `allowlist.txt` too. Worked example:
+  `examples/provision.sh`.
+
+- **`run-init.sh`** — what must be **true before the tasks start**. ola runs
+  this one itself at startup: once per run, from the project repo, inside the
+  sandbox only, and a non-zero exit aborts the run before the first task. Use it
+  to reclaim state an earlier run left behind. Worked example:
+  `examples/run-init.sh`.
+
+  The two answer different questions — `provision.sh` is *what does this sandbox
+  need installed* (once per sandbox), `run-init.sh` is *what must hold before
+  dispatch* (once per run, including re-runs that never re-create the sandbox).
+
+**Anything a task starts outlives the task.** If a task launches a long-lived
+process — a database, a dev server, a queue worker, a file watcher — plan for
+the fact that **nothing in the harness will stop it**. A daemonized process
+reparents to PID 1: killing the task agent, ola itself, or the `sbx exec` that
+launched the run does not touch it, and neither does deleting the worktree it
+was started from — it keeps running on unlinked inodes, holding its memory and
+its disk. Three consequences for the plan:
+
+- **Address per-task state by path, not by a shared port or name.** Tasks in one
+  `PLAN.md` run concurrently, so a fixed TCP port, a fixed database name or a
+  fixed lockfile turns "independent tasks" into a race that shows up as a
+  flaky, order-dependent failure. Prefer something per-worktree — a unix socket
+  or a per-task directory. That is what actually makes such a task parallel-safe.
+- **Tell the task to stop what it started**, in the task text or
+  `TASK-PROMPT.md`; a shell `trap` is the usual form. This covers the happy path
+  only — a timeout, a crash or a killed run skips it entirely.
+- **Sweep the rest in `run-init.sh`.** That reclaims at run *boundaries*, so a
+  leak inside one long run survives until the next run starts; leave the sandbox
+  headroom for it.
+
+Keep per-task state **under the worktree** (ola git-excludes `.ola/`, so
+`<worktree>/.ola/<thing>` is invisible to `git add -A` and dies with the
+worktree). It then cleans itself up in the normal case and is trivially
+identifiable in the sweep.
+
 **Input data is the prerequisite most often missed.** If the plan reads a file
 the user supplied — an export, a fixture, a dump — walk the path from that file
 to the task that opens it, and make sure it is *committed* before the run starts.
@@ -233,6 +280,9 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
   `chromium-headless` (the sandbox's baked-in headless Chromium) rather than a
   macOS-only browser path, and does a remote URL it screenshots appear in
   `allowlist.txt`?
+- Does any task start a **long-lived process**? If so: is it addressed by a
+  per-task path rather than a shared port/name, is the task told to stop it, and
+  does `run-init.sh` sweep what a crashed run would leave behind?
 - Is **every file a task reads committed**, including the user's input data and
   anything an earlier stage hands to a later one? Run `git check-ignore` over
   those paths rather than assuming — a file present in the user's checkout tells

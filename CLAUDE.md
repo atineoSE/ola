@@ -138,6 +138,47 @@ and agent folder are already bind-mounted into the sandbox, so the file is
 host-visible with no new channel — this is the seam the host-side
 `ola-monitor` watcher (below) polls.
 
+### Per-project sandbox provisioning and run preconditions
+
+The sandbox image stays generic: nothing that only one project needs is baked
+into it. A project whose tasks need extra tooling puts a **`provision.sh` in
+its agent folder**, and `_ola_provision` (in `ola.sh`) runs it inside the
+sandbox on every create **and** reconnect, after credentials and before
+attaching — symmetric with `allowlist.txt`, and aborting the prepare on a
+non-zero exit like `_ola_apply_policy` does. The script is injected as base64
+through `sbx exec` rather than executed by path, so it works even for an agent
+folder outside the bind-mounted project dir.
+
+No "already provisioned" marker is kept, deliberately: the script must be
+idempotent, and a marker keyed to it would mask a broken internal fast-path
+guard behind a cheap no-op. Two gotchas the contract calls out — sbx runs its
+own `apt-get update` in the background on every sandbox *start* (so apt-based
+provisioning wants `-o DPkg::Lock::Timeout=<n>`), and a `command -v` guard on
+a binary the distro keeps off `PATH` never fires.
+
+Its counterpart one level down is **`run-init.sh`**, in the same agent folder
+but run by `ola` itself (`cli._run_init`, before `run_outer_loop`) rather than
+by the sandbox helpers: `provision.sh` answers "what does this sandbox need
+installed", `run-init.sh` answers "what must be true before the tasks start".
+It runs on every run — including a re-run inside an already-attached sandbox,
+which never goes through prepare — from the **project repo** as cwd, and aborts
+the run on a non-zero exit. Sandbox-only: under `--skip-sandbox` it is skipped
+with a warning, because pointing project shell code (typically a process sweep)
+at the developer's own machine is exactly the wrong default.
+
+The motivating case is reclaiming what a task leaked. A per-worktree server
+daemonizes and reparents to PID 1, so nothing that kills a task agent, ola, or
+the `sbx exec` ever stops it — and `worktree.cleanup()`/`create()` deleting the
+worktree doesn't either (it runs on unlinked inodes). ola stays out of it: the
+harness offers the seam, the project's script knows what to kill. Note this
+reclaims at run *boundaries* only.
+
+Relatedly, `_ola_sandbox_prepare`/`ola-sandbox` take the **agent folder as an
+optional second argument** (default `../agent`, mirroring `cli.py`'s `-f`); a
+project may hold one agent folder per epic. `ola-monitor` passes the folder it
+already resolves from ola's own argv, so the sandbox is provisioned against
+the plan being run.
+
 ### `ola-monitor` — host-side auth launcher-watcher
 
 `ola-monitor` (in `ola.sh`, installed alongside `ola`/`ola-sandbox`) is
@@ -209,14 +250,14 @@ its frontmatter (semver, starting at `1.0.0`).
 
 | Skill | Version | Purpose |
 |-------|---------|---------|
-| `ola-design` | 1.3.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
+| `ola-design` | 1.6.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
-| `ola-plan` | 1.3.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks). |
+| `ola-plan` | 1.4.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); also the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts. |
 | `ola-release` | 1.0.1 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.5.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), and `ola-monitor` (host-side auth launcher-watcher). Contract pinned to sbx v0.39.0; re-verify on sbx upgrade. |
+| `sbx` | 2.6.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, and `ola-monitor` (host-side auth launcher-watcher, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.39.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

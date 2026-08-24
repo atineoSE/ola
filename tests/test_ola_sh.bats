@@ -848,6 +848,120 @@ _mock_sbx_new_sandbox() {
   grep -q '\--template ghcr.io/atineose/ola:latest' "$SBX_LOG"
 }
 
+# ===== ola-sandbox: agent dir + provisioning =====
+
+@test "sandbox: agent dir can be passed explicitly (project with several)" {
+  # A project may hold one agent folder per epic side by side, so ../agent
+  # is a default, not a rule.
+  mkdir -p "$TMPDIR_TEST/sbx_altdir/agent-epic" "$TMPDIR_TEST/sbx_altdir/code"
+  echo "epic.example.com" > "$TMPDIR_TEST/sbx_altdir/agent-epic/allowlist.txt"
+
+  _mock_sbx_new_sandbox
+
+  cd "$TMPDIR_TEST/sbx_altdir/code"
+  ola-sandbox alt-sandbox ../agent-epic
+
+  grep -q "sbx policy allow network epic.example.com" "$SBX_LOG"
+  grep -q "sbx create shell --name alt-sandbox" "$SBX_LOG"
+}
+
+@test "sandbox: explicit agent dir that does not exist names the path" {
+  mkdir -p "$TMPDIR_TEST/sbx_nodir/agent" "$TMPDIR_TEST/sbx_nodir/code"
+  cd "$TMPDIR_TEST/sbx_nodir/code"
+  run ola-sandbox nodir-sandbox ../agent-typo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"agent directory not found"* ]]
+  [[ "$output" == *"../agent-typo"* ]]
+}
+
+@test "sandbox: warns when the agent dir is outside the mounted project dir" {
+  # Only the project dir is bind-mounted; an agent folder elsewhere is
+  # invisible in-sandbox, so ola's own -f would fail there.
+  mkdir -p "$TMPDIR_TEST/sbx_outside/agent" "$TMPDIR_TEST/sbx_outside/code"
+  mkdir -p "$TMPDIR_TEST/elsewhere-agent"
+
+  _mock_sbx_new_sandbox
+
+  cd "$TMPDIR_TEST/sbx_outside/code"
+  run ola-sandbox outside-sandbox "$TMPDIR_TEST/elsewhere-agent"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"outside the mounted project"* ]]
+}
+
+@test "sandbox: provision.sh runs on create" {
+  mkdir -p "$TMPDIR_TEST/sbx_prov/agent" "$TMPDIR_TEST/sbx_prov/code"
+  echo 'echo provisioned' > "$TMPDIR_TEST/sbx_prov/agent/provision.sh"
+
+  _mock_sbx_new_sandbox
+
+  cd "$TMPDIR_TEST/sbx_prov/code"
+  ola-sandbox prov-sandbox
+
+  grep -q 'ola-provision.sh' "$SBX_LOG"
+  # Provisioning happens after the sandbox exists and before we attach.
+  local create_line prov_line run_line
+  create_line="$(grep -n 'sbx create shell' "$SBX_LOG" | head -1 | cut -d: -f1)"
+  prov_line="$(grep -n 'ola-provision.sh' "$SBX_LOG" | head -1 | cut -d: -f1)"
+  run_line="$(grep -n 'sbx run --name' "$SBX_LOG" | head -1 | cut -d: -f1)"
+  [ "$prov_line" -gt "$create_line" ]
+  [ "$run_line" -gt "$prov_line" ]
+}
+
+@test "sandbox: provision.sh runs on reconnect too" {
+  mkdir -p "$TMPDIR_TEST/sbx_prov_rc/agent" "$TMPDIR_TEST/sbx_prov_rc/code"
+  echo 'echo provisioned' > "$TMPDIR_TEST/sbx_prov_rc/agent/provision.sh"
+
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    if [ "$1" = "ls" ]; then echo "prov-rc  running  1h"; return 0; fi
+  }
+  export -f sbx
+
+  cd "$TMPDIR_TEST/sbx_prov_rc/code"
+  ola-sandbox prov-rc
+
+  ! grep -q 'sbx create shell' "$SBX_LOG"
+  grep -q 'ola-provision.sh' "$SBX_LOG"
+}
+
+@test "sandbox: no provision.sh means no provisioning exec" {
+  mkdir -p "$TMPDIR_TEST/sbx_noprov/agent" "$TMPDIR_TEST/sbx_noprov/code"
+
+  _mock_sbx_new_sandbox
+
+  cd "$TMPDIR_TEST/sbx_noprov/code"
+  ola-sandbox noprov-sandbox
+
+  ! grep -q 'ola-provision.sh' "$SBX_LOG"
+  grep -q 'sbx run --name noprov-sandbox' "$SBX_LOG"
+}
+
+@test "sandbox: failing provision.sh aborts before attaching" {
+  # A sandbox missing the tooling its plan assumes fails later, deeper and
+  # less legibly than refusing to start — same stance as a policy sync failure.
+  mkdir -p "$TMPDIR_TEST/sbx_provfail/agent" "$TMPDIR_TEST/sbx_provfail/code"
+  echo 'exit 1' > "$TMPDIR_TEST/sbx_provfail/agent/provision.sh"
+
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  docker() { [ "$1" = "info" ] && echo "16748113920"; }
+  export -f docker
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    if [ "$1" = "ls" ]; then echo "other-sandbox  running  1h"; return 0; fi
+    case "$*" in *ola-provision.sh*) return 1 ;; esac
+  }
+  export -f sbx
+
+  cd "$TMPDIR_TEST/sbx_provfail/code"
+  run ola-sandbox provfail-sandbox
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"provision.sh failed"* ]]
+  ! grep -q 'sbx run' "$SBX_LOG"
+}
+
 # ===== ola-monitor: deterministic helpers =====
 # The host-side auth launcher-watcher's own control flow (real sbx exec +
 # real Keychain) is verified manually — see design-notes.md — but the
