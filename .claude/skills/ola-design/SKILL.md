@@ -1,7 +1,18 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.6.0
+version: 1.9.0
+# 1.9.0: sharpen the shared-resource item — the harness stops and lets the
+#         supervisor wait, rather than sleeping in-process behind a duration
+#         threshold (minor: tightens 1.8.0's guidance, no rule reversed).
+# 1.8.0: add the shared-resource-stops-are-global checklist item — a dead
+#         credential and an exhausted subscription window abort the run with
+#         their own exit code and marker rather than failing task-by-task
+#         (minor: new compatible guidance, no existing rule changed).
+# 1.7.0: add the one-detector-per-condition / parse-the-wire-not-the-transcript
+#         checklist item — a backend signal gets exactly one detector, read
+#         from the stream shape the CLI actually emits (minor: new compatible
+#         guidance, no existing rule changed).
 # 1.6.0: add the agent-folder-declares-its-own-environment principle —
 #         allowlist.txt, provision.sh and run-init.sh are agent-folder files
 #         the harness only executes, so the released image stays generic and
@@ -138,9 +149,36 @@ the answer is wrong:
   every harness bookkeeping commit `--no-verify` — or does it let a project
   hook re-fire on ola's reconciliation/tick commit, turning a post-agent
   bookkeeping step into a hidden hard gate the agent can never react to?
+- Does each backend condition have **exactly one detector, reading the wire
+  shape the CLI actually emits** — or does it grow a second transport for the
+  same condition, and parse the persisted *transcript*'s field names instead
+  of the *stream*'s? The two are different serializations (`isApiErrorMessage`
+  on disk vs `is_api_error_message` on the wire), so a transcript-shaped
+  detector is dead code that a transcript-shaped fixture will happily prove
+  green. Corollary: once a condition's own event has fired, classify on it —
+  don't second-guess it with a downstream field the CLI never promised to set
+  (see the `rate_limit_event`-not-`result.subtype` rule in CLAUDE.md).
+- When a stop is **global by nature** — one shared resource behind every task,
+  like the credential or the subscription window — does it abort the run once,
+  or fail task-by-task? Requeuing against an unmoved wall burns every task's
+  `--max-attempts` in seconds and trips the folder's stagnation breaker, which
+  reads as "the agent is stuck" when nothing is wrong with the agent. Abort
+  with a distinct exit code, record the other in-flight tasks as failed, and
+  leave a host-visible marker under `<agent-folder>/monitor/` carrying whatever
+  the host needs to resume unattended (`ola-monitor` heals a credential, waits
+  out a window). Keep the marker flat and grep-readable — the watcher is shell.
+- Does the harness **stop and let the supervisor wait**, or does it park
+  in-process? ola runs the plan; it does not sit on a clock. A process asleep
+  for hours holds worktrees, a sandbox and a thread pool for nothing, and there
+  is no in-flight work to protect when every task faces the same wall — while a
+  relaunch re-derives the plan from PLAN.md, which is the ordinary resume path.
+  Beware especially a *duration threshold* that picks between waiting and
+  stopping: the constant is always arbitrary and the rare branch is the
+  untested one. One condition, one reaction.
 - Does it give each distinct terminal run-state its own process exit code
   (generic `1`, `128+signum` operator-interrupt, `40` Claude Code
-  auth-escalation — see `RunInterrupted`/`FolderIncompleteError`/
-  `AuthEscalation` in `src/ola/scheduler.py`) so a caller can tell them apart
+  auth-escalation, `41` rate-limit escalation — see `RunInterrupted`/
+  `FolderIncompleteError`/`AuthEscalation`/`RateLimitEscalation` in
+  `src/ola/scheduler.py`) so a caller can tell them apart
   programmatically, or does it collapse a new failure mode into a generic
   non-zero exit?

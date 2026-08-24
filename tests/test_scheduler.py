@@ -28,6 +28,7 @@ from ola.scheduler import (
     DEFAULT_CONCURRENCY,
     _DEFAULT_TASK_PROMPT,
     AuthEscalation,
+    RateLimitEscalation,
     RunInterrupted,
     _load_task_prompt,
     _run_probe,
@@ -996,51 +997,86 @@ def test_run_folder_failure_still_writes_stats(tmp_path):
 # --- Rate-limit sleep-and-resume (moved from the old inner loop) ---
 
 
-def test_run_folder_rate_limit_sleeps_then_resumes(tmp_path):
-    """A rate_limited response sleeps then re-runs the same task to completion."""
+def test_run_folder_rate_limit_escalates_and_writes_marker(tmp_path):
+    """A rate-limited response aborts the whole run and drops the host-visible
+    rate-limit marker — it never sleeps in-process.
+
+    Requeuing instead would burn this task's attempts — and every other task's,
+    since one subscription sits behind them all — against a wall that has not
+    moved, tripping the folder's stagnation breaker in seconds. Waiting instead
+    would park a process holding worktrees and a sandbox for hours with no
+    in-flight work to protect. The marker carries the machine reset epoch so
+    ola-monitor can wait out the window and relaunch unattended."""
     project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
     task = enumerate_tasks(folder)[0]
 
-    resets_at = int(time.time()) + 3
+    resets_at = int(time.time()) + 1800
     agent = _RateLimitedThenTicksAgent(resets_at=resets_at)
 
     slept: list[float] = []
     with patch("ola.scheduler.time.sleep", side_effect=lambda d: slept.append(d)):
-        run_folder(agent, folder, agent_root, project, initial_cap=1)
+        with pytest.raises(RateLimitEscalation) as excinfo:
+            run_folder(agent, folder, agent_root, project, initial_cap=1)
 
-    # Slept once (does not burn a retry attempt), then resumed and completed.
-    assert len(slept) == 1
-    assert 3 <= slept[0] <= 15
-    assert agent.calls == 2
-    assert task_is_checked(folder, task.task_id) is True
-
-    state = TaskState.load(folder)
-    entry = state.get(task.task_id)
-    assert entry.status == "complete"
-    # Rate-limit resume is transient, so it counts as a single attempt.
-    assert entry.attempts == 1
-
-
-def test_run_folder_rate_limit_too_far_fails(tmp_path):
-    """A reset beyond the wait cap fails the task without sleeping."""
-    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
-    task = enumerate_tasks(folder)[0]
-
-    resets_at = int(time.time()) + 9 * 3600  # beyond the 8h cap
-    agent = _RateLimitedThenTicksAgent(resets_at=resets_at)
-
-    slept: list[float] = []
-    with patch("ola.scheduler.time.sleep", side_effect=lambda d: slept.append(d)):
-        run_folder(agent, folder, agent_root, project, initial_cap=1)
-
-    assert slept == []  # never slept
+    assert excinfo.value.folder_name == folder.name
+    assert slept == []  # the harness never waits out a window itself
+    # One call, one attempt: the agent that would have ticked on a retry is
+    # never given one, because retrying inside the window is pointless.
     assert agent.calls == 1
     assert task_is_checked(folder, task.task_id) is False
 
     state = TaskState.load(folder)
     entry = state.get(task.task_id)
     assert entry.status == "failed"
-    assert "rate limit" in entry.last_error.lower()
+    assert "limit hit" in entry.last_error
+
+    marker_path = agent_root / "monitor" / "rate-limit.json"
+    marker = json.loads(marker_path.read_text())
+    assert marker["resets_at"] == resets_at
+    assert marker["message"] == "limit hit"
+    assert marker["sandbox"]
+    assert marker["ts"]
+
+
+def test_run_folder_rate_limit_without_reset_time_escalates(tmp_path):
+    """A rejection the CLI reported with no resetsAt escalates the same way,
+    with a null resets_at — the watcher falls back to a fixed retry delay.
+    Letting it fall through to an ordinary failure is the stall this whole
+    path exists to prevent."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Build the thing\n")
+
+    agent = _RateLimitedThenTicksAgent(resets_at=None)
+
+    with pytest.raises(RateLimitEscalation):
+        run_folder(agent, folder, agent_root, project, initial_cap=1)
+
+    assert agent.calls == 1  # no retries burned against the wall
+    marker = json.loads((agent_root / "monitor" / "rate-limit.json").read_text())
+    assert marker["resets_at"] is None
+
+
+def test_run_folder_rate_limit_marks_other_in_flight_tasks_failed(tmp_path):
+    """One subscription behind every task: the others are recorded failed too,
+    not left stuck at 'running'."""
+    plan = "- [ ] task one\n- [ ] task two\n"
+    project, agent_root, folder = _two_repos(tmp_path, plan)
+
+    agent = _RateLimitedThenTicksAgent(resets_at=None)
+    with pytest.raises(RateLimitEscalation):
+        run_folder(agent, folder, agent_root, project, initial_cap=2)
+
+    state = TaskState.load(folder)
+    for entry in state.all():
+        assert entry.status == "failed"
+
+
+def test_run_folder_generic_failure_does_not_write_rate_limit_marker(tmp_path):
+    """A plain (non-rate-limited) failure must not trip the escalation path."""
+    project, agent_root, folder = _two_repos(tmp_path, "- [ ] Will fail\n")
+
+    run_folder(_FailingAgent(), folder, agent_root, project, initial_cap=1)
+
+    assert not (agent_root / "monitor" / "rate-limit.json").exists()
 
 
 # --- Auth escalation ---

@@ -2,13 +2,12 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
 import time
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ola.agents.base import Agent, AgentResponse, ProgressCallback
@@ -21,13 +20,6 @@ _BOOTSTRAP_FILES = (".credentials.json", ".claude.json", "settings.json")
 _ALWAYS_REFRESH = {".credentials.json"}
 _STATUS_LINES = 3
 _MAX_LINE_LEN = 72
-
-# Channel-B (terminal synthetic rate-limit message) prose reset time, e.g.
-# "You've hit your session limit · resets 8:10pm (UTC)". No machine timestamp
-# is provided, so we parse the 12-hour clock time and anchor it to "now".
-_SESSION_LIMIT_RESET_RE = re.compile(
-    r"resets\s+(\d{1,2}):(\d{2})\s*([ap]m)\s*\(UTC\)", re.IGNORECASE
-)
 
 
 class _StatusDisplay:
@@ -75,34 +67,6 @@ class _StatusDisplay:
 
 class AuthenticationError(Exception):
     """Raised when Claude Code reports an authentication failure."""
-
-
-def _parse_session_limit_reset_epoch(
-    text: str, *, now: datetime | None = None
-) -> int | None:
-    """Parse a Channel-B reset time (e.g. "resets 8:10pm (UTC)") into an epoch.
-
-    The synthetic session-limit message carries no machine timestamp, only a
-    12-hour clock time with no date, so we anchor it to *now* (UTC) and roll
-    forward a day if that time has already passed today — the reset the CLI
-    reports is always in the future. Returns ``None`` when the text doesn't
-    match the expected shape; the caller still routes the failure into the
-    ``rate_limited`` path, just without a sleep-and-resume target.
-    """
-    match = _SESSION_LIMIT_RESET_RE.search(text)
-    if not match:
-        return None
-    hour_str, minute_str, meridiem = match.groups()
-    hour = int(hour_str) % 12
-    if meridiem.lower() == "pm":
-        hour += 12
-    now = now or datetime.now(timezone.utc)
-    candidate = now.replace(
-        hour=hour, minute=int(minute_str), second=0, microsecond=0
-    )
-    if candidate <= now:
-        candidate += timedelta(days=1)
-    return int(candidate.timestamp())
 
 
 def _is_self_hosted() -> bool:
@@ -377,28 +341,6 @@ class ClaudeCodeAgent(Agent):
                 proc.wait()
                 raise AuthenticationError(err_msg)
 
-            # --- Channel B: terminal synthetic session-limit message ---
-            # Channel A is the structured `rate_limit_event` handled below
-            # (proactive, machine `resetsAt`). This is the terminal form the
-            # CLI emits in its place when the session limit is actually hit:
-            # a synthetic assistant message with no `result` event to follow.
-            # Same underlying condition, so it routes into the same
-            # `rate_limit_hit` sleep-and-resume path via a parsed prose time.
-            if (
-                event.get("error") == "rate_limit"
-                and event.get("isApiErrorMessage")
-                and event.get("message", {}).get("model") == "<synthetic>"
-            ):
-                err_text = (
-                    event.get("message", {}).get("content", [{}])[0].get("text", "")
-                )
-                resets_at = _parse_session_limit_reset_epoch(err_text)
-                rate_limit_hit = {"resetsAt": resets_at, "rateLimitType": "session"}
-                logger.warning(
-                    "CC session limit hit (terminal synthetic message): %s", err_text
-                )
-                continue
-
             # --- Unwrap stream_event envelope and dispatch ---
 
             if msg_type == "stream_event" and "event" in event:
@@ -533,10 +475,18 @@ class ClaudeCodeAgent(Agent):
         status.clear()
         proc.wait()
 
-        # Rate-limited with no successful result → return error with reset info
-        if rate_limit_hit and (
-            result_data is None or result_data.get("subtype") != "success"
-        ):
+        # A `rejected` rate_limit_event is terminal for the turn, whatever the
+        # `result` event goes on to claim. The CLI has no rate-limit result
+        # subtype (the enum is success | error_during_execution |
+        # error_max_turns | error_max_budget_usd |
+        # error_max_structured_output_retries), so a limited turn reports
+        # `subtype:"success"` with num_turns=1 and zero usage — the model never
+        # ran. Gating this branch on the subtype (as it was until 2026-08)
+        # therefore discarded every rejection the CLI bothered to wrap in a
+        # result, and the scheduler saw a task that "succeeded" without ticking
+        # its checkbox: stagnant, retries burned, folder tripped the circuit
+        # breaker, minutes before the reset. The event is the signal.
+        if rate_limit_hit:
             resets_at = rate_limit_hit.get("resetsAt")
             rl_type = rate_limit_hit.get("rateLimitType", "unknown")
             resets_iso = (

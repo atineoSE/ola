@@ -108,15 +108,49 @@ The `cc` backend (`src/ola/agents/claude_code.py`) differentiates three
 failure modes instead of collapsing every non-200 into "authentication
 failed":
 
-- **Subscription limit** — sleep-and-resume, transparent to the plan. Two
-  transports for the same condition, both routed into the same
-  `error_type="rate_limited"` + `rate_limit_resets_at` path
-  (`scheduler._run_with_rate_limit_resume`): (A) the structured
-  `rate_limit_event` stream event (machine `resetsAt`), and (B) the
-  *terminal* synthetic assistant message (`model:"<synthetic>"`,
-  `error:"rate_limit"`, `isApiErrorMessage:true`, text like `"You've hit your
-  session limit · resets 8:10pm (UTC)"`) — its reset time is prose-only and is
-  parsed into an epoch (`_parse_session_limit_reset_epoch`).
+- **Subscription limit** — stop the run, let the supervisor wait. The signal is
+  the structured `rate_limit_event` stream event with `status:"rejected"` and
+  no fallback, which carries a machine `resetsAt`; it becomes
+  `error_type="rate_limited"` + `rate_limit_resets_at`.
+  **The event is the whole signal — never gate it on the `result` event.**
+  The CLI has no rate-limit result subtype (the enum is `success |
+  error_during_execution | error_max_turns | error_max_budget_usd |
+  error_max_structured_output_retries`), so a turn killed by the limit still
+  reports `subtype:"success"`, with `num_turns:1` and zero usage because the
+  model never ran. Gating on the subtype (as ola did until 2026-08) makes
+  every rejection look like an agent that succeeded without ticking its
+  checkbox — stagnant, retries burned, folder circuit breaker tripped, minutes
+  before the reset. `rejected` accompanies an actual 429, so it always means
+  the turn was cut short.
+  The CLI also emits a synthetic assistant message alongside it
+  (`message.model:"<synthetic>"`, top-level `error:"rate_limit"` and
+  `is_api_error_message:true`). ola deliberately does **not** parse it: it is
+  the same condition, its reset time is prose only, and a second detector for
+  one condition is a second thing to keep in sync. Note the wire spells that
+  flag `is_api_error_message` while the on-disk transcript spells it
+  `isApiErrorMessage` — an earlier detector was written against the transcript
+  and so never once fired against a live stream. **Parse the stream shape, not
+  the transcript shape**; they are different serializations.
+
+  A limit escalates exactly like auth, and for the same reason: it is global —
+  one subscription behind every task — so requeuing would burn every task's
+  `--max-attempts` against a wall that has not moved. The scheduler aborts the
+  run (`scheduler.RateLimitEscalation`), marks the other in-flight tasks
+  failed, and the CLI exits **41** (see
+  `scheduler.RATE_LIMIT_ESCALATION_EXIT_CODE`) — distinct from 40 because
+  nothing is broken and nothing needs healing; the cure is time.
+
+  **ola never waits out a window itself, at any duration.** Waiting is
+  `ola-monitor`'s job. A process parked for hours holds worktrees, a sandbox
+  and a thread pool for nothing; there is no in-flight work to protect, since
+  every task is against the same wall; and a relaunch re-derives the plan from
+  PLAN.md, which is the harness's ordinary resume path rather than a special
+  one. ola *did* sleep in-process up to an 8h cap until 2026-08 — the cap was
+  arbitrary, and having a threshold pick between two reactions to one condition
+  is the same shape that produced the stall above. One condition, one reaction.
+  Running bare `ola` (no watcher) therefore stops on a limit rather than
+  sleeping through it: the log and exit code say when it resets, and re-running
+  after that resumes from PLAN.md.
 - **Authentication failure** — global, not per-task: one task's
   `authentication_error` means every task sharing that credential will fail
   the same way. `ClaudeCodeAgent.run()` still catches `AuthenticationError`
@@ -131,12 +165,20 @@ failed":
 - **Temporary failures** — anything else: normal per-task fail/requeue, no
   special handling.
 
-The auth-escalation marker (`scheduler._write_auth_escalation_marker`) is
-JSON at `<agent-folder>/monitor/auth-escalation.json`:
-`{"sandbox": <name>, "ts": <ISO8601>, "message": <auth error>}`. The project
-and agent folder are already bind-mounted into the sandbox, so the file is
-host-visible with no new channel — this is the seam the host-side
-`ola-monitor` watcher (below) polls.
+Both escalations drop a host-visible marker under `<agent-folder>/monitor/`
+(`scheduler._write_escalation_marker`). The project and agent folder are
+already bind-mounted into the sandbox, so the file is host-visible with no new
+channel — this is the seam the host-side `ola-monitor` watcher (below) polls,
+and it is why the shape stays flat and grep-readable (the watcher is shell, no
+jq):
+
+- `auth-escalation.json` — `{"sandbox", "ts", "message"}`.
+- `rate-limit.json` — `{"sandbox", "ts", "message", "resets_at"}`, where
+  `resets_at` is the machine epoch or `null`. It is written by the worker
+  rather than the main loop's flush, because the worker is the only place
+  still holding that epoch: the outcome channel back to the loop is a plain
+  string, and recovering the epoch from the human-facing message would mean
+  re-parsing prose the CLI never promised.
 
 ### Per-project sandbox provisioning and run preconditions
 
@@ -179,14 +221,17 @@ project may hold one agent folder per epic. `ola-monitor` passes the folder it
 already resolves from ola's own argv, so the sandbox is provisioned against
 the plan being run.
 
-### `ola-monitor` — host-side auth launcher-watcher
+### `ola-monitor` — host-side launcher-watcher
 
 `ola-monitor` (in `ola.sh`, installed alongside `ola`/`ola-sandbox`) is
 **not** the old in-sandbox progress monitor — that concept was scrapped (see
 `agent/design-notes.md`); deterministic progress is `ola-top`'s job.
-`ola-monitor`'s sole concern is auth recovery: only the host can run
-`cc-credentials` against the Keychain and re-inject into the sandbox, so the
-watcher runs on the host and launches `ola` *into* the sandbox, rather than
+`ola-monitor`'s sole concern is keeping an unattended run going across the two
+stops ola cannot clear from inside the sandbox: a dead credential (only the
+host can run `cc-credentials` against the Keychain and re-inject) and an
+exhausted subscription window (only wall-clock time clears it, and a sleeping
+ola holding worktrees for hours is worse than a clean relaunch). That is why
+the watcher runs on the host and launches `ola` *into* the sandbox, rather than
 living in-sandbox. Invoke it with the same arguments you'd give `ola`:
 `ola-monitor -a cc -f ../agent`. The sandbox to launch into isn't part of
 `ola`'s own argv, so it's derived from the project checkout directory's
@@ -201,17 +246,33 @@ It: **(1) Launches** — ensures/creates the sandbox and injects fresh
 credentials (`_ola_sandbox_prepare`, shared with `ola-sandbox`), then execs
 `ola <args>` inside it non-interactively (`sbx exec`, not `sbx run`),
 printing a one-line ack and otherwise passing ola's own logs through
-untouched. **(2) Watches** the host-visible auth-escalation marker above.
-**(3) Self-heals first** on the marker: re-pulls Keychain credentials
-(`cc-credentials`) and re-injects them (`_ola_inject_credentials`), deletes
-the marker, and relaunches `ola <args>` to resume the plan. **(4) Thrash
-guards:** if the same account re-heals `--monitor-thrash-max` times
-(default 3) within `--monitor-thrash-window` seconds (default 300) — the
-signature of a concurrent rotator, e.g. a live `claude` session sharing the
-account, which a mechanical re-pull cannot win — it stops re-healing and
-notifies the human instead. **(5) Notifies** if `cc-credentials` finds no
-valid Keychain token (user logged out) rather than looping. **(6) Exits**
-with ola's own exit code once ola completes without dropping a marker.
+untouched. **(2) Watches** the two host-visible markers above.
+**(3) Waits out a rate limit** (`rate-limit.json`, checked first): sleeps to
+the marker's `resets_at`, re-pulls credentials, deletes the marker, and
+relaunches — ola re-derives every task from PLAN.md, so the plan resumes where
+it stopped. The credential refresh is not optional: a five-hour window
+comfortably outlives the OAuth token, and without it the relaunch would bounce
+straight into an auth escalation. The wait is floored at 60s
+(`_ola_monitor_rl_wait`) so a stale, missing or already-past `resets_at` can
+never turn the relaunch into a hot spin. **(4) Self-heals auth**
+(`auth-escalation.json`): re-pulls Keychain credentials (`cc-credentials`) and
+re-injects them (`_ola_inject_credentials`), deletes the marker, and relaunches
+`ola <args>`. **(5) Thrash guards** the *auth* path only: if the same account
+re-heals `--monitor-thrash-max` times (default 3) within
+`--monitor-thrash-window` seconds (default 300) — the signature of a concurrent
+rotator, e.g. a live `claude` session sharing the account, which a mechanical
+re-pull cannot win — it stops re-healing and notifies the human instead. A
+repeated *rate-limit* wait is deliberately not guarded: a plan outliving
+several windows is the normal case this exists for. **(6) Notifies** if
+`cc-credentials` finds no valid Keychain token (user logged out) rather than
+looping. **(7) Exits** with ola's own exit code once ola completes without
+dropping a marker.
+
+Both markers are cleared at startup if left over from a previous invocation.
+For auth that stops a stale marker turning the first unrelated `sbx exec`
+failure into a bogus escalation; for the rate limit the stakes are higher
+still — the watcher would otherwise sleep towards an epoch that passed days
+ago and relaunch a run that failed for an entirely different reason.
 
 ## Releases and the sandbox image
 
@@ -250,14 +311,14 @@ its frontmatter (semver, starting at `1.0.0`).
 
 | Skill | Version | Purpose |
 |-------|---------|---------|
-| `ola-design` | 1.6.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
+| `ola-design` | 1.9.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 1.4.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); also the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts. |
 | `ola-release` | 1.0.1 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.6.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, and `ola-monitor` (host-side auth launcher-watcher, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.39.0; re-verify on sbx upgrade. |
+| `sbx` | 2.7.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.39.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

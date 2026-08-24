@@ -778,6 +778,37 @@ _ola_monitor_marker_field() {
     | sed -E 's/.*:[[:space:]]*"(.*)"/\1/'
 }
 
+# Best-effort flat-JSON *numeric* field extraction (companion to
+# _ola_monitor_marker_field, which only sees quoted strings). Prints nothing
+# for a missing field or a JSON null — see scheduler._write_rate_limit_marker,
+# whose resets_at is an epoch or null.
+_ola_monitor_marker_num() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 1
+  grep -o "\"$key\"[[:space:]]*:[[:space:]]*[0-9]\+" "$file" 2>/dev/null \
+    | head -1 \
+    | sed -E 's/.*:[[:space:]]*([0-9]+)/\1/'
+}
+
+# Seconds ola-monitor should wait before relaunching after a rate-limit
+# escalation. Pure function so the clamping is testable without wall-clock.
+# $1 resets_at epoch (may be empty — the CLI reported no reset time), $2 now.
+# Floored at _OLA_MONITOR_RL_MIN_WAIT so a stale, missing or already-past reset
+# can never turn the relaunch loop into a hot spin, and grace-padded so we
+# never wake a second before the window actually rolls over.
+_OLA_MONITOR_RL_MIN_WAIT=60
+_OLA_MONITOR_RL_GRACE=15
+_ola_monitor_rl_wait() {
+  local resets_at="$1" now="$2" wait
+  if [ -z "$resets_at" ]; then
+    printf '%s' "$_OLA_MONITOR_RL_MIN_WAIT"
+    return 0
+  fi
+  wait=$((resets_at - now + _OLA_MONITOR_RL_GRACE))
+  [ "$wait" -lt "$_OLA_MONITOR_RL_MIN_WAIT" ] && wait="$_OLA_MONITOR_RL_MIN_WAIT"
+  printf '%s' "$wait"
+}
+
 # Parse an ISO8601 UTC timestamp (as written by scheduler._utc_now_iso) into
 # epoch seconds. Tries GNU date, then BSD/macOS date, for portability.
 _ola_monitor_epoch() {
@@ -830,14 +861,23 @@ _ola_monitor_decide() {
 #   --monitor-thrash-window SEC     thrash-detection window (default: 300)
 #   (1) Launch  — ensure/create the sandbox + inject fresh credentials, then
 #                 exec `ola <args>` inside it.
-#   (2) Watch   — for the host-visible auth-escalation marker ola drops on a
-#                 loud auth abort (<agent_folder>/monitor/auth-escalation.json).
-#   (3) Heal    — cc-credentials + re-inject, delete the marker, relaunch.
-#   (4) Thrash  — >= threshold re-heals within the window: stop, notify.
-#   (5) Notify  — dead Keychain token (cc-credentials fails): stop, notify.
-#   (6) Exit    — when ola completes cleanly (no marker), return its exit code.
-# Scope is auth-only: no progress reporting of its own (that's ola-top's job)
-# beyond the one-line launch ack and the heal/thrash/notify events themselves.
+#   (2) Watch   — for the host-visible markers ola drops under
+#                 <agent_folder>/monitor/ when it aborts a run for a reason
+#                 only the host can resolve: auth-escalation.json (dead
+#                 credential) and rate-limit.json (exhausted subscription
+#                 window).
+#   (3) Heal    — auth: cc-credentials + re-inject, delete the marker, relaunch.
+#   (4) Wait    — rate limit: sleep to the marker's resets_at, refresh
+#                 credentials (a five-hour window outlives the OAuth token),
+#                 delete the marker, relaunch. Unattended by design — this is
+#                 the case where nothing is broken and the only cure is time.
+#   (5) Thrash  — >= threshold re-heals within the window: stop, notify.
+#                 Auth only: a repeated rate-limit wait is the plan outliving
+#                 one window, which is exactly what this loop is for.
+#   (6) Notify  — dead Keychain token (cc-credentials fails): stop, notify.
+#   (7) Exit    — when ola completes cleanly (no marker), return its exit code.
+# Scope stays narrow: no progress reporting of its own (that's ola-top's job)
+# beyond the one-line launch ack and the heal/wait/thrash/notify events.
 ola-monitor() {
   local code_dir="$(pwd)"
   local name="$(basename "$code_dir")"
@@ -885,21 +925,25 @@ ola-monitor() {
     return 1
   }
   local marker="$agent_dir/monitor/auth-escalation.json"
+  local rl_marker="$agent_dir/monitor/rate-limit.json"
 
   echo "ola-monitor: supervising 'ola ${ola_args[*]}' in sandbox '$name'"
 
-  # A marker left by an earlier, unrelated invocation (e.g. one that hit the
-  # auth-escalation exit code and was never resumed) must not be mistaken
-  # for evidence from *this* invocation — the loop below only checks
-  # whether the marker file exists, so any leftover marker turns the very
-  # first sbx-exec-level failure (missing sandbox, docker hiccup, etc.) into
-  # a bogus "auth escalation" that re-heals credentials that were never the
-  # problem.
-  if [ -f "$marker" ]; then
-    echo "ola-monitor: clearing stale auth-escalation marker from a" \
-      "previous invocation before starting." >&2
-    rm -f "$marker"
-  fi
+  # A marker left by an earlier, unrelated invocation (e.g. one that hit an
+  # escalation exit code and was never resumed) must not be mistaken for
+  # evidence from *this* invocation — the loop below only checks whether the
+  # marker file exists, so any leftover marker turns the very first
+  # sbx-exec-level failure (missing sandbox, docker hiccup, etc.) into a bogus
+  # escalation: re-healing credentials that were never the problem, or worse,
+  # sleeping towards a reset epoch that passed days ago.
+  local stale
+  for stale in "$marker" "$rl_marker"; do
+    if [ -f "$stale" ]; then
+      echo "ola-monitor: clearing stale $(basename "$stale") from a" \
+        "previous invocation before starting." >&2
+      rm -f "$stale"
+    fi
+  done
 
   # Same agent folder ola itself will use (-f/--agent-folder), so the
   # sandbox is prepared and provisioned against the plan being run.
@@ -924,6 +968,33 @@ ola-monitor() {
     sbx exec -w "$code_dir" "$name" env "${unset_flags[@]}" \
       "OLA_SANDBOX_NAME=$name" SANDBOX=1 ola "${ola_args[@]}"
     rc=$?
+
+    # Rate limit: nothing is broken, the subscription window just has to run
+    # out. Wait it out and relaunch — ola re-derives every task from PLAN.md,
+    # so the plan picks up where it stopped. Checked before the auth marker
+    # because a window long enough to matter usually outlives the OAuth token
+    # too, and refreshing on the way back in keeps that from bouncing straight
+    # into an auth escalation. No thrash guard: a plan that outlives several
+    # windows is the normal case this exists for.
+    if [ -f "$rl_marker" ]; then
+      local rl_msg rl_resets rl_now rl_wait
+      rl_msg="$(_ola_monitor_marker_field "$rl_marker" message)"
+      rl_resets="$(_ola_monitor_marker_num "$rl_marker" resets_at)"
+      rl_now="$(date -u +%s)"
+      rl_wait="$(_ola_monitor_rl_wait "$rl_resets" "$rl_now")"
+      echo "ola-monitor: rate limited (${rl_msg:-no message}) — waiting" \
+        "${rl_wait}s for the window to reset, then resuming '$name'." >&2
+      rm -f "$rl_marker"
+      sleep "$rl_wait"
+      if ! cc-credentials; then
+        echo "ola-monitor: no valid Keychain token found after the rate-limit" \
+          "wait — log in (run 'claude' on the host) then re-run ola-monitor" \
+          "to resume." >&2
+        return 1
+      fi
+      _ola_inject_credentials "$name"
+      continue
+    fi
 
     # No marker: ola exited on its own (clean completion or an unrelated
     # failure) — nothing for the watcher to do.

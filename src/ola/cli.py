@@ -12,8 +12,10 @@ from ola.loop import run_outer_loop
 from ola.sandbox import is_sandbox, sanitize_proxy_env
 from ola.scheduler import (
     AUTH_ESCALATION_EXIT_CODE,
+    RATE_LIMIT_ESCALATION_EXIT_CODE,
     AuthEscalation,
     FolderIncompleteError,
+    RateLimitEscalation,
     RunInterrupted,
 )
 
@@ -247,6 +249,19 @@ def main() -> None:
             exc,
         )
         sys.exit(AUTH_ESCALATION_EXIT_CODE)
+    except RateLimitEscalation as exc:
+        # The subscription window is exhausted and the reset was too far out
+        # (or unreported) for the worker to sleep through, so the scheduler
+        # aborted the whole run and dropped the host-visible marker
+        # (<agent-folder>/monitor/rate-limit.json). Nothing is broken and
+        # nothing needs healing — the distinct exit code says "come back
+        # later", which is what ola-monitor acts on.
+        logger.error(
+            "%s Waiting out the window and re-running ola resumes from "
+            "PLAN.md; ola-monitor does that for you.",
+            exc,
+        )
+        sys.exit(RATE_LIMIT_ESCALATION_EXIT_CODE)
     except RunInterrupted as exc:
         # Operator stopped the run (Ctrl-C / SIGTERM). The scheduler already
         # flushed a terminal snapshot for the in-flight tasks, so this is a

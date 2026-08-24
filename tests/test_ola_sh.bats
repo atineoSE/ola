@@ -998,6 +998,37 @@ EOF
   [ "$(_ola_monitor_marker_field "$marker" message)" = "authentication_error: invalid_grant" ]
 }
 
+@test "monitor_marker_num: extracts a numeric field and skips null" {
+  local marker="$TMPDIR_TEST/marker_num.json"
+  cat > "$marker" <<'EOF'
+{
+  "sandbox": "my-sandbox",
+  "message": "five_hour limit hit",
+  "resets_at": 1787577600
+}
+EOF
+  [ "$(_ola_monitor_marker_num "$marker" resets_at)" = "1787577600" ]
+
+  cat > "$marker" <<'EOF'
+{
+  "message": "five_hour limit hit",
+  "resets_at": null
+}
+EOF
+  [ -z "$(_ola_monitor_marker_num "$marker" resets_at)" ]
+}
+
+@test "monitor_rl_wait: waits until the reset, plus grace" {
+  [ "$(_ola_monitor_rl_wait 5000 1000)" = "4015" ]
+}
+
+@test "monitor_rl_wait: floors a past, missing or already-elapsed reset" {
+  # A hot relaunch loop would burn the plan's remaining attempts instantly.
+  [ "$(_ola_monitor_rl_wait 900 1000)" = "60" ]
+  [ "$(_ola_monitor_rl_wait 1000 1000)" = "60" ]
+  [ "$(_ola_monitor_rl_wait "" 1000)" = "60" ]
+}
+
 @test "monitor_marker_field: missing file fails" {
   run _ola_monitor_marker_field "$TMPDIR_TEST/no-such-marker.json" sandbox
   [ "$status" -ne 0 ]
@@ -1155,6 +1186,149 @@ EOF
   [ "$(wc -l < "$CC_CALLS_LOG")" -eq 2 ]
   [ ! -f "$MON_AGENT_DIR/monitor/auth-escalation.json" ]
   [[ "$output" == *"auth escalation"* ]]
+}
+
+_mock_write_rate_limit_marker() {
+  local agent_dir="$1" resets_at="${2:-null}"
+  mkdir -p "$agent_dir/monitor"
+  cat > "$agent_dir/monitor/rate-limit.json" <<EOF
+{
+  "sandbox": "mon-sbx",
+  "ts": "2026-01-01T00:00:00.000Z",
+  "message": "five_hour limit hit, resets at 2026-01-01T05:00:00+00:00",
+  "resets_at": $resets_at
+}
+EOF
+}
+
+@test "monitor: waits out a rate-limit window, refreshes credentials, and resumes" {
+  # The whole point of the launcher-watcher for the case where nothing is
+  # broken: ola aborted because the subscription window is exhausted, so wait
+  # and relaunch. Credentials are re-pulled on the way back in because a
+  # five-hour window comfortably outlives the OAuth token.
+  mkdir -p "$TMPDIR_TEST/mon_rl/agent" "$TMPDIR_TEST/mon_rl/code"
+  export MON_AGENT_DIR="$TMPDIR_TEST/mon_rl/agent"
+  export CALLS_LOG="$TMPDIR_TEST/mon_rl/calls"; : > "$CALLS_LOG"
+  export CC_CALLS_LOG="$TMPDIR_TEST/mon_rl/cc_calls"; : > "$CC_CALLS_LOG"
+  export SLEPT_LOG="$TMPDIR_TEST/mon_rl/slept"; : > "$SLEPT_LOG"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo x >> "$CALLS_LOG"
+    if [ "$(wc -l < "$CALLS_LOG")" -eq 1 ]; then
+      _mock_write_rate_limit_marker "$MON_AGENT_DIR"
+      return 41
+    fi
+    return 0
+  }
+  export -f ola
+
+  cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 0; }
+  export -f cc-credentials
+  sleep() { echo "$1" >> "$SLEPT_LOG"; }
+  export -f sleep
+
+  cd "$TMPDIR_TEST/mon_rl/code"
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
+
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$CALLS_LOG")" -eq 2 ]
+  # No resets_at in the marker → the floored fallback delay, never a hot spin.
+  [ "$(cat "$SLEPT_LOG")" = "60" ]
+  # 1 from the initial _ola_sandbox_prepare launch + 1 after the wait.
+  [ "$(wc -l < "$CC_CALLS_LOG")" -eq 2 ]
+  [ ! -f "$MON_AGENT_DIR/monitor/rate-limit.json" ]
+  [[ "$output" == *"rate limited"* ]]
+}
+
+@test "monitor: a rate-limit wait is not thrash-guarded" {
+  # A plan long enough to outlive several windows is the normal case here —
+  # unlike a repeated auth heal, which means cc-credentials isn't fixing it.
+  mkdir -p "$TMPDIR_TEST/mon_rl_many/agent" "$TMPDIR_TEST/mon_rl_many/code"
+  export MON_AGENT_DIR="$TMPDIR_TEST/mon_rl_many/agent"
+  export CALLS_LOG="$TMPDIR_TEST/mon_rl_many/calls"; : > "$CALLS_LOG"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo x >> "$CALLS_LOG"
+    # Five consecutive windows — well past the auth path's thrash threshold.
+    if [ "$(wc -l < "$CALLS_LOG")" -le 5 ]; then
+      _mock_write_rate_limit_marker "$MON_AGENT_DIR"
+      return 41
+    fi
+    return 0
+  }
+  export -f ola
+
+  cc-credentials() { return 0; }
+  export -f cc-credentials
+  sleep() { :; }
+  export -f sleep
+
+  cd "$TMPDIR_TEST/mon_rl_many/code"
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
+
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$CALLS_LOG")" -eq 6 ]
+}
+
+@test "monitor: a dead Keychain token after a rate-limit wait stops instead of looping" {
+  mkdir -p "$TMPDIR_TEST/mon_rl_dead/agent" "$TMPDIR_TEST/mon_rl_dead/code"
+  export MON_AGENT_DIR="$TMPDIR_TEST/mon_rl_dead/agent"
+  export CALLS_LOG="$TMPDIR_TEST/mon_rl_dead/calls"; : > "$CALLS_LOG"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo x >> "$CALLS_LOG"
+    _mock_write_rate_limit_marker "$MON_AGENT_DIR"
+    return 41
+  }
+  export -f ola
+
+  # Succeed for the initial prepare, fail on the post-wait refresh.
+  cc-credentials() {
+    [ -f "$MON_AGENT_DIR/monitor/rate-limit.json" ] && return 0
+    return 1
+  }
+  export -f cc-credentials
+  sleep() { :; }
+  export -f sleep
+
+  cd "$TMPDIR_TEST/mon_rl_dead/code"
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
+
+  [ "$status" -ne 0 ]
+  [ "$(wc -l < "$CALLS_LOG")" -eq 1 ]
+  [[ "$output" == *"no valid Keychain token"* ]]
+}
+
+@test "monitor: clears a stale rate-limit marker from a previous invocation" {
+  # Worse than the auth case: a leftover marker would make the watcher sleep
+  # towards a reset epoch that passed days ago, then relaunch a run that
+  # failed for an entirely unrelated reason.
+  mkdir -p "$TMPDIR_TEST/mon_rl_stale/agent" "$TMPDIR_TEST/mon_rl_stale/code"
+  _mock_sbx_for_monitor
+  _mock_write_rate_limit_marker "$TMPDIR_TEST/mon_rl_stale/agent" 1000
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    return 7
+  }
+  export -f ola
+
+  cc-credentials() { return 0; }
+  export -f cc-credentials
+  sleep() { :; }
+  export -f sleep
+
+  cd "$TMPDIR_TEST/mon_rl_stale/code"
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
+
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"clearing stale rate-limit.json"* ]]
 }
 
 @test "monitor: clears a stale marker from a previous invocation instead of misdiagnosing an unrelated failure" {

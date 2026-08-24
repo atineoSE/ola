@@ -3,17 +3,12 @@
 import json
 import logging
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ola.agents.claude_code import (
-    AuthenticationError,
-    ClaudeCodeAgent,
-    _parse_session_limit_reset_epoch,
-)
+from ola.agents.claude_code import AuthenticationError, ClaudeCodeAgent
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +828,35 @@ class TestRateLimitEvents:
         assert resp.success
         assert not any("rate limit" in r.message.lower() for r in caplog.records)
 
+    def test_rejection_wins_over_a_success_result(self):
+        """A `rejected` event classifies the turn even when a `result` with
+        subtype "success" follows.
+
+        Regression for the 2026-08-24 stall: the CLI has no rate-limit result
+        subtype, so a turn killed by the five-hour limit still reports
+        subtype="success" — with num_turns=1 and zero usage, because the model
+        never ran. Gating the classification on the subtype made every such
+        attempt look like an agent that "succeeded" without ticking its
+        checkbox, so the scheduler burned all three attempts in seconds and
+        tripped the folder's stagnation breaker instead of sleeping ~36 minutes
+        to the reset.
+        """
+        resets_at = 1787577600
+        lines = [
+            json.dumps({"type": "system"}),
+            _rate_limit_event(status="rejected", resets_at=resets_at, fallback=False),
+            _result(
+                input_tokens=0,
+                output_tokens=0,
+                num_turns=1,
+                result_text="You've hit your session limit · resets 1:20pm (UTC)",
+            ),
+        ]
+        resp = _run_stream(lines)
+        assert not resp.success
+        assert resp.stats.error_type == "rate_limited"
+        assert resp.stats.rate_limit_resets_at == resets_at
+
     def test_rate_limit_seven_day_opus_bucket(self):
         """seven_day_opus bucket type is surfaced in error_message."""
         lines = [
@@ -851,102 +875,14 @@ class TestRateLimitEvents:
 
 
 # ---------------------------------------------------------------------------
-# Channel-B: terminal synthetic session-limit message
+# Failure classes stay distinct
 # ---------------------------------------------------------------------------
 
 
-def _synthetic_session_limit_message(text: str) -> str:
-    return json.dumps(
-        {
-            "type": "assistant",
-            "error": "rate_limit",
-            "isApiErrorMessage": True,
-            "apiErrorStatus": 429,
-            "message": {
-                "model": "<synthetic>",
-                "content": [{"type": "text", "text": text}],
-            },
-        }
-    )
-
-
-class TestSessionLimitResetParsing:
-    def test_parses_pm_time(self):
-        now = datetime(2026, 7, 23, 12, 0, 0, tzinfo=timezone.utc)
-        epoch = _parse_session_limit_reset_epoch(
-            "You've hit your session limit · resets 8:10pm (UTC)", now=now
-        )
-        expected = datetime(2026, 7, 23, 20, 10, 0, tzinfo=timezone.utc)
-        assert epoch == int(expected.timestamp())
-
-    def test_parses_am_time(self):
-        now = datetime(2026, 7, 23, 6, 0, 0, tzinfo=timezone.utc)
-        epoch = _parse_session_limit_reset_epoch("resets 8:10am (UTC)", now=now)
-        expected = datetime(2026, 7, 23, 8, 10, 0, tzinfo=timezone.utc)
-        assert epoch == int(expected.timestamp())
-
-    def test_rolls_forward_a_day_when_time_already_passed(self):
-        now = datetime(2026, 7, 23, 21, 0, 0, tzinfo=timezone.utc)
-        epoch = _parse_session_limit_reset_epoch("resets 8:10pm (UTC)", now=now)
-        expected = datetime(2026, 7, 24, 20, 10, 0, tzinfo=timezone.utc)
-        assert epoch == int(expected.timestamp())
-
-    def test_midnight_and_noon(self):
-        now = datetime(2026, 7, 23, 0, 0, 0, tzinfo=timezone.utc)
-        midnight = _parse_session_limit_reset_epoch("resets 12:00am (UTC)", now=now)
-        noon = _parse_session_limit_reset_epoch("resets 12:00pm (UTC)", now=now)
-        assert midnight == int(
-            datetime(2026, 7, 24, 0, 0, 0, tzinfo=timezone.utc).timestamp()
-        )
-        assert noon == int(
-            datetime(2026, 7, 23, 12, 0, 0, tzinfo=timezone.utc).timestamp()
-        )
-
-    def test_no_match_returns_none(self):
-        assert _parse_session_limit_reset_epoch("no reset time here") is None
-
-
-class TestChannelBSessionLimit:
-    def test_terminal_synthetic_message_classified_rate_limited(self):
-        """The terminal synthetic 429 message (no `result` event at all)
-        routes into the same error_type=rate_limited path as the structured
-        rate_limit_event, with the prose reset time parsed into an epoch."""
-        lines = [
-            json.dumps({"type": "system"}),
-            _message_start(),
-            _content_block_start(),
-            _synthetic_session_limit_message(
-                "You've hit your session limit · resets 8:10pm (UTC)"
-            ),
-            # No result event — this message is terminal.
-        ]
-        fixed_epoch = 1234567890
-        with patch(
-            "ola.agents.claude_code._parse_session_limit_reset_epoch",
-            return_value=fixed_epoch,
-        ):
-            resp = _run_stream(lines)
-        assert not resp.success
-        assert resp.stats.error_type == "rate_limited"
-        assert resp.stats.rate_limit_resets_at == fixed_epoch
-
-    def test_unparseable_reset_time_still_classified_rate_limited(self):
-        """A malformed/unexpected reset time still fails as rate_limited —
-        just without a sleep-and-resume target — instead of falling through
-        to a generic, unclassified failure."""
-        lines = [
-            json.dumps({"type": "system"}),
-            _synthetic_session_limit_message("hit your session limit, try later"),
-        ]
-        resp = _run_stream(lines)
-        assert not resp.success
-        assert resp.stats.error_type == "rate_limited"
-        assert resp.stats.rate_limit_resets_at is None
-
+class TestFailureClassesStayDistinct:
     def test_generic_api_error_is_not_rate_limited_or_auth(self):
-        """A plain API error (not the Channel-B shape) is neither
-        rate_limited nor authentication_error — the three classes stay
-        distinct."""
+        """A plain API error is neither rate_limited nor
+        authentication_error — the three classes stay distinct."""
         lines = [
             json.dumps({"type": "system"}),
             json.dumps(

@@ -6,7 +6,13 @@ from unittest.mock import patch
 import pytest
 
 from ola.cli import main
-from ola.scheduler import AUTH_ESCALATION_EXIT_CODE, AuthEscalation, FolderIncompleteError
+from ola.scheduler import (
+    AUTH_ESCALATION_EXIT_CODE,
+    RATE_LIMIT_ESCALATION_EXIT_CODE,
+    AuthEscalation,
+    FolderIncompleteError,
+    RateLimitEscalation,
+)
 
 
 class TestBailOut:
@@ -48,6 +54,28 @@ class TestAuthEscalation:
             main()
         assert excinfo.value.code == AUTH_ESCALATION_EXIT_CODE
         assert excinfo.value.code != 1
+
+
+class TestRateLimitEscalation:
+    """RateLimitEscalation stops ola with its own exit code — distinct from
+    the auth abort, because the recovery is "wait", not "fix the credential"."""
+
+    def test_rate_limit_escalation_exits_with_distinct_code(self, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with (
+            patch.dict(os.environ, {"SANDBOX": "1"}),
+            patch("sys.argv", ["ola", "-f", str(agent_dir)]),
+            patch("ola.cli.create_agent"),
+            patch(
+                "ola.cli.run_outer_loop",
+                side_effect=RateLimitEscalation("02-utils", "five_hour limit hit"),
+            ),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == RATE_LIMIT_ESCALATION_EXIT_CODE
+        assert excinfo.value.code not in (1, AUTH_ESCALATION_EXIT_CODE)
 
 
 class TestSandboxGate:

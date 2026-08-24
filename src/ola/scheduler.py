@@ -82,10 +82,6 @@ _DEFAULT_TASK_PROMPT = _DEFAULT_TASK_PROMPT_FILE.read_text()
 # stagnation backstop task wires this into the scheduler's main loop.
 _MAX_STAGNANT_LOOPS = 5
 
-# Safety cap for rate-limit sleeps in the worker error path. A reset further
-# out than this is treated as a failure rather than slept through.
-_MAX_RATE_LIMIT_WAIT_SEC = 8 * 3600  # 8 hours
-
 # Default in-flight worker bound when ``.ola/concurrency`` is missing/malformed.
 # ``run_folder`` also materializes the file at this value on the first tick, so
 # the cap is always present on disk and auditable from the start of a run — and
@@ -116,11 +112,18 @@ _OUTCOME_FAILED = "failed"
 _OUTCOME_STAGNANT = "stagnant"
 _OUTCOME_BLOCKED = "blocked"
 _OUTCOME_AUTH_ESCALATION = "auth_escalation"
+_OUTCOME_RATE_LIMITED = "rate_limited"
 
 # Distinct process exit code for AuthEscalation (see cli.py), so an operator
 # (or a future host-side watcher) can tell "the Claude Code credential died"
 # apart from a generic crash (1) or an operator interrupt (128+signum).
 AUTH_ESCALATION_EXIT_CODE = 40
+
+# Distinct process exit code for RateLimitEscalation — the subscription window
+# is exhausted and the reset is too far out (or unreported) to sleep through
+# in-process. Separate from 40 because the recovery differs: nothing is broken
+# and no credential needs healing, the caller just has to come back later.
+RATE_LIMIT_ESCALATION_EXIT_CODE = 41
 
 
 class FolderIncompleteError(RuntimeError):
@@ -182,6 +185,38 @@ class AuthEscalation(RuntimeError):
         self.folder_name = folder_name
         self.message = message
         super().__init__(f"{folder_name}: authentication failed — {message}")
+
+
+class RateLimitEscalation(RuntimeError):
+    """The subscription window is exhausted, so the scheduler aborts the whole
+    folder instead of letting each remaining task burn its attempts against
+    the same wall.
+
+    A rate limit is global exactly like a dead credential: every task shares
+    one subscription, so a rejection for one is a rejection for all. Left as an
+    ordinary failure it degrades into ``--max-attempts`` burned in seconds and
+    a tripped stagnation breaker — an agent blamed for a wall it never touched.
+
+    **ola does not wait the window out itself.** Waiting is the supervisor's
+    job (``ola-monitor``), for three reasons: a process parked for hours holds
+    worktrees, a sandbox and a thread pool for nothing; there is no in-flight
+    work to preserve, since every task is against the same wall; and a
+    relaunch re-derives the whole plan from PLAN.md anyway, which is the
+    harness's normal resume path rather than a special one. Sleeping in-process
+    would also mean a threshold deciding between two reactions to one
+    condition — the shape that produced the 2026-08 stall in the first place.
+
+    Raised only *after* the in-flight snapshot has been flushed and the
+    host-visible marker written (see :func:`_write_rate_limit_marker`) — the
+    seam ``ola-monitor`` polls so it can wait out the window and relaunch.
+    Propagates to the CLI, which exits with
+    :data:`RATE_LIMIT_ESCALATION_EXIT_CODE` rather than the generic ``1``.
+    """
+
+    def __init__(self, folder_name: str, message: str) -> None:
+        self.folder_name = folder_name
+        self.message = message
+        super().__init__(f"{folder_name}: rate limited — {message}")
 
 
 def _signame(signum: int | None) -> str:
@@ -384,26 +419,56 @@ def _sandbox_name() -> str:
     )
 
 
-def _write_auth_escalation_marker(agent_root: Path, message: str) -> None:
-    """Drop the host-visible auth-escalation marker under ``<agent_root>/monitor/``.
+def _write_escalation_marker(
+    agent_root: Path, filename: str, extra: dict[str, Any] | None = None
+) -> Path:
+    """Atomically drop a host-visible escalation marker under ``<agent_root>/monitor/``.
 
-    This is the seam a host-side credential watcher polls: the project and
-    agent folder are already bind-mounted into the sandbox (see
+    This is the seam the host-side watcher (``ola-monitor``) polls: the project
+    and agent folder are already bind-mounted into the sandbox (see
     ``design-notes.md``), so no new channel is needed — the file is
-    host-visible the instant it lands. Shape is locked:
-    ``{"sandbox": <name>, "ts": <ISO8601>, "message": <auth error>}``.
+    host-visible the instant it lands. Every marker carries the same flat
+    ``{"sandbox", "ts", "message"}`` base (the shell reads it with grep, not
+    jq, so keep it flat and string-valued where it can); *extra* adds
+    marker-specific fields. Returns the path written.
     """
     monitor_dir = agent_root / "monitor"
     monitor_dir.mkdir(parents=True, exist_ok=True)
-    marker = {
-        "sandbox": _sandbox_name(),
-        "ts": _utc_now_iso(),
-        "message": message,
-    }
-    marker_path = monitor_dir / "auth-escalation.json"
+    marker: dict[str, Any] = {"sandbox": _sandbox_name(), "ts": _utc_now_iso()}
+    marker.update(extra or {})
+    marker_path = monitor_dir / filename
     tmp = marker_path.with_name(marker_path.name + ".tmp")
     tmp.write_text(json.dumps(marker, indent=2) + "\n")
     tmp.replace(marker_path)
+    return marker_path
+
+
+def _write_auth_escalation_marker(agent_root: Path, message: str) -> Path:
+    """The credential is dead and only the host can refresh it.
+
+    Shape is locked: ``{"sandbox", "ts", "message": <auth error>}``.
+    """
+    return _write_escalation_marker(
+        agent_root, "auth-escalation.json", {"message": message}
+    )
+
+
+def _write_rate_limit_marker(
+    agent_root: Path, message: str, resets_at: int | None
+) -> Path:
+    """Nothing is broken; the subscription window just has to run out.
+
+    Shape is locked: ``{"sandbox", "ts", "message", "resets_at": <epoch|null>}``.
+    ``resets_at`` is what makes this actionable rather than merely informative
+    — the watcher sleeps until then and relaunches, so the plan resumes
+    unattended. It is ``null`` when the CLI reported a rejection without a
+    reset time, and the watcher falls back to a fixed retry delay.
+    """
+    return _write_escalation_marker(
+        agent_root,
+        "rate-limit.json",
+        {"message": message, "resets_at": resets_at},
+    )
 
 
 def write_heartbeat(folder: Path, payload: dict[str, Any]) -> None:
@@ -690,49 +755,6 @@ def _handle_merge_conflict(
     return _OUTCOME_BLOCKED
 
 
-def _run_with_rate_limit_resume(
-    agent: Agent,
-    prompt: str,
-    workdir: str,
-    state_dir: str | None,
-    labels: dict[str, str],
-    on_progress: Any | None,
-) -> Any | None:
-    """Run the agent, sleeping through rate-limit windows and resuming.
-
-    Moved out of the old inner loop's rate-limit branch: a ``rate_limited``
-    response is transient, so the worker sleeps until the reset and re-runs the
-    same task rather than burning a retry attempt. Returns the agent response,
-    or ``None`` when the reset is further out than ``_MAX_RATE_LIMIT_WAIT_SEC``
-    (the caller treats ``None`` as a failure).
-    """
-    while True:
-        response = agent.run(
-            prompt,
-            workdir,
-            state_dir=state_dir,
-            labels=labels,
-            on_progress=on_progress,
-        )
-        stats = response.stats
-        if not (stats.error_type == "rate_limited" and stats.rate_limit_resets_at):
-            return response
-        wait_sec = max(0, stats.rate_limit_resets_at - time.time()) + 10
-        if wait_sec > _MAX_RATE_LIMIT_WAIT_SEC:
-            logger.error(
-                "Rate limit reset too far away (%ds) for task %s. Giving up.",
-                int(wait_sec),
-                labels.get("task_id"),
-            )
-            return None
-        logger.warning(
-            "Rate limit hit on task %s. Sleeping %ds, then resuming.",
-            labels.get("task_id"),
-            int(wait_sec),
-        )
-        time.sleep(wait_sec)
-
-
 def _run_one_task(
     agent: Agent,
     folder: Path,
@@ -803,20 +825,14 @@ def _run_one_task(
 
         tasks_before = count_tasks(plan_dir)
         t0 = time.monotonic()
-        response = _run_with_rate_limit_resume(
-            agent, prompt, workdir, state_dir, labels, on_progress
+        response = agent.run(
+            prompt,
+            workdir,
+            state_dir=state_dir,
+            labels=labels,
+            on_progress=on_progress,
         )
         wall_ms = int((time.monotonic() - t0) * 1000)
-        if response is None:
-            with state_lock:
-                state.mark(
-                    task_id,
-                    "failed",
-                    last_error="rate limit reset too far away",
-                )
-                state.save()
-            prog.failed("rate limit reset too far away")
-            return _OUTCOME_FAILED
 
         # Record a STATS.jsonl row for this attempt. The phase is the
         # parallel-mode shape ``task-<task_id>-<attempt>``; the monitor parser
@@ -912,6 +928,36 @@ def _run_one_task(
                 state.save()
             prog.failed(_truncate(response.output), stats=response.stats)
             return _OUTCOME_AUTH_ESCALATION
+
+        if not response.success and response.stats.error_type == "rate_limited":
+            # A rate limit is global for the same reason auth is: one
+            # subscription behind every task, so a rejection for one is a
+            # rejection for all. Requeuing would burn this task's remaining
+            # attempts — and every other task's — against a wall that has not
+            # moved, in seconds. Terminal for the task; the main loop aborts
+            # the run and leaves the host-visible marker ola-monitor waits on.
+            #
+            # ola does not wait out the window itself. Waiting is the
+            # supervisor's job: a process parked for hours holds worktrees, a
+            # sandbox and a thread pool for nothing, and every task in flight
+            # is against the same wall anyway — there is no work to preserve.
+            # Stopping cleanly with a reset time on disk is strictly more
+            # useful than sleeping, and it leaves one reaction to one
+            # condition instead of a threshold deciding between two.
+            message = response.stats.error_message or "rate limited"
+            with state_lock:
+                state.mark(task_id, "failed", last_error=message)
+                state.save()
+            # Written here rather than in the main loop's flush (where the auth
+            # marker is written) because this is the only place still holding
+            # the machine reset epoch: the outcome channel back to the loop is
+            # a plain string, and recovering the epoch from the human-facing
+            # message would mean re-parsing prose the CLI never promised.
+            _write_rate_limit_marker(
+                agent_root, message, response.stats.rate_limit_resets_at
+            )
+            prog.failed(_truncate(response.output) or message, stats=response.stats)
+            return _OUTCOME_RATE_LIMITED
 
         if not response.success:
             _fail_or_requeue(
@@ -1056,7 +1102,7 @@ def run_folder(
     # folder rather than spin forever on an agent that never makes progress.
     consecutive_stagnant = 0
     halted = False
-    auth_aborted = False
+    global_abort = False
 
     # Janitor lane: at most one janitor runs per folder, off to the side of
     # the worker pool — it is harness overhead, not a plan task, so it never
@@ -1146,17 +1192,18 @@ def run_folder(
             folder.name,
         )
 
-    def _flush_auth_abort(message: str) -> None:
-        """Record every still in-flight task as aborted and drop the marker.
+    def _flush_global_abort(reason: str, event_flag: str) -> None:
+        """Record every still in-flight task as aborted under a global stop.
 
-        The task whose response actually carried the ``authentication_error``
-        is already marked failed by ``_run_one_task`` before this runs; this
-        only needs to cover the *other* in-flight workers, which would fail
-        the same way on their next API call — mirrors ``_flush_interrupt``'s
-        synchronous snapshot-then-stop shape, but for a global-credential
-        failure instead of an operator signal.
+        Both escalations are global-by-nature — one dead credential, or one
+        exhausted subscription window, behind every task alike — so the task
+        that actually hit it is already marked failed by ``_run_one_task``, and
+        this only needs to cover the *other* in-flight workers, which would hit
+        the same wall on their next API call. Mirrors ``_flush_interrupt``'s
+        synchronous snapshot-then-stop shape, but for a shared-resource failure
+        instead of an operator signal. *event_flag* names the boolean the
+        terminal event carries so a monitor can tell the two apart.
         """
-        reason = f"auth escalation: {message}"
         with state_lock:
             for job in in_flight.values():
                 entry = state.get(job.task_id)
@@ -1170,17 +1217,39 @@ def run_folder(
                         task_id=job.task_id,
                         task_text=entry.text if entry else job.task_id,
                         agent_backend=agent.mnemonic,
-                        data={"error": reason, "auth_escalation": True},
+                        data={"error": reason, event_flag: True},
                     )
             state.save()
-        _write_auth_escalation_marker(agent_root, message)
+
+    def _flush_auth_abort(message: str) -> None:
+        """Global-abort on a dead credential, then drop the host-visible marker."""
+        _flush_global_abort(f"auth escalation: {message}", "auth_escalation")
+        marker_path = _write_auth_escalation_marker(agent_root, message)
         logger.error(
             "Claude Code authentication failed in %s — aborting the run. "
             "%d other in-flight task(s) recorded as failed. Marker written to "
             "%s.",
             folder.name,
             len(in_flight),
-            agent_root / "monitor" / "auth-escalation.json",
+            marker_path,
+        )
+
+    def _flush_rate_limit_abort(message: str) -> None:
+        """Global-abort on an exhausted subscription window.
+
+        The marker is already on disk — ``_run_one_task`` writes it, since it
+        is the only place holding the machine reset epoch — so this only has to
+        cover the other in-flight workers and say so.
+        """
+        _flush_global_abort(f"rate limited: {message}", "rate_limited")
+        logger.error(
+            "Rate limited in %s — aborting the run. %d other in-flight task(s) "
+            "recorded as failed. Marker written to %s; ola-monitor waits out "
+            "the window and relaunches, or re-run ola yourself after the reset "
+            "(PLAN.md state lets it resume).",
+            folder.name,
+            len(in_flight),
+            agent_root / "monitor" / "rate-limit.json",
         )
 
     # Liveness heartbeat: a small sidecar the main loop refreshes every tick
@@ -1352,8 +1421,15 @@ def run_folder(
                         "authentication failed"
                     )
                     _flush_auth_abort(message)
-                    auth_aborted = True
+                    global_abort = True
                     raise AuthEscalation(folder.name, message)
+                if outcome == _OUTCOME_RATE_LIMITED:
+                    with state_lock:
+                        entry = state.get(job.task_id)
+                    message = (entry.last_error if entry else None) or "rate limited"
+                    _flush_rate_limit_abort(message)
+                    global_abort = True
+                    raise RateLimitEscalation(folder.name, message)
                 if outcome == _OUTCOME_COMPLETE:
                     # A merge-back landed on the base branch — the only event
                     # that can move a project-measured metric. Flag it; the probe
@@ -1409,14 +1485,15 @@ def run_folder(
                 # Best-effort restore: the prior handler may be a C-level one
                 # getsignal reports as None, which signal.signal refuses.
                 pass
-        # On a clean drain we wait for in-flight workers. On interrupt — or an
-        # auth escalation, which is just as urgent to exit on — we don't stack
-        # a blocking join on top of it; the snapshot is already flushed. (The
+        # On a clean drain we wait for in-flight workers. On interrupt — or a
+        # global escalation (auth, rate limit), which is just as urgent to exit
+        # on — we don't stack a blocking join on top of it; the snapshot is
+        # already flushed. (The
         # interpreter's concurrent.futures atexit hook still joins live worker
         # threads, so a hung in-process worker — e.g. the oh backend mid-call —
         # can keep the process alive until a SIGKILL; by then tasks.json
         # already records the interruption.)
-        drain = not interrupted.is_set() and not auth_aborted
+        drain = not interrupted.is_set() and not global_abort
         executor.shutdown(wait=drain)
         for retired in retired_executors:
             retired.shutdown(wait=drain)

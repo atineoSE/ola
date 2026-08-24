@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.6.0
+version: 2.7.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -306,14 +306,27 @@ that captures stderr into its error text:
 > only `sbx secret` line in the repo is the host-only registry example in
 > `docs/sandbox.md`, which needs no change.
 
-### `ola-monitor` (host-side auth launcher-watcher)
+### `ola-monitor` (host-side launcher-watcher)
 `ola-monitor` (in `ola.sh`) wraps `ola-sandbox`'s create/reconnect + credential-inject
 path (`_ola_sandbox_prepare`) plus a non-interactive `sbx exec` of `ola <args>` to
-keep an ola run authenticated unsupervised: on the host-visible auth-escalation
-marker, it re-pulls Keychain credentials, re-injects them into the sandbox, and
-relaunches `ola` — with a thrash guard (repeated re-heals in a short window that
-cc-credentials isn't fixing — most often a concurrent rotator, but not always) and
-a notify-fallback for a dead Keychain token. Because `sbx exec` never sources
+keep an unattended ola run going across the two stops it cannot clear from inside
+the sandbox, each signalled by its own host-visible marker under
+`<agent-folder>/monitor/`:
+
+- **`auth-escalation.json`** (ola exits 40) — re-pull Keychain credentials,
+  re-inject them into the sandbox, relaunch. Thrash-guarded: repeated re-heals in
+  a short window mean cc-credentials isn't fixing it (most often a concurrent
+  rotator, but not always), so it stops and notifies. A dead Keychain token
+  notifies rather than loops.
+- **`rate-limit.json`** (ola exits 41) — nothing is broken; the subscription
+  window just has to run out. Sleep to the marker's `resets_at` (floored at 60s,
+  so a stale or missing epoch can't hot-spin), re-pull credentials — a five-hour
+  window outlives the OAuth token, so skipping this would bounce straight into an
+  auth escalation — then relaunch. Deliberately *not* thrash-guarded: a plan
+  outliving several windows is the case this exists for.
+
+Both markers are cleared before the launch loop starts, so only one written by
+*this* invocation is ever trusted. Because `sbx exec` never sources
 `~/.bashrc`, `ola-monitor`'s exec line also re-applies what login shells get for
 free: `SANDBOX=1`, and stripping the placeholder provider API keys `sbx` injects
 into every sandbox (`sbx secret import`'s services above) via `env -u` — a live
@@ -321,8 +334,8 @@ placeholder `ANTHROPIC_API_KEY` makes the `cc` backend fail with `Invalid API ke
 regardless of OAuth token freshness, which looks like but isn't the concurrent-
 rotator case. Both env fixups read `docker/placeholder-api-keys.txt` /
 `_ola_placeholder_keys` so the key list is declared once, not duplicated between
-the Dockerfile's `~/.bashrc` and `ola.sh`. Auth-only scope — no progress reporting
-of its own. Full contract in CLAUDE.md.
+the Dockerfile's `~/.bashrc` and `ola.sh`. Narrow scope — no progress reporting
+of its own (that's `ola-top`). Full contract in CLAUDE.md.
 
 `_ola_sandbox_prepare` (and `ola-sandbox`) take the **agent folder as an
 optional second argument**, defaulting to `../agent` — a project may hold one
@@ -347,7 +360,10 @@ before its own cleanup) was indistinguishable from a fresh one, so any
 unrelated `sbx exec`-level failure (like bug 1) got misdiagnosed as an auth
 escalation and pointlessly re-healed credentials that were never the problem.
 Fixed by clearing any marker present before the launch loop starts, so only a
-marker written during *this* invocation's own run is ever trusted.
+marker written during *this* invocation's own run is ever trusted. The
+rate-limit marker added in 2026-08 is swept on the same path, where a stale one
+would be worse still: the watcher would sleep towards an epoch that passed days
+ago and then relaunch a run that failed for an unrelated reason.
 
 ### Ports
 Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = ephemeral; loopback by default).
