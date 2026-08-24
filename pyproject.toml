@@ -1,6 +1,6 @@
 [project]
 name = "ola"
-version = "0.4.0"
+version = "0.5.0"
 description = "Outer Loop of Agents"
 requires-python = ">=3.12"
 # The OpenHands backend (`oh`) shells out to the standalone `openhands` CLI
