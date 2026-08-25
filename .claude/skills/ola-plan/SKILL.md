@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 1.4.0
+version: 1.5.0
 ---
 
 # Create an ola plan
@@ -39,11 +39,16 @@ so the skill is self-contained.)
   conversation history. Whatever context the task needs, it must be able to
   recover from the current state of the code — so each task description must be
   self-contained and point at the files/interfaces it touches.
-- **A worktree contains only committed files.** `git worktree add … HEAD` checks
-  out the tracked tree and nothing else, so an untracked or gitignored file
-  exists solely in the user's main working copy and is **invisible to every
-  task** — as is anything an earlier task produced but did not commit. No task
-  can fix this from inside a plan; it has to be true of the repo before the run.
+- **A worktree contains only what is committed at `HEAD`.** Each task gets
+  `git worktree add -b <branch> <path> HEAD`, so the task sees the project
+  exactly as the last commit left it. Three kinds of file are therefore
+  **invisible to every task**, and only the first is the one people think of:
+  a **gitignored** file; an **untracked** file (never `git add`ed — the common
+  case, because it is what a file *you just wrote* is); and a **staged or
+  modified but uncommitted** file, whose new content is not in `HEAD` yet.
+  Anything an earlier task produced but did not commit is invisible the same
+  way. No task can fix this from inside a plan; it has to be true of the repo
+  before the run.
 - **Checkbox is truth.** A task is complete only when its `- [ ]` becomes
   `- [x]`. Plans are markdown todo lists, nothing more.
 
@@ -147,6 +152,16 @@ Optional, per folder, when it helps:
     include `{{plan_path}}` and the tick instruction in a custom override.**
   - `{{blocked_cmd}}` — the command a task runs to self-report BLOCKED; include
     it so the janitor escape hatch still works.
+
+  **Every path a `TASK-PROMPT.md` names must exist in the project's `HEAD`.**
+  A prompt that opens with *"read `docs/design/<thing>.md` before you start"*
+  is the highest-leverage line in the file and the one most likely to be
+  broken, because that document is usually the **write-up of the planning
+  session you have just finished** — minutes old, sitting untracked in the
+  user's checkout. It is not gitignored, so it looks fine; it is simply not in
+  `HEAD`, so no worktree has it. Every task then starts by failing to find its
+  own authority and either guesses or blocks. Commit it (step 5b) before the
+  run, and verify with `git cat-file -e HEAD:<path>`.
 - **`.ola/concurrency`** — a single integer: how many tasks in this folder run
   at once (default 1). Set it (e.g. `4`) when a stage has many independent tasks
   worth running in parallel. The cap is re-read live during the run.
@@ -236,10 +251,11 @@ identifiable in the sweep.
 **Input data is the prerequisite most often missed.** If the plan reads a file
 the user supplied — an export, a fixture, a dump — walk the path from that file
 to the task that opens it, and make sure it is *committed* before the run starts.
-Vendoring it into the repo is not enough; a `.gitignore` rule for the directory
-it lands in silently un-does the vendoring, and the task sees an empty folder.
-The same applies between stages: if stage 02 writes a dataset that stage 03
-reads, that dataset must be tracked, or it dies with the worktree that made it.
+Vendoring it into the repo is not enough: dropping the file in place leaves it
+untracked, and a `.gitignore` rule for the directory it lands in silently un-does
+even a deliberate `git add`. The same applies between stages: if stage 02 writes
+a dataset that stage 03 reads, that dataset must be **committed by stage 02's
+task**, or it dies with the worktree that made it.
 
 When the data is sensitive and ignoring it was the point, resolve the conflict
 *with the user* before writing the plan — commit it to a private repo, or accept
@@ -250,6 +266,36 @@ run depend on state no worktree owns.
 Do **not** write any `PLAN.md` for work that genuinely needs a human decision
 that was never resolved in planning — leave it out and tell the user, rather
 than encoding a guess as a task.
+
+### 5b. Commit every file the tasks read
+
+This is an action, not a check. Collect every project-repo path the plan
+depends on — the design doc a `TASK-PROMPT.md` points at, input data the user
+supplied, fixtures, a schema, anything a task text names — and confirm each one
+is in `HEAD`:
+
+```sh
+cd <project-repo>
+git cat-file -e HEAD:docs/design/<thing>.md && echo present || echo MISSING
+```
+
+`git cat-file -e HEAD:<path>` is the one command that answers the actual
+question, because a worktree is carved from `HEAD`. It catches all three ways a
+file goes missing — ignored, untracked, and committed-but-since-modified — with
+no second check to keep in sync. `git check-ignore` is **not** a substitute: it
+answers only "is this ignored", and stays silent for an untracked file, which
+is the case that actually bites.
+
+Anything reported `MISSING` gets committed to the project repo *before* the run
+— that is part of writing the plan, not homework left to the user. Two paths
+need the user rather than a commit: a file that is ignored **on purpose**
+(secrets, a large export) — resolve it with them, as below — and a project with
+uncommitted work in progress that they may not want swept into a commit; show
+them the specific paths and let them stage those.
+
+Never plan around it. Copying a file between worktrees at runtime, or having
+task 01 regenerate the design doc, makes the run depend on state no worktree
+owns.
 
 ### 6. Show the user the tree and the reasoning
 
@@ -283,10 +329,13 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
 - Does any task start a **long-lived process**? If so: is it addressed by a
   per-task path rather than a shared port/name, is the task told to stop it, and
   does `run-init.sh` sweep what a crashed run would leave behind?
-- Is **every file a task reads committed**, including the user's input data and
-  anything an earlier stage hands to a later one? Run `git check-ignore` over
-  those paths rather than assuming — a file present in the user's checkout tells
-  you nothing about whether a worktree will have it.
+- Is **every file a task reads present in the project's `HEAD`** — including
+  any document a `TASK-PROMPT.md` points at, the user's input data, and
+  anything an earlier stage hands to a later one? Run
+  `git cat-file -e HEAD:<path>` on each, rather than assuming: a file sitting
+  in the user's checkout tells you nothing about whether a worktree will have
+  it, and `git check-ignore` will not tell you either — it is silent for the
+  untracked file, which is the usual failure.
 
 ## Example shape
 

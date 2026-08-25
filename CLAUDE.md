@@ -326,7 +326,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-design` | 1.9.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
-| `ola-plan` | 1.4.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); also the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts. |
+| `ola-plan` | 1.5.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts; and the rule that every path the tasks read — the planning session's own design doc above all — must be in the project's `HEAD` (`git cat-file -e HEAD:<path>`, not `git check-ignore`). |
 | `ola-release` | 1.0.1 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
