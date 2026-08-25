@@ -1,7 +1,7 @@
 ---
 name: ola-release
 description: Cut a new ola release — bump the version, publish the multi-arch sandbox template image to GHCR, and tag the repo, so that a fresh install on any machine pulls a sandbox image matching its CLI. Use when the user says "release ola", "cut a release", "make a new version", "publish the image", or asks how ola versioning and the sandbox image line up.
-version: 1.0.1
+version: 1.0.2
 ---
 
 # ola-release
@@ -128,14 +128,24 @@ token `_ola_inject_gh` pushes into every sandbox, so every live sandbox would ne
 reconnecting, and it hands package-write rights to every agent.
 
 Verify the credential *before* building — a stale one authenticates for pull and
-only fails at the final push, after the slow build:
+only fails at the final push, after the slow build. **Print the verdict, never the
+response body**: GHCR answers a `push,pull` scope request with a bearer token that
+is a base64 of the PAT itself, so echoing it puts a live `write:packages`
+credential into your terminal scrollback (and into the transcript of any agent
+running this for you). Ask `jq` whether the token exists instead of showing it:
 
 ```bash
 CRED=$(echo ghcr.io | docker-credential-osxkeychain get)
 U=$(jq -r .Username <<<"$CRED"); P=$(jq -r .Secret <<<"$CRED")
-curl -s -u "$U:$P" 'https://ghcr.io/token?scope=repository:atineose/ola:push,pull&service=ghcr.io'
-# {"token":"..."} → good.  {"errors":[{"code":"DENIED"}]} → credential lacks push.
+curl -s -u "$U:$P" 'https://ghcr.io/token?scope=repository:atineose/ola:push,pull&service=ghcr.io' \
+  | jq -e 'has("token")' >/dev/null && echo "push scope: OK" || echo "push scope: DENIED"
+unset CRED U P
 ```
+
+`DENIED` means the credential lacks `write:packages` — go back to the PAT step
+above. If a token body ever does reach a log or a shared transcript, treat the PAT
+as compromised and rotate it at github.com/settings/tokens; re-`docker login`
+afterwards.
 
 Then:
 
