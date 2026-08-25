@@ -1,7 +1,7 @@
 ---
 name: ola-release
 description: Cut a new ola release — bump the version, publish the multi-arch sandbox template image to GHCR, and tag the repo, so that a fresh install on any machine pulls a sandbox image matching its CLI. Use when the user says "release ola", "cut a release", "make a new version", "publish the image", or asks how ola versioning and the sandbox image line up.
-version: 1.0.2
+version: 1.1.0
 ---
 
 # ola-release
@@ -157,6 +157,24 @@ make release-image          # buildx, both platforms, tags X.Y.Z and latest, --p
 first use (the default `desktop-linux` driver cannot emit multi-platform manifests).
 Expect this to take a while — `--no-cache` plus an emulated amd64 leg.
 
+It also **tears that builder down when the build finishes**, pass or fail
+(`release-builder-clean`, which you can also run on its own). This is not
+tidiness — it is the difference between a flat disk and a full one. The builder
+keeps its cache in a Docker volume that only ever grows, and since the build
+passes `--no-cache` nothing ever reads it: one release cycle costs ~25 GB, and
+the volume had reached **73 GB** before anyone looked. It stays invisible to
+`docker system df` the whole time, because a running builder container makes its
+volume count as *active*, not reclaimable. The next `release-image` recreates
+the builder, so nothing is lost but the dead weight.
+
+Two details the target encodes, both learned the hard way: `docker buildx rm`
+can **report a timeout and still complete** — deleting tens of GB outlives the
+API deadline — so the target checks for a surviving volume afterwards rather
+than trusting the exit code, and warns loudly instead of silently retrying a
+hardcoded volume name. And cleanup never fails the release: the build's exit
+status is captured before teardown and re-raised after it, so a push that
+succeeded stays succeeded and a build that failed still fails.
+
 ### 6. Verify the push
 
 ```bash
@@ -260,7 +278,7 @@ something the release procedure can toggle.
 - [ ] Clean tree on `main`, `make test` and `make dashboard-test` green
 - [ ] `pyproject.toml` version bumped; `uv lock` run; `ola --version` reports it
 - [ ] Bump committed **before** the build
-- [ ] `make release-image` pushed `X.Y.Z` **and** `latest`
+- [ ] `make release-image` pushed `X.Y.Z` **and** `latest`, and reported the builder torn down
 - [ ] `make release-verify` lists both platforms
 - [ ] Real sandbox created from the registry image reports the right `ola --version`
 - [ ] `vX.Y.Z` tag created and pushed **after** verification

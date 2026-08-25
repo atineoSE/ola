@@ -1,4 +1,4 @@
-.PHONY: install install-skill test test-py test-sh test-e2e test-integration sandbox-dev dashboard dashboard-test release-image release-verify
+.PHONY: install install-skill test test-py test-sh test-e2e test-integration sandbox-dev dashboard dashboard-test release-image release-builder-clean release-verify
 
 # Version and image coordinates for a release. VERSION is read from
 # pyproject.toml — the single source of truth that `ola --version` and
@@ -30,7 +30,37 @@ release-image: ## Build + push the multi-arch release image ($(IMAGE_REPO):$(VER
 		-f docker/Dockerfile \
 		-t $(IMAGE_REPO):$(VERSION) \
 		-t $(IMAGE_REPO):latest \
-		--push .
+		--push . ; \
+	status=$$? ; \
+	$(MAKE) --no-print-directory release-builder-clean ; \
+	exit $$status
+
+# Tearing the builder down after every release is what keeps the disk flat. The
+# ola-release builder holds its cache in a Docker volume that only ever grows,
+# and because the build above passes --no-cache, no build ever reads it: it is
+# pure cost. It had reached 73 GB before anyone looked, and it never shows up as
+# reclaimable in `docker system df` while the builder container is running — it
+# counts as *active*. Recreated by release-image on the next run, so this is
+# self-healing, not something a release has to remember.
+#
+# Runs whether the build succeeded or failed (the build's status is preserved
+# and re-raised above): a failed build has already written the cache, and
+# --no-cache means a retry gains nothing by keeping it.
+#
+# Best-effort by design — cleanup must never be what fails a release that has
+# already pushed. Note `buildx rm` can report a timeout while still completing:
+# deleting tens of GB outlives the API deadline. Hence the check afterwards
+# rather than trusting the exit code, and a loud warning instead of a silent
+# hardcoded-name fallback if a volume survives.
+release-builder-clean: ## Remove the ola-release buildx builder and its cache volume
+	@docker buildx rm ola-release >/dev/null 2>&1 || true
+	@left="$$(docker volume ls -q --filter name=buildx_buildkit_ola-release)" ; \
+	if [ -n "$$left" ]; then \
+		echo "warning: builder cache volume(s) survived teardown: $$left" >&2 ; \
+		echo "         reclaim with: docker volume rm $$left" >&2 ; \
+	else \
+		echo "release builder torn down (recreated on the next release-image)" ; \
+	fi
 
 release-verify: ## Check the pushed release image exists for every target platform
 	@test -n "$(VERSION)" || { echo "Could not read version from pyproject.toml" >&2; exit 1; }
