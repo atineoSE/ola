@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 1.5.0
+version: 2.0.0
 ---
 
 # Create an ola plan
@@ -137,11 +137,16 @@ For each stage folder, write a `PLAN.md`:
 
 Optional, per folder, when it helps:
 
-- **`TASK-PROMPT.md`** — a per-task prompt template used to drive each task
-  reliably (e.g. project conventions, "run the test suite before ticking", how to
-  signal blocked). If omitted, ola uses a sensible default. Recommended for
-  non-trivial projects. A folder-local file **fully replaces** the default — ola
-  does not merge them — so it must itself carry every placeholder it needs:
+- **`TASK-PROMPT.md`** — **the only channel that carries anything from the
+  agent folder into a task.** A task's working directory is a worktree of the
+  *project* repo; ola never mounts, copies or names the agent folder there, so
+  a task cannot open the agent folder's own files. Whatever a fresh-context
+  agent must know that is not already in the project's code — the settled
+  design, the conventions, the decisions the planning session reached — has to
+  be **inlined into this template as prose**. If omitted, ola uses a sensible
+  default. Recommended for non-trivial projects. A folder-local file **fully
+  replaces** the default — ola does not merge them — so it must itself carry
+  every placeholder it needs:
   - `{{task_text}}`, `{{task_id}}` — the task and its id.
   - `{{plan_path}}` — the per-task PLAN.md path the agent must tick. This is
     load-bearing: a ticked checkbox is the **only** completion signal ola reads,
@@ -153,15 +158,29 @@ Optional, per folder, when it helps:
   - `{{blocked_cmd}}` — the command a task runs to self-report BLOCKED; include
     it so the janitor escape hatch still works.
 
-  **Every path a `TASK-PROMPT.md` names must exist in the project's `HEAD`.**
-  A prompt that opens with *"read `docs/design/<thing>.md` before you start"*
-  is the highest-leverage line in the file and the one most likely to be
-  broken, because that document is usually the **write-up of the planning
-  session you have just finished** — minutes old, sitting untracked in the
-  user's checkout. It is not gitignored, so it looks fine; it is simply not in
-  `HEAD`, so no worktree has it. Every task then starts by failing to find its
-  own authority and either guesses or blocks. Commit it (step 5b) before the
-  run, and verify with `git cat-file -e HEAD:<path>`.
+  **Inline the design; never point at it.** The tempting opening line is
+  *"read `docs/design/<thing>.md` before you start"* — and it is the single
+  most common way a plan fails. That document is the write-up of the planning
+  session you have just finished, so it is minutes old and untracked; it is
+  not gitignored, so it looks fine, but it is not in `HEAD` and therefore not
+  in any worktree. Every task then begins by failing to find its own authority
+  and either guesses or blocks. The reflex fix — commit the design doc to the
+  project repo — is the **wrong** one: it puts an artifact of *how the work was
+  scheduled* into the codebase permanently, to be read once by a robot. The
+  design belongs in the agent folder, and it reaches the task by being **part
+  of the prompt**.
+
+  **Slice it per stage.** You already decomposed the work into folders, and
+  there is one `TASK-PROMPT.md` per folder — so each stage's template carries
+  the part of the design *that stage implements*, not the whole document. A
+  fresh-context agent handed 25KB covering seven stages has to work out which
+  three of them apply to it; handed its own slice, it just builds. Keep the
+  full document in the agent folder (`design-notes.md`) as the human's copy
+  and the source you slice from — it is never read by an agent.
+
+  The rare exception is a path the **running code** opens — a fixture, an
+  export, a schema loaded at runtime. That is data, not instructions, and it
+  must be in `HEAD`; see step 5b.
 - **`.ola/concurrency`** — a single integer: how many tasks in this folder run
   at once (default 1). Set it (e.g. `4`) when a stage has many independent tasks
   worth running in parallel. The cap is re-read live during the run.
@@ -267,16 +286,26 @@ Do **not** write any `PLAN.md` for work that genuinely needs a human decision
 that was never resolved in planning — leave it out and tell the user, rather
 than encoding a guess as a task.
 
-### 5b. Commit every file the tasks read
+### 5b. Make every prerequisite reachable
 
-This is an action, not a check. Collect every project-repo path the plan
-depends on — the design doc a `TASK-PROMPT.md` points at, input data the user
-supplied, fixtures, a schema, anything a task text names — and confirm each one
-is in `HEAD`:
+List everything a task needs that is not already in the project's committed
+code, and sort each item into one of exactly two kinds. The test is a single
+question: **does the running code open this path, or does only the agent read
+it?**
+
+- **Only the agent reads it** — the design, conventions, decisions, background.
+  This is *instructions*, and it must not be a path at all. Inline it into that
+  stage's `TASK-PROMPT.md`, sliced to what the stage implements. Nothing is
+  added to the project repo. This is the common case, and the default.
+- **The code opens it** — a fixture a test loads, an export a script parses, a
+  schema the app reads at runtime. This is *data*: it is addressed by path at
+  runtime, so it has to be in the project's `HEAD` like any other source file.
+
+For every path in the second kind, verify rather than assume:
 
 ```sh
 cd <project-repo>
-git cat-file -e HEAD:docs/design/<thing>.md && echo present || echo MISSING
+git cat-file -e HEAD:tests/fixtures/<thing>.json && echo present || echo MISSING
 ```
 
 `git cat-file -e HEAD:<path>` is the one command that answers the actual
@@ -286,16 +315,20 @@ no second check to keep in sync. `git check-ignore` is **not** a substitute: it
 answers only "is this ignored", and stays silent for an untracked file, which
 is the case that actually bites.
 
-Anything reported `MISSING` gets committed to the project repo *before* the run
-— that is part of writing the plan, not homework left to the user. Two paths
-need the user rather than a commit: a file that is ignored **on purpose**
-(secrets, a large export) — resolve it with them, as below — and a project with
-uncommitted work in progress that they may not want swept into a commit; show
-them the specific paths and let them stage those.
+Anything reported `MISSING` gets committed before the run. Two situations need
+the user rather than a commit: a file ignored **on purpose** (secrets, a large
+export) — resolve it with them, as below — and a project carrying unrelated
+work in progress they may not want swept into a commit; show them the specific
+paths and let them stage those.
 
 Never plan around it. Copying a file between worktrees at runtime, or having
-task 01 regenerate the design doc, makes the run depend on state no worktree
-owns.
+task 01 regenerate a document later tasks read, makes the run depend on state
+no worktree owns.
+
+**When in doubt, it is instructions.** Misfiling data as instructions fails
+loudly and at once — the code cannot open a path that is not there. Misfiling
+instructions as data is what leaves a design document sitting in a codebase
+forever.
 
 ### 6. Show the user the tree and the reasoning
 
@@ -329,13 +362,17 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
 - Does any task start a **long-lived process**? If so: is it addressed by a
   per-task path rather than a shared port/name, is the task told to stop it, and
   does `run-init.sh` sweep what a crashed run would leave behind?
-- Is **every file a task reads present in the project's `HEAD`** — including
-  any document a `TASK-PROMPT.md` points at, the user's input data, and
-  anything an earlier stage hands to a later one? Run
-  `git cat-file -e HEAD:<path>` on each, rather than assuming: a file sitting
-  in the user's checkout tells you nothing about whether a worktree will have
-  it, and `git check-ignore` will not tell you either — it is silent for the
-  untracked file, which is the usual failure.
+- Does any `TASK-PROMPT.md` **point at a document instead of carrying it**? A
+  task cannot open the agent folder, and the design write-up is not in the
+  project's `HEAD`, so a pointer reaches nothing — inline that stage's slice as
+  prose. Grep your own templates for `read `, `see ` and `.md` before you
+  finish.
+- For the paths that remain — the ones **running code opens**, plus anything an
+  earlier stage hands to a later one — is each present in the project's `HEAD`?
+  Run `git cat-file -e HEAD:<path>` on each rather than assuming: a file
+  sitting in the user's checkout tells you nothing about whether a worktree
+  will have it, and `git check-ignore` will not tell you either — it is silent
+  for the untracked file, which is the usual failure.
 
 ## Example shape
 
