@@ -607,6 +607,15 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             # transcript — so stats are recovered *after* this returns.
             self._teardown(child)
 
+        # Reaching here means no banner matched — the turn ended normally, or
+        # timed out. Log the tail anyway: the screen is this backend's only
+        # wire, and a *missed* limit banner leaves no other trace, because such
+        # a turn reads as finished-but-unticked and the scheduler drops
+        # ``output`` on that path. Without this the evidence costs another full
+        # window to reproduce, which is why _LIMIT_MARKERS are still unpinned.
+        # Drop this once they are pinned to a live capture.
+        logger.debug("ct: end-of-turn screen tail:\n%s", output[-1000:])
+
         stats = self._recover_stats(config_dir, before, error_type)
         return AgentResponse(output=output, success=success, stats=stats)
 

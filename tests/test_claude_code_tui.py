@@ -434,6 +434,27 @@ def test_run_rate_limited_before_the_prompt_is_pasted(monkeypatch):
     assert resp.stats.error_type == "rate_limited"
 
 
+def test_run_logs_the_screen_tail_when_no_banner_matched(monkeypatch, caplog):
+    """A missed limit banner must not vanish.
+
+    _LIMIT_MARKERS are not yet pinned to a live capture, so a banner they miss
+    reads as a finished-but-unticked turn — and the scheduler drops `output` on
+    that path. The DEBUG tail is the only surviving evidence, and reproducing it
+    otherwise costs another five-hour window.
+    """
+    import logging
+
+    fake = FakePty()
+    monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: fake)
+
+    with caplog.at_level(logging.DEBUG, logger="ola.agents.claude_code_tui"):
+        ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
+
+    tails = [r for r in caplog.records if "end-of-turn screen tail" in r.message]
+    assert tails, "no screen tail logged"
+    assert READY_SPACELESS in tails[-1].getMessage()
+
+
 def test_run_pty_alloc_failure(monkeypatch):
     def boom(*a, **k):
         raise OSError("out of pty devices")
