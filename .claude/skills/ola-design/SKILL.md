@@ -1,7 +1,7 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.11.0
+version: 1.12.0
 # 1.9.0: sharpen the shared-resource item — the harness stops and lets the
 #         supervisor wait, rather than sleeping in-process behind a duration
 #         threshold (minor: tightens 1.8.0's guidance, no rule reversed).
@@ -199,8 +199,12 @@ the answer is wrong:
   re-derive an unchanged plan, and `ct` waits instead. That is not the banned
   threshold — the branch is the CLI *stating its own intent*, a fact read off
   the wire, not a constant the harness picked. Where the CLI states nothing
-  (no parsable reset), waiting for an unknown duration is worse than stopping,
-  so it escalates as usual.
+  (no parsable reset), `ct` derives the next five-hour window boundary rather
+  than stopping — a wrong guess is recoverable there because waking early only
+  costs polling, so the usual "don't invent a duration" caution is outweighed.
+  Removing a reaction removes its plumbing too: `ct` no longer raises the
+  rate-limit escalation at all, and the branch was deleted rather than left
+  behind as something that can never fire.
 - Does it give each distinct terminal run-state its own process exit code
   (generic `1`, `128+signum` operator-interrupt, `40` Claude Code
   auth-escalation, `41` rate-limit escalation — see `RunInterrupted`/

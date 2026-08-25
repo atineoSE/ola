@@ -418,30 +418,33 @@ def test_run_auth_error_returns_friendly_message(monkeypatch):
     assert "Authentication failed" in resp.output
 
 
-def test_run_rate_limited_escalates_instead_of_looking_successful(monkeypatch):
-    """A limited turn goes silent at once — quiescence must not read as done.
+def test_run_parks_on_the_derived_boundary_when_no_reset_time_is_shown(monkeypatch):
+    """No readable reset time must not mean no wait.
 
-    Regression for the stall the ``cc`` backend hit: the scheduler saw an agent
-    that "succeeded" without ticking its checkbox, called it stagnant, and let
-    every task burn its attempts against a wall that had not moved. Here the
-    banner is on screen *and* the pty has gone quiet after printing it, which is
-    exactly the shape the end-of-turn heuristic would otherwise accept.
+    Windows are five hours on a known grid, so a derived boundary beats both
+    guessing and aborting. Regression for the 2026-08-25 run: escalating here
+    handed ola-monitor a null resets_at, it fell back to its 60s floor, and a
+    27-minute window cost ~23 relaunches.
     """
+    start = datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()
+    clock = {"t": start}
+    monkeypatch.setattr(ct.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(
+        ct.time, "sleep", lambda n=0: clock.__setitem__("t", clock["t"] + max(n, 1))
+    )
+    boundary = ct.next_window_boundary(start)
 
     class LimitedPty(FakePty):
-        """Banner is printed (activity), then the pty goes quiet for good."""
-
         def tail(self, n=4000):
             return (
                 self.ready_screen if not self.paste_done else LIMIT_SCREEN_NO_TIME
             )
 
         def idle_for(self):
-            if not self.paste_done:
+            if not self.paste_done or clock["t"] < boundary:
                 return 99.0
             self._busy_polls += 1
-            # One poll of activity — the banner reaching the pty — then silence,
-            # which is precisely what _await_turn_end accepts as end-of-turn.
             return 0.1 if self._busy_polls == 1 else 99.0
 
     fake = LimitedPty()
@@ -449,53 +452,43 @@ def test_run_rate_limited_escalates_instead_of_looking_successful(monkeypatch):
 
     resp = ClaudeCodeTUIAgent(model="opus").run("x", "/tmp/wd", state_dir=None)
 
-    assert resp.success is False
-    # What the scheduler keys on to abort the run once (exit 41 + marker)
-    # rather than fail task-by-task.
-    assert resp.stats.error_type == "rate_limited"
-    # The TUI shows the reset time as prose, so there is no epoch for the
-    # marker — ola-monitor falls back to its floor wait.
-    assert resp.stats.rate_limit_resets_at is None
-    assert resp.stats.error_message == ct._RATE_LIMIT_MESSAGE
-    # The banner itself stays diagnosable in the output.
-    assert "usage limit reached" in resp.output.lower()
-    # Teardown still ran, so no pty is leaked on the escalation path.
-    assert fake.alive() is False
+    # It waited rather than aborting the run.
+    assert resp.stats.error_type != "rate_limited"
+    assert clock["t"] >= boundary
+    assert fake.alive() is False  # teardown still ran
 
 
-def test_run_rate_limited_before_the_prompt_is_pasted(monkeypatch):
-    """A banner already on screen at startup must not wait out _READY_TIMEOUT."""
+def test_run_parks_when_the_banner_is_up_before_the_prompt_is_pasted(monkeypatch):
+    """The real capture hit _await_ready, 5s after spawn — not the mid-turn path.
 
-    class LimitedPty(FakePty):
-        def tail(self, n=4000):
-            return LIMIT_SCREEN_NO_TIME
-
-    monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: LimitedPty())
-
-    resp = ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
-    assert resp.success is False
-    assert resp.stats.error_type == "rate_limited"
-
-
-def test_run_logs_the_screen_tail_when_no_banner_matched(monkeypatch, caplog):
-    """A missed limit banner must not vanish.
-
-    _LIMIT_MARKERS are not yet pinned to a live capture, so a banner they miss
-    reads as a finished-but-unticked turn — and the scheduler drops `output` on
-    that path. The DEBUG tail is the only surviving evidence, and reproducing it
-    otherwise costs another five-hour window.
+    A park wired only into _await_turn_end would never have fired for it.
     """
-    import logging
+    start = datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()
+    clock = {"t": start}
+    monkeypatch.setattr(ct.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(
+        ct.time, "sleep", lambda n=0: clock.__setitem__("t", clock["t"] + max(n, 1))
+    )
+    reset = datetime(2026, 8, 25, 16, 0, tzinfo=timezone.utc).timestamp()
 
-    fake = FakePty()
+    class LimitedAtStartupPty(FakePty):
+        """Banner up instead of a ready box, until the window reopens."""
+
+        def tail(self, n=4000):
+            if clock["t"] < reset:
+                return LIMIT_SCREEN_REAL
+            return super().tail(n)
+
+    fake = LimitedAtStartupPty()
     monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: fake)
 
-    with caplog.at_level(logging.DEBUG, logger="ola.agents.claude_code_tui"):
-        ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
+    resp = ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
 
-    tails = [r for r in caplog.records if "end-of-turn screen tail" in r.message]
-    assert tails, "no screen tail logged"
-    assert READY_SPACELESS in tails[-1].getMessage()
+    assert resp.stats.error_type != "rate_limited"
+    # Waited to the stated 4pm UTC reset rather than timing out on ready.
+    assert clock["t"] >= reset
+    assert any(b"\x1b[200~" in sent for sent in fake.sent), "prompt never pasted"
 
 
 def test_run_parks_and_continues_when_the_tui_will_resume_itself(monkeypatch):

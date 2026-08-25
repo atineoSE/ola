@@ -38,8 +38,10 @@ CLI during a spike (see git history / the ``ct`` skill):
   session and its context. Restarting it would throw that away to re-derive a
   plan that has not changed, so :meth:`_park_for_limit` holds the turn until the
   reset the banner states (:func:`parse_reset_at` reads it out of the prose).
-  Escalation remains for the case where no reset time can be read — parking for
-  an unknown duration is the one situation where stopping really is better.
+  When the reset time will not parse it falls back to the next five-hour window
+  boundary (:func:`next_window_boundary`). So this backend never raises a
+  rate-limit escalation: ``error_type="rate_limited"`` and exit 41 are ``cc``'s
+  alone.
 * **Metrics, post-turn.** Any session that runs long enough to flush persists a
   full transcript under ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl``.
   On teardown (after ``/exit`` flushes it) we read that transcript and recover
@@ -64,6 +66,7 @@ import termios
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from ola.agents.base import AgentResponse, ProgressCallback
@@ -77,18 +80,6 @@ from ola.agents.claude_code import (
 from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
-
-
-class RateLimitedError(Exception):
-    """The subscription window is exhausted — global, not this task's fault.
-
-    TUI-only. ``cc`` reads the CLI's structured ``rate_limit_event`` off the
-    ``--print`` stream and returns a response; the interactive TUI emits no
-    machine-readable stream at all, so the *screen* is the only wire this
-    backend has and a banner is the only shape the condition takes here. Same
-    single-detector rule as ``cc``: one condition, read from the transport the
-    CLI actually uses.
-    """
 
 
 # A pty needs a window size or the full-screen TUI will not render its box.
@@ -167,15 +158,6 @@ _LIMIT_MARKERS = (
     "reachedyourweeklylimit",
 )
 
-# Reported as ``stats.error_message``, which the scheduler copies verbatim into
-# <agent-folder>/monitor/rate-limit.json for ola-monitor to print. The TUI shows
-# the reset time as prose only, so unlike ``cc`` there is no epoch to hand over
-# and ``rate_limit_resets_at`` stays None — the watcher then falls back to its
-# floor wait (_OLA_MONITOR_RL_MIN_WAIT) rather than sleeping to a real reset.
-_RATE_LIMIT_MESSAGE = (
-    "usage limit reached (interactive TUI); reset time not stated on screen"
-)
-
 # "…resets 4pm (UTC)", "…continuing automatically at 4pm", "…at 3:30pm".
 # Matched against compact() output, so no whitespace and the parenthesised
 # timezone (when present) runs straight into the time. The banner states the
@@ -191,6 +173,25 @@ _RESET_RE = re.compile(
 # which is the safe direction: ola-monitor waits instead, rather than this
 # process parking for a day on a bad regex hit.
 _MAX_PARK_SEC = 6 * 3600
+
+# Subscription windows are five hours long and, for this account, fall on a
+# boundary at 18:00 Europe/Madrid — so 18:00, 23:00, 04:00, 09:00, 14:00 local.
+# Used only when the banner's own reset time cannot be read: a derived boundary
+# is a good guess, never better than what the CLI actually said.
+#
+# This is an empirical observation about one account, not a documented API. The
+# window is *rolling* — anchored to the first message after an idle stretch — so
+# the phase can drift, and this constant is where to correct it when it does.
+# Drift is survivable by construction: waking early is harmless (the park resets
+# ``saw_activity``, so the turn cannot end until the TUI actually produces
+# output again), and waking late only wastes idle time.
+# The grid is continuous from one *observed* boundary, not re-derived daily:
+# 24 hours is not a multiple of 5, so the wall-clock hour shifts by an hour each
+# day and any "every day at HH:00" formulation is wrong within a day. Stepping
+# on the epoch also keeps a window five real hours long across a DST change.
+_WINDOW_HOURS = 5
+_WINDOW_ANCHOR_LOCAL = "2026-08-25 18:00"
+_WINDOW_ANCHOR_TZ = "Europe/Madrid"
 
 # Sleep a little past the stated reset: the banner states the reset to the
 # minute, and coming back a few seconds early just re-parks.
@@ -223,6 +224,25 @@ def is_auth_error(screen: str) -> bool:
 
 def is_rate_limited(screen: str) -> bool:
     return any(m in compact(screen) for m in _LIMIT_MARKERS)
+
+
+def next_window_boundary(now: float | None = None) -> float:
+    """Next five-hour subscription-window boundary, as epoch seconds.
+
+    The fallback for a banner whose reset time will not parse. Five-hour windows
+    stepping from one boundary this account was observed to hit
+    (:data:`_WINDOW_ANCHOR_LOCAL`, the reset in the 2026-08-25 capture).
+    """
+    now = time.time() if now is None else now
+    anchor = datetime.strptime(_WINDOW_ANCHOR_LOCAL, "%Y-%m-%d %H:%M").replace(
+        tzinfo=ZoneInfo(_WINDOW_ANCHOR_TZ)
+    )
+    step = _WINDOW_HOURS * 3600
+    # Floor division walks to the boundary at or before *now* (correct for
+    # instants before the anchor too, where the quotient is negative), then one
+    # step forward gives the next one strictly ahead.
+    elapsed = now - anchor.timestamp()
+    return anchor.timestamp() + (elapsed // step + 1) * step
 
 
 def parse_reset_at(screen: str, now: float | None = None) -> float | None:
@@ -560,26 +580,6 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                     models=[self.model] if self.model else [],
                 ),
             )
-        except RateLimitedError as exc:
-            # ``ct`` drives the same subscription as ``cc``, so a window
-            # rejection is global for the same reason a dead credential is:
-            # one shared resource behind every task. error_type="rate_limited"
-            # is what the scheduler keys on to abort the run once (exit 41 +
-            # the host-visible marker) instead of failing task-by-task. The
-            # screen tail goes in `output` so the failure is diagnosable;
-            # error_message stays flat because it lands in the marker JSON
-            # ola-monitor greps.
-            logger.warning("ct: subscription limit banner on screen — %s", exc)
-            return AgentResponse(
-                output=str(exc),
-                success=False,
-                stats=IterationStats(
-                    streamed=False,
-                    error_type="rate_limited",
-                    error_message=_RATE_LIMIT_MESSAGE,
-                    models=[self.model] if self.model else [],
-                ),
-            )
 
     # --- internals ---
 
@@ -725,14 +725,21 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         """Wait until the input box appears, clearing the trust dialog if shown."""
         deadline = time.monotonic() + _READY_TIMEOUT_SEC
         trust_handled = False
+        parked = False  # one park per wait; see _await_turn_end
         while time.monotonic() < deadline:
             if not child.alive():
                 return False
             screen = child.tail()
             if is_auth_error(screen):
                 raise AuthenticationError(strip_ansi(screen)[-500:])
-            if is_rate_limited(screen):
-                raise RateLimitedError(strip_ansi(screen)[-500:])
+            # The limit banner is usually already up here, before the prompt is
+            # ever pasted — the 2026-08-25 capture hit this branch five seconds
+            # after spawn, not the mid-turn one. Park the same way: the TUI is
+            # going to sit there until the window reopens either way.
+            if not parked and is_rate_limited(screen):
+                parked = True
+                deadline += self._park_for_limit(child, screen, None)
+                continue
             if is_trust_dialog(screen) and not trust_handled:
                 trust_handled = True
                 logger.debug("ct: trust dialog shown — sending Enter to accept")
@@ -779,9 +786,13 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             if not parked and is_rate_limited(screen):
                 parked = True
                 deadline += self._park_for_limit(child, screen, on_progress)
-                # The window has reopened and the TUI is picking the turn back
-                # up. Its own output is the activity that ends the turn, so fall
-                # through to the ordinary quiescence logic from here.
+                # Forget any activity seen before the limit hit. The turn may
+                # only end on output the TUI produces *after* resuming, so a
+                # park that wakes early (a derived boundary can be off) just
+                # keeps polling instead of reading the parked silence as a
+                # finished turn — the stagnation bug this whole path exists to
+                # avoid.
+                saw_activity = False
                 continue
             idle = child.idle_for()
             if idle < 1.0:
@@ -825,7 +836,18 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         """
         reset_at = parse_reset_at(screen)
         if reset_at is None:
-            raise RateLimitedError(strip_ansi(screen)[-500:])
+            # The banner said something we could not read. Windows are five
+            # hours on a known grid, so a derived boundary beats both guessing
+            # and giving up — and being wrong is survivable in a way it is not
+            # elsewhere: waking early costs a busier poll (the caller clears
+            # ``saw_activity``, so the turn cannot end until the TUI really
+            # resumes), waking late costs idle time bounded by one window.
+            reset_at = next_window_boundary()
+            logger.warning(
+                "ct: usage limit reached but no reset time on screen — "
+                "falling back to the next %dh window boundary.",
+                _WINDOW_HOURS,
+            )
 
         wait = max(0.0, reset_at - time.time()) + _PARK_GRACE_SEC
         resumes = datetime.fromtimestamp(reset_at).strftime("%H:%M")

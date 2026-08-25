@@ -61,11 +61,31 @@ banner's prose) instead of escalating. This is an exception to "ola never waits
 out a window", not an oversight: that rule assumes the turn is *dead* and there
 is no in-flight work to protect, which is true of `cc` and false here — and the
 signal that distinguishes them is the CLI stating its own intent on screen, not
-a duration threshold ola invented. Escalation (exit 41 + marker) remains for the
-case where no reset time can be parsed, because parking for an *unknown*
-duration is the one situation where stopping and letting the supervisor wait
-really is better. The limit markers and the reset parser are pinned to a live
-capture from 2026-08-25; the other marker variants are still unobserved.
+a duration threshold ola invented.
+
+When the banner's reset time will not parse, `ct` falls back to the next
+five-hour **window boundary** (`next_window_boundary`), a continuous grid
+stepping from one boundary this account was observed to hit — not a daily
+"every day at HH:00", since 24 is not a multiple of 5 and the wall-clock hour
+therefore shifts an hour per day. Being wrong is survivable by construction:
+waking early only costs a busier poll, because the park clears `saw_activity`
+so the turn cannot end until the TUI actually produces output again; waking
+late costs idle time bounded by one window. The anchor is an empirical fact
+about one account (the window is *rolling*, anchored to first use after an idle
+stretch), so `_WINDOW_ANCHOR_LOCAL` is where to correct the phase when it
+drifts.
+
+**`ct` therefore never raises a rate-limit escalation.** `error_type=
+"rate_limited"`, `rate-limit.json` and exit 41 are now `cc`-only; the `ct` path
+that used to raise them is gone rather than left as a branch that can no longer
+fire. The residual risk is a limit the TUI does *not* self-continue (a weekly
+cap, say): `ct` would park, wake, find itself still blocked, and eventually fail
+the turn on `_TURN_TIMEOUT_SEC` — an ordinary non-stagnant failure that
+requeues, not a fast global abort. If that shows up in practice, that is the
+signal to bring a bounded escalation back.
+
+The limit markers and the reset parser are pinned to a live capture from
+2026-08-25; the other marker variants are still unobserved.
 
 ### Claude Code credentials (`cc`/`ct`)
 
@@ -353,7 +373,7 @@ its frontmatter (semver, starting at `1.0.0`).
 
 | Skill | Version | Purpose |
 |-------|---------|---------|
-| `ola-design` | 1.11.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
+| `ola-design` | 1.12.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 2.0.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts; and the instructions-vs-data split — a task cannot open the agent folder, so the design is **inlined per stage into `TASK-PROMPT.md`** and never pointed at or committed to the project repo, while paths the *running code* opens must be in `HEAD` (`git cat-file -e HEAD:<path>`, not `git check-ignore`). |
