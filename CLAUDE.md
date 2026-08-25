@@ -102,6 +102,18 @@ never sources `~/.bashrc`, so it strips the same keys itself with `env -u`
 `_ola_placeholder_keys` in `ola.sh`). If you ever see `Invalid API key` instead
 of an OAuth-shaped auth error, suspect this before suspecting the token.
 
+Per-task config dirs live *inside the agent folder*
+(`<numbered-folder>/.claude/<task-id>/`), which ola commits wholesale on every
+tick and janitor pass — so the folder's `.git/info/exclude` carries every
+backend's state-dir name (`.claude/`, `.openhands/`, `.codex/`), and any
+already-committed ones are dropped from the index on the next run
+(`loop._exclude_agent_state`). Without it the harness commits a live
+`sk-ant-oat01-` token into the plan database. The rule is deliberately *not*
+mirrored onto the project repo, whose own `.claude/` is tracked source; and it
+is `info/exclude` rather than `.gitignore` because it is ola's bookkeeping, not
+the user's. Excluding does not rewrite history — an agent folder that already
+committed tokens keeps them in old commits, so purge before adding a remote.
+
 ### `cc` failure classification
 
 The `cc` backend (`src/ola/agents/claude_code.py`) differentiates three

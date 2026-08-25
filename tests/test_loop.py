@@ -925,3 +925,85 @@ def test_log_attention_summary_silent_when_clean(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="ola.loop"):
         _log_attention_summary(tmp_path)
     assert caplog.records == []
+
+
+# --- per-task agent state (credentials!) git exclusion ---
+
+
+def _tiny_repo(path):
+    import subprocess
+
+    def _g(*args):
+        subprocess.run(["git", *args], cwd=str(path), capture_output=True, check=True)
+
+    _g("init", "-b", "main")
+    _g("config", "user.email", "t@e.com")
+    _g("config", "user.name", "T")
+    _g("config", "commit.gpgsign", "false")
+    return _g
+
+
+def test_exclude_agent_state_covers_every_backend(tmp_path):
+    from ola.agents import STATE_DIR_NAMES
+    from ola.loop import _exclude_agent_state
+
+    _tiny_repo(tmp_path)
+    _exclude_agent_state(tmp_path)
+    _exclude_agent_state(tmp_path)  # idempotent
+
+    lines = (tmp_path / ".git" / "info" / "exclude").read_text().splitlines()
+    for name in STATE_DIR_NAMES:
+        assert lines.count(f"{name}/") == 1
+    assert ".claude/" in lines
+
+
+def test_exclude_agent_state_untracks_committed_credentials(tmp_path):
+    """An agent folder that predates the fix heals: credentials leave the
+    index (and every future commit), but stay on disk for the live run."""
+    import subprocess
+
+    from ola.loop import _exclude_agent_state
+
+    _g = _tiny_repo(tmp_path)
+    creds = tmp_path / "01-phase" / ".claude" / "t-abc" / ".credentials.json"
+    creds.parent.mkdir(parents=True)
+    creds.write_text('{"claudeAiOauth": {"accessToken": "sk-ant-oat01-XXXX"}}')
+    plan = tmp_path / "01-phase" / "PLAN.md"
+    plan.write_text("- [ ] Task A\n")
+    _g("add", "-A")
+    _g("commit", "-m", "init")
+
+    _exclude_agent_state(tmp_path)
+
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=str(tmp_path), capture_output=True, text=True
+    ).stdout.split()
+    assert "01-phase/PLAN.md" in tracked
+    assert not [p for p in tracked if ".credentials.json" in p]
+    # The running task still needs its config dir on disk.
+    assert creds.exists()
+
+    # And a later wholesale commit must not sweep it back in.
+    (tmp_path / "01-phase" / "PLAN.md").write_text("- [x] Task A\n")
+    subprocess.run(
+        ["sh", "-c", "git add -A && git commit -m tick"],
+        cwd=str(tmp_path),
+        capture_output=True,
+    )
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=str(tmp_path), capture_output=True, text=True
+    ).stdout.split()
+    assert not [p for p in tracked if ".credentials.json" in p]
+
+
+def test_project_repo_keeps_its_own_dot_claude(tmp_path):
+    """The project repo's .claude/ is real source (skills, settings) — only
+    the agent folder gets the state-dir exclusion."""
+    from ola.loop import _ensure_git
+
+    _tiny_repo(tmp_path)
+    _ensure_git(tmp_path)  # agent_state defaults off
+
+    lines = (tmp_path / ".git" / "info" / "exclude").read_text().splitlines()
+    assert ".ola/" in lines
+    assert ".claude/" not in lines

@@ -3,7 +3,7 @@
 import json
 import logging
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from ola.agents.base import Agent
@@ -26,8 +26,14 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return result
 
 
-def _ensure_git(cwd: Path) -> None:
-    """Ensure a git repo exists in cwd; initialise one if not."""
+def _ensure_git(cwd: Path, agent_state: bool = False) -> None:
+    """Ensure a git repo exists in cwd; initialise one if not.
+
+    *agent_state* marks the agent folder, where per-task backend state
+    directories are also excluded and purged from the index — see
+    :func:`_exclude_agent_state`. It is off for the project repo, whose own
+    ``.claude/`` (skills, settings) is legitimately tracked source.
+    """
     # Mark directory safe — mounted volumes have different ownership than the
     # container user, which makes git refuse to operate.
     _git(cwd, "config", "--global", "--add", "safe.directory", str(cwd))
@@ -39,6 +45,8 @@ def _ensure_git(cwd: Path) -> None:
         _git(cwd, "init")
         _git_commit(cwd, "Initial commit")
     _exclude_ola_artifacts(cwd)
+    if agent_state:
+        _exclude_agent_state(cwd)
 
 
 def _git_path(cwd: Path, relpath: str) -> Path | None:
@@ -60,24 +68,84 @@ def _git_path(cwd: Path, relpath: str) -> Path | None:
     return cwd / result.stdout.decode().strip()
 
 
-def _exclude_ola_artifacts(cwd: Path) -> None:
-    """Idempotently exclude ``.ola/`` runtime artifacts from git.
+def _git_exclude(cwd: Path, patterns: tuple[str, ...]) -> None:
+    """Idempotently add *patterns* to the repo's ``.git/info/exclude``.
 
-    Uses ``.git/info/exclude`` — shared by every worktree of the repo and
-    invisible to the user's own ``.gitignore``. Without it the provisioned
-    ``.ola/bin/ola-blocked`` script and other sidecar files would be swept
-    into ``git add -A`` commits.
+    ``info/exclude`` — not ``.gitignore`` — because these are ola's own
+    bookkeeping rules: shared by every worktree of the repo, invisible to
+    (and unclobberable by) the user's own ignore file.
     """
     exclude = _git_path(cwd, "info/exclude")
     if exclude is None or not exclude.parent.is_dir():
         return
     existing = exclude.read_text() if exclude.exists() else ""
-    if ".ola/" in existing.splitlines():
+    missing = [p for p in patterns if p not in existing.splitlines()]
+    if not missing:
         return
     with open(exclude, "a") as f:
         if existing and not existing.endswith("\n"):
             f.write("\n")
-        f.write(".ola/\n")
+        f.write("".join(f"{p}\n" for p in missing))
+
+
+def _exclude_ola_artifacts(cwd: Path) -> None:
+    """Idempotently exclude ``.ola/`` runtime artifacts from git.
+
+    Without it the provisioned ``.ola/bin/ola-blocked`` script and other
+    sidecar files would be swept into ``git add -A`` commits.
+    """
+    _git_exclude(cwd, (".ola/",))
+
+
+def _exclude_agent_state(cwd: Path) -> None:
+    """Keep per-task backend state out of the agent folder's git history.
+
+    ``per_task_state_dir`` puts each task's backend state in
+    ``<folder>/<state_dir_name>/<task_id>/``, and for Claude Code that
+    includes a live OAuth token in ``.credentials.json``. The agent folder is
+    committed wholesale (``git add -A``) on every tick and janitor pass, so
+    without this the harness commits provider credentials — plus megabytes of
+    session logs — into the plan database. Every backend's directory name is
+    excluded, not just the configured one: a folder may be re-run with a
+    different ``-a``.
+
+    Already-committed state is dropped from the index too (working tree
+    untouched), so an agent folder that predates this heals on its next run.
+    History is not rewritten — that is the human's call, and their call alone
+    if the repo has a remote.
+    """
+    from ola.agents import STATE_DIR_NAMES
+
+    _git_exclude(cwd, tuple(f"{name}/" for name in STATE_DIR_NAMES))
+    _untrack_agent_state(cwd, set(STATE_DIR_NAMES))
+
+
+def _untrack_agent_state(cwd: Path, names: set[str]) -> None:
+    """``git rm --cached`` every tracked file under a backend state dir."""
+    result = subprocess.run(["git", "ls-files", "-z"], cwd=cwd, capture_output=True)
+    if result.returncode != 0:
+        return
+    stale = [
+        path
+        for path in result.stdout.decode(errors="replace").split("\0")
+        if path and names.intersection(PurePosixPath(path).parts[:-1])
+    ]
+    if not stale:
+        return
+    logger.warning(
+        "Removing %d tracked agent-state file(s) (credentials, session logs)"
+        " from %s — history is untouched; purge it yourself if it ever had a"
+        " remote.",
+        len(stale),
+        cwd,
+    )
+    for i in range(0, len(stale), 200):
+        subprocess.run(
+            ["git", "rm", "--cached", "-q", "--", *stale[i : i + 200]],
+            cwd=cwd,
+            capture_output=True,
+        )
+    _git_commit(cwd, "ola: untrack per-task agent state")
 
 
 def _clear_lock(cwd: Path) -> None:
@@ -230,7 +298,7 @@ def run_outer_loop(
     # The agent folder is committed to for checkbox ticks; the project repo is
     # the worktree source. Both need to be initialised and have their .ola/
     # runtime artifacts excluded from git.
-    _ensure_git(plan_path)
+    _ensure_git(plan_path, agent_state=True)
     _ensure_git(project_path)
 
     # One folder per discovery pass: a janitor may create a letter-suffixed

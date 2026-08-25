@@ -1,7 +1,7 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.9.0
+version: 1.10.0
 # 1.9.0: sharpen the shared-resource item — the harness stops and lets the
 #         supervisor wait, rather than sleeping in-process behind a duration
 #         threshold (minor: tightens 1.8.0's guidance, no rule reversed).
@@ -116,6 +116,17 @@ the answer is wrong:
   must never gate the next run — the dev re-runs ola repeatedly, fixing things
   between runs. Prior results persist solely as monitor history (events.jsonl /
   STATS.jsonl) on a read-only path that never feeds execution.
+- Does anything new written **inside the agent folder** belong in the plan
+  database, or is it runtime scratch that a wholesale `git add -A` would
+  commit? The folder is committed on every tick and janitor pass, so a path
+  ola writes there is a path ola *publishes*. Per-task backend state
+  (`<folder>/.claude|.openhands|.codex/<task-id>/`) is the sharp case: it
+  carries a live provider OAuth token plus megabytes of session logs. Such
+  paths go in `.git/info/exclude` — ola's own bookkeeping, not the user's
+  `.gitignore` — for **every** backend, not just the configured one, and
+  already-committed ones get dropped from the index so an older folder heals
+  on its next run (`_exclude_agent_state` in `loop.py`). Never mirror such a
+  rule into the *project* repo's exclude: its `.claude/` is real source.
 - Does it preserve task independence, or does it introduce coupling between
   tasks inside one plan? Dependent work belongs in a later folder.
 - Does it keep orchestration file-driven and auditable, or does it move state
