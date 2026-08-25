@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.7.0
+version: 2.7.1
 ---
 
 # sbx — Docker Sandbox CLI
@@ -260,8 +260,10 @@ the host, not looped back inside the sandbox.
   made — and re-running `cc-credentials` alone cannot fix it, because the file it
   refreshes is never read. Two guards, both automatic: `cc-credentials` sweeps
   *expired* `Claude Code-credentials-*` entries (leaving the default entry and any
-  live one alone), and the `cc` backend deletes the entry keyed to a task's config
-  dir whenever it refreshes that dir's credentials. **This is host-only** — inside
+  live one alone), and the `cc` and `ct` backends delete the entry keyed to a
+  task's config dir whenever they refresh that dir's credentials (`ct` builds
+  the same task-id-derived dirs, so it inherits the same trap). **This is
+  host-only** — inside
   the sandbox there is no Keychain, so the injected file is already the sole
   credential source and the failure cannot occur. It bites `ola --skip-sandbox`.
 - **GitHub CLI (`gh`) auth**: on every create **and** reconnect, `ola-sandbox` also

@@ -43,6 +43,21 @@ timings (TTFT, decode-isolated tok/sec), which are never written to disk, and
 nothing for a session too short to flush. Use `cc` when you need live timing;
 use `ct` to drive the interactive UI with post-hoc token economics.
 
+`ct` runs on the same subscription as `cc`, so the two global stops below apply
+to it identically — but the interactive TUI publishes no machine-readable
+stream, so both are detected as **screen banners** (`is_auth_error`,
+`is_rate_limited`) and raised as exceptions that `run()` maps onto the same
+`error_type` the scheduler keys on. A rate limit in particular must not be left
+to the idle heuristic: a turn the limit kills goes silent immediately, so
+quiescence reads it as a finished turn that merely failed to tick — stagnation,
+attempts burned against an unmoved wall, the same stall `cc` hit until 2026-08.
+The cost of the screen-only transport is that the TUI shows the reset time as
+prose, so `ct` writes `rate-limit.json` with `resets_at: null` and `ola-monitor`
+falls back to its floor wait instead of sleeping to a real reset. The limit
+markers are the one screen-predicate family **not** pinned to a live capture —
+a spike can force a dead credential on demand, not an exhausted five-hour
+window; pin them the first time a real limit is seen.
+
 ### Claude Code credentials (`cc`/`ct`)
 
 `cc`/`ct` authenticate with the host's Claude subscription. Credential handling
@@ -69,9 +84,12 @@ expires mid-flight leaves a dead entry behind that poisons that task
 it, because the file it refreshes is never read. Two automatic guards:
 `cc-credentials` sweeps *expired* `Claude Code-credentials-*` entries (recovery;
 the default entry and any live one are left alone —
-`_cc_clear_stale_keychain_entries` in `ola.sh`), and the `cc` backend deletes the
-entry keyed to a task's config dir whenever it refreshes that dir's credentials
-(prevention — `_clear_shadowing_keychain_entry` in `claude_code.py`). Both are
+`_cc_clear_stale_keychain_entries` in `ola.sh`), and the `cc` **and `ct`**
+backends delete the entry keyed to a task's config dir whenever they refresh
+that dir's credentials (prevention — `_clear_shadowing_keychain_entry` in
+`claude_code.py`, called from `_run_once` and from `ct`'s `_build_env`; `ct`
+builds the same task-id-derived config dirs, so it inherits the same trap).
+Both are
 no-ops without a `security` binary, so **the sandbox path is unaffected**: there
 is no Keychain in the container and the injected file is already the sole
 credential source. This only ever bit `ola --skip-sandbox`.
@@ -114,11 +132,14 @@ is `info/exclude` rather than `.gitignore` because it is ola's bookkeeping, not
 the user's. Excluding does not rewrite history — an agent folder that already
 committed tokens keeps them in old commits, so purge before adding a remote.
 
-### `cc` failure classification
+### `cc`/`ct` failure classification
 
 The `cc` backend (`src/ola/agents/claude_code.py`) differentiates three
 failure modes instead of collapsing every non-200 into "authentication
-failed":
+failed". The wire shapes below are `cc`'s; `ct` reaches the same two
+`error_type` values off the screen instead (above), and everything from
+"escalates like auth" onward — scheduler abort, marker, exit code, who waits —
+is shared, because it keys on `error_type` alone and never on the backend:
 
 - **Subscription limit** — stop the run, let the supervisor wait. The signal is
   the structured `rate_limit_event` stream event with `status:"rejected"` and
@@ -323,14 +344,14 @@ its frontmatter (semver, starting at `1.0.0`).
 
 | Skill | Version | Purpose |
 |-------|---------|---------|
-| `ola-design` | 1.9.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
+| `ola-design` | 1.10.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 2.0.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts; and the instructions-vs-data split — a task cannot open the agent folder, so the design is **inlined per stage into `TASK-PROMPT.md`** and never pointed at or committed to the project repo, while paths the *running code* opens must be in `HEAD` (`git cat-file -e HEAD:<path>`, not `git check-ignore`). |
 | `ola-release` | 1.0.1 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.7.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.39.0; re-verify on sbx upgrade. |
+| `sbx` | 2.7.1 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), host `gh` auth injection, the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.39.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

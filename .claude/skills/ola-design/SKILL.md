@@ -168,7 +168,12 @@ the answer is wrong:
   detector is dead code that a transcript-shaped fixture will happily prove
   green. Corollary: once a condition's own event has fired, classify on it —
   don't second-guess it with a downstream field the CLI never promised to set
-  (see the `rate_limit_event`-not-`result.subtype` rule in CLAUDE.md).
+  (see the `rate_limit_event`-not-`result.subtype` rule in CLAUDE.md). A backend
+  whose only transport is a *screen* (`ct`) owes the same treatment — the screen
+  is its wire — and owes it especially where the stop manifests as **silence**:
+  an end-of-turn heuristic built on quiescence cannot tell "finished" from
+  "killed mid-turn", so a condition that goes quiet must be detected explicitly
+  or it is silently reclassified as success-without-a-tick, i.e. stagnation.
 - When a stop is **global by nature** — one shared resource behind every task,
   like the credential or the subscription window — does it abort the run once,
   or fail task-by-task? Requeuing against an unmoved wall burns every task's

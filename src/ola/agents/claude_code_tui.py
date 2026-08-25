@@ -23,6 +23,17 @@ CLI during a spike (see git history / the ``ct`` skill):
   That is acceptable because ola's only real completion signal is the ticked
   PLAN.md checkbox (checkbox-is-truth); the harness re-derives success from the
   worktree regardless of what this backend returns.
+* **Global stops come off the screen.** A dead credential and an exhausted
+  subscription window are global — one shared resource behind every task — so
+  each aborts the whole run rather than failing task-by-task (``cc`` does the
+  same from its stream; see ``error_type`` in ``claude_code.py``). The TUI
+  publishes no machine-readable stream, so both are detected as screen banners
+  (``is_auth_error`` / ``is_rate_limited``), one detector each. Neither can wait
+  for quiescence: a turn the limit kills goes silent at once, which the
+  end-of-turn heuristic below would read as a finished turn that simply did not
+  tick — i.e. stagnation, and every task burning its attempts against an
+  unmoved wall. The cost of the screen-only transport is that the limit's reset
+  time is prose, so unlike ``cc`` this backend hands ``ola-monitor`` no epoch.
 * **Metrics, post-turn.** Any session that runs long enough to flush persists a
   full transcript under ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl``.
   On teardown (after ``/exit`` flushes it) we read that transcript and recover
@@ -53,12 +64,26 @@ from ola.agents.base import AgentResponse, ProgressCallback
 from ola.agents.claude_code import (
     AuthenticationError,
     ClaudeCodeAgent,
+    _clear_shadowing_keychain_entry,
     _is_self_hosted,
     _self_hosted_env_overlay,
 )
 from ola.stats import IterationStats
 
 logger = logging.getLogger(__name__)
+
+
+class RateLimitedError(Exception):
+    """The subscription window is exhausted — global, not this task's fault.
+
+    TUI-only. ``cc`` reads the CLI's structured ``rate_limit_event`` off the
+    ``--print`` stream and returns a response; the interactive TUI emits no
+    machine-readable stream at all, so the *screen* is the only wire this
+    backend has and a banner is the only shape the condition takes here. Same
+    single-detector rule as ``cc``: one condition, read from the transport the
+    CLI actually uses.
+    """
+
 
 # A pty needs a window size or the full-screen TUI will not render its box.
 _PTY_ROWS, _PTY_COLS = 50, 120
@@ -117,6 +142,30 @@ _AUTH_MARKERS = (
     "invalidauthenticationcredentials",
     "/login·apierror",
 )
+# Subscription-limit banners. Every marker requires the word "reached", so the
+# *warning* banners ("Approaching usage limit · /model to use best available")
+# stay out: a warning is not a stop, and the CLI keeps running on the fallback
+# model. The separator glyph between "limit reached" and the reset time varies
+# (· vs ∙), so no marker spans it.
+#
+# Unlike _AUTH_MARKERS these are NOT pinned to a live screen capture — a spike
+# can produce a dead credential on demand, but not an exhausted five-hour
+# window. Pin them the first time a real limit is observed.
+_LIMIT_MARKERS = (
+    "usagelimitreached",
+    "hourlimitreached",
+    "reachedyourusagelimit",
+    "reachedyourweeklylimit",
+)
+
+# Reported as ``stats.error_message``, which the scheduler copies verbatim into
+# <agent-folder>/monitor/rate-limit.json for ola-monitor to print. The TUI shows
+# the reset time as prose only, so unlike ``cc`` there is no epoch to hand over
+# and ``rate_limit_resets_at`` stays None — the watcher then falls back to its
+# floor wait (_OLA_MONITOR_RL_MIN_WAIT) rather than sleeping to a real reset.
+_RATE_LIMIT_MESSAGE = (
+    "usage limit reached (interactive TUI); no machine-readable reset time"
+)
 
 
 def is_ready(screen: str) -> bool:
@@ -138,6 +187,10 @@ def is_busy(screen: str) -> bool:
 
 def is_auth_error(screen: str) -> bool:
     return any(m in compact(screen) for m in _AUTH_MARKERS)
+
+
+def is_rate_limited(screen: str) -> bool:
+    return any(m in compact(screen) for m in _LIMIT_MARKERS)
 
 
 def is_idle_box(screen: str) -> bool:
@@ -434,6 +487,26 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                     models=[self.model] if self.model else [],
                 ),
             )
+        except RateLimitedError as exc:
+            # ``ct`` drives the same subscription as ``cc``, so a window
+            # rejection is global for the same reason a dead credential is:
+            # one shared resource behind every task. error_type="rate_limited"
+            # is what the scheduler keys on to abort the run once (exit 41 +
+            # the host-visible marker) instead of failing task-by-task. The
+            # screen tail goes in `output` so the failure is diagnosable;
+            # error_message stays flat because it lands in the marker JSON
+            # ola-monitor greps.
+            logger.warning("ct: subscription limit banner on screen — %s", exc)
+            return AgentResponse(
+                output=str(exc),
+                success=False,
+                stats=IterationStats(
+                    streamed=False,
+                    error_type="rate_limited",
+                    error_message=_RATE_LIMIT_MESSAGE,
+                    models=[self.model] if self.model else [],
+                ),
+            )
 
     # --- internals ---
 
@@ -450,6 +523,12 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                     dst = sd / fname
                     if src.exists() and (fname in _ALWAYS_REFRESH or not dst.exists()):
                         shutil.copy2(src, dst)
+                # Same per-task config dir shape as ``cc``, so the same macOS
+                # trap: the Keychain entry keyed to this dir outranks the
+                # .credentials.json just copied into it, and the dir is stable
+                # across runs — so one expired token poisons this task id
+                # permanently. See _clear_shadowing_keychain_entry.
+                _clear_shadowing_keychain_entry(sd)
             seed_claude_json(sd, workdir)
             env["CLAUDE_CONFIG_DIR"] = str(sd)
         if self_hosted:
@@ -570,6 +649,8 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             screen = child.tail()
             if is_auth_error(screen):
                 raise AuthenticationError(strip_ansi(screen)[-500:])
+            if is_rate_limited(screen):
+                raise RateLimitedError(strip_ansi(screen)[-500:])
             if is_trust_dialog(screen) and not trust_handled:
                 trust_handled = True
                 logger.debug("ct: trust dialog shown — sending Enter to accept")
@@ -604,6 +685,15 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             screen = child.tail()
             if is_auth_error(screen):
                 raise AuthenticationError(strip_ansi(screen)[-500:])
+            # Must be caught here, not left to quiescence: a turn the limit
+            # kills goes silent immediately, so _DONE_QUIESCENCE_SEC elapses
+            # and this returns True — an agent that "finished" without ticking
+            # its checkbox. That is stagnation to the scheduler, so every task
+            # burns its attempts against the same unmoved wall and the folder
+            # trips its circuit breaker. Exactly the stall the `cc` backend hit
+            # while it gated the rate_limit_event on result.subtype.
+            if is_rate_limited(screen):
+                raise RateLimitedError(strip_ansi(screen)[-500:])
             idle = child.idle_for()
             if idle < 1.0:
                 saw_activity = True
