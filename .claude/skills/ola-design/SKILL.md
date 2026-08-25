@@ -1,7 +1,7 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.10.0
+version: 1.11.0
 # 1.9.0: sharpen the shared-resource item — the harness stops and lets the
 #         supervisor wait, rather than sleeping in-process behind a duration
 #         threshold (minor: tightens 1.8.0's guidance, no rule reversed).
@@ -191,6 +191,16 @@ the answer is wrong:
   Beware especially a *duration threshold* that picks between waiting and
   stopping: the constant is always arbitrary and the rare branch is the
   untested one. One condition, one reaction.
+  The rule's premise is that the in-flight turn is **dead** — nothing to
+  protect, so parking buys nothing. Check that premise per backend before
+  applying it: `ct` drives the interactive CLI, which does *not* kill a
+  rate-limited turn but parks it ("continuing automatically at 4pm") and resumes
+  with its context intact, so there stopping would destroy live work to
+  re-derive an unchanged plan, and `ct` waits instead. That is not the banned
+  threshold — the branch is the CLI *stating its own intent*, a fact read off
+  the wire, not a constant the harness picked. Where the CLI states nothing
+  (no parsable reset), waiting for an unknown duration is worse than stopping,
+  so it escalates as usual.
 - Does it give each distinct terminal run-state its own process exit code
   (generic `1`, `128+signum` operator-interrupt, `40` Claude Code
   auth-escalation, `41` rate-limit escalation — see `RunInterrupted`/

@@ -48,15 +48,24 @@ to it identically — but the interactive TUI publishes no machine-readable
 stream, so both are detected as **screen banners** (`is_auth_error`,
 `is_rate_limited`) and raised as exceptions that `run()` maps onto the same
 `error_type` the scheduler keys on. A rate limit in particular must not be left
-to the idle heuristic: a turn the limit kills goes silent immediately, so
-quiescence reads it as a finished turn that merely failed to tick — stagnation,
-attempts burned against an unmoved wall, the same stall `cc` hit until 2026-08.
-The cost of the screen-only transport is that the TUI shows the reset time as
-prose, so `ct` writes `rate-limit.json` with `resets_at: null` and `ola-monitor`
-falls back to its floor wait instead of sleeping to a real reset. The limit
-markers are the one screen-predicate family **not** pinned to a live capture —
-a spike can force a dead credential on demand, not an exhausted five-hour
-window; pin them the first time a real limit is seen.
+to the idle heuristic: a limited turn goes silent immediately, so quiescence
+reads it as a finished turn that merely failed to tick — stagnation, attempts
+burned against an unmoved wall, the same stall `cc` hit until 2026-08.
+
+**A usage limit is where `ct` deliberately diverges from `cc`: it waits, in
+process.** The interactive CLI does not kill a limited turn the way `claude -p`
+does — it prints "continuing automatically at 4pm" and resumes by itself, still
+holding the session and its context. So `ct` parks the turn until the stated
+reset (`_park_for_limit`, with `parse_reset_at` reading the time out of the
+banner's prose) instead of escalating. This is an exception to "ola never waits
+out a window", not an oversight: that rule assumes the turn is *dead* and there
+is no in-flight work to protect, which is true of `cc` and false here — and the
+signal that distinguishes them is the CLI stating its own intent on screen, not
+a duration threshold ola invented. Escalation (exit 41 + marker) remains for the
+case where no reset time can be parsed, because parking for an *unknown*
+duration is the one situation where stopping and letting the supervisor wait
+really is better. The limit markers and the reset parser are pinned to a live
+capture from 2026-08-25; the other marker variants are still unobserved.
 
 ### Claude Code credentials (`cc`/`ct`)
 
@@ -344,7 +353,7 @@ its frontmatter (semver, starting at `1.0.0`).
 
 | Skill | Version | Purpose |
 |-------|---------|---------|
-| `ola-design` | 1.10.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
+| `ola-design` | 1.11.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 2.0.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts; and the instructions-vs-data split — a task cannot open the agent folder, so the design is **inlined per stage into `TASK-PROMPT.md`** and never pointed at or committed to the project repo, while paths the *running code* opens must be in `HEAD` (`git cat-file -e HEAD:<path>`, not `git check-ignore`). |

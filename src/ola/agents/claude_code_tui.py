@@ -29,11 +29,17 @@ CLI during a spike (see git history / the ``ct`` skill):
   same from its stream; see ``error_type`` in ``claude_code.py``). The TUI
   publishes no machine-readable stream, so both are detected as screen banners
   (``is_auth_error`` / ``is_rate_limited``), one detector each. Neither can wait
-  for quiescence: a turn the limit kills goes silent at once, which the
-  end-of-turn heuristic below would read as a finished turn that simply did not
-  tick — i.e. stagnation, and every task burning its attempts against an
-  unmoved wall. The cost of the screen-only transport is that the limit's reset
-  time is prose, so unlike ``cc`` this backend hands ``ola-monitor`` no epoch.
+  for quiescence: a limited turn goes silent at once, which the end-of-turn
+  heuristic below would read as a finished turn that simply did not tick — i.e.
+  stagnation, and every task burning its attempts against an unmoved wall.
+* **A usage limit is waited out here, not escalated** — the one place ``ct``
+  diverges from ``cc``. The interactive CLI does not kill a limited turn: it
+  says "continuing automatically at 4pm" and resumes by itself, holding the
+  session and its context. Restarting it would throw that away to re-derive a
+  plan that has not changed, so :meth:`_park_for_limit` holds the turn until the
+  reset the banner states (:func:`parse_reset_at` reads it out of the prose).
+  Escalation remains for the case where no reset time can be read — parking for
+  an unknown duration is the one situation where stopping really is better.
 * **Metrics, post-turn.** Any session that runs long enough to flush persists a
   full transcript under ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl``.
   On teardown (after ``/exit`` flushes it) we read that transcript and recover
@@ -57,7 +63,7 @@ import subprocess
 import termios
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ola.agents.base import AgentResponse, ProgressCallback
@@ -148,9 +154,12 @@ _AUTH_MARKERS = (
 # model. The separator glyph between "limit reached" and the reset time varies
 # (· vs ∙), so no marker spans it.
 #
-# Unlike _AUTH_MARKERS these are NOT pinned to a live screen capture — a spike
-# can produce a dead credential on demand, but not an exhausted five-hour
-# window. Pin them the first time a real limit is observed.
+# "usagelimitreached" is pinned to a real capture (2026-08-25, see
+# LIMIT_SCREEN_REAL in the tests). The other three are still written from known
+# wordings and have never been observed firing; the same capture also carried an
+# unmatched "your session limit · resets 4pm (UTC)" phrasing, so a session
+# variant likely exists. Keep the end-of-turn screen logging in _run_tui until
+# they are pinned too.
 _LIMIT_MARKERS = (
     "usagelimitreached",
     "hourlimitreached",
@@ -164,8 +173,31 @@ _LIMIT_MARKERS = (
 # and ``rate_limit_resets_at`` stays None — the watcher then falls back to its
 # floor wait (_OLA_MONITOR_RL_MIN_WAIT) rather than sleeping to a real reset.
 _RATE_LIMIT_MESSAGE = (
-    "usage limit reached (interactive TUI); no machine-readable reset time"
+    "usage limit reached (interactive TUI); reset time not stated on screen"
 )
+
+# "…resets 4pm (UTC)", "…continuing automatically at 4pm", "…at 3:30pm".
+# Matched against compact() output, so no whitespace and the parenthesised
+# timezone (when present) runs straight into the time. The banner states the
+# same time more than once and the pty tail garbles early copies (dropped
+# characters — see _await_turn_end), so every match is collected and the one
+# carrying a timezone wins; a garbled copy simply fails to match.
+_RESET_RE = re.compile(
+    r"(?:resets|automaticallyat|at)(\d{1,2})(?::(\d{2}))?(am|pm)\(?([a-z]{2,4})?\)?"
+)
+
+# A parsed reset further out than this is a misparse, not a real window — the
+# longest subscription window is five hours. Falling back to None escalates,
+# which is the safe direction: ola-monitor waits instead, rather than this
+# process parking for a day on a bad regex hit.
+_MAX_PARK_SEC = 6 * 3600
+
+# Sleep a little past the stated reset: the banner states the reset to the
+# minute, and coming back a few seconds early just re-parks.
+_PARK_GRACE_SEC = 30.0
+# Poll cadence while parked — long enough to be free, short enough that a dead
+# TUI or a dead credential is noticed in seconds rather than at the reset.
+_PARK_POLL_SEC = 10.0
 
 
 def is_ready(screen: str) -> bool:
@@ -191,6 +223,47 @@ def is_auth_error(screen: str) -> bool:
 
 def is_rate_limited(screen: str) -> bool:
     return any(m in compact(screen) for m in _LIMIT_MARKERS)
+
+
+def parse_reset_at(screen: str, now: float | None = None) -> float | None:
+    """Epoch seconds the limit banner says the window reopens, or None.
+
+    The TUI states the reset as prose ("resets 4pm (UTC)", "continuing
+    automatically at 4pm") rather than as an epoch, but prose is not the same as
+    unusable — and it is the difference between one relaunch and twenty. Returns
+    None when nothing parses, which escalates instead: a wrong epoch is worse
+    than no epoch, so every uncertain case degrades to the old behaviour.
+
+    A bare hour with no timezone is read as local, which is how the TUI renders
+    it when it does not say otherwise.
+    """
+    text = compact(screen)
+    matches = _RESET_RE.findall(text)
+    if not matches:
+        return None
+    # The banner repeats the time; prefer a copy carrying an explicit timezone,
+    # since that one needs no assumption about the host's clock.
+    hour_s, minute_s, meridiem, tz = next(
+        (m for m in matches if m[3] in ("utc", "gmt")), matches[0]
+    )
+    hour = int(hour_s)
+    if hour > 12:
+        return None
+    minute = int(minute_s) if minute_s else 0
+    if meridiem == "pm" and hour != 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+
+    now = time.time() if now is None else now
+    utc = tz in ("utc", "gmt")
+    base = datetime.fromtimestamp(now, tz=timezone.utc) if utc else datetime.fromtimestamp(now)
+    target = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target.timestamp() <= now:
+        target += timedelta(days=1)
+    reset = target.timestamp()
+    # Guard a misparse rather than parking on it — see _MAX_PARK_SEC.
+    return reset if reset - now <= _MAX_PARK_SEC else None
 
 
 def is_idle_box(screen: str) -> bool:
@@ -687,6 +760,11 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         deadline = time.monotonic() + _TURN_TIMEOUT_SEC
         saw_activity = False
         last_ping = 0.0
+        # One park per turn. The banner never leaves ``tail()`` once printed —
+        # the tail is the raw cumulative byte stream, so a stale frame lingers
+        # (the same reason the "esc to interrupt" footer is not gated on) — so
+        # re-testing the marker after the park would re-park forever.
+        parked = False
         while time.monotonic() < deadline:
             if not child.alive():
                 # Process exited on its own — treat as turn end.
@@ -694,15 +772,17 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             screen = child.tail()
             if is_auth_error(screen):
                 raise AuthenticationError(strip_ansi(screen)[-500:])
-            # Must be caught here, not left to quiescence: a turn the limit
-            # kills goes silent immediately, so _DONE_QUIESCENCE_SEC elapses
-            # and this returns True — an agent that "finished" without ticking
-            # its checkbox. That is stagnation to the scheduler, so every task
-            # burns its attempts against the same unmoved wall and the folder
-            # trips its circuit breaker. Exactly the stall the `cc` backend hit
-            # while it gated the rate_limit_event on result.subtype.
-            if is_rate_limited(screen):
-                raise RateLimitedError(strip_ansi(screen)[-500:])
+            # Must be handled here, not left to quiescence: a parked turn goes
+            # silent, so _DONE_QUIESCENCE_SEC elapses and this would return True
+            # — an agent that "finished" without ticking its checkbox, which is
+            # stagnation to the scheduler and burns every task's attempts.
+            if not parked and is_rate_limited(screen):
+                parked = True
+                deadline += self._park_for_limit(child, screen, on_progress)
+                # The window has reopened and the TUI is picking the turn back
+                # up. Its own output is the activity that ends the turn, so fall
+                # through to the ordinary quiescence logic from here.
+                continue
             idle = child.idle_for()
             if idle < 1.0:
                 saw_activity = True
@@ -716,6 +796,67 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                 return True
             time.sleep(0.5)
         return False
+
+    def _park_for_limit(
+        self,
+        child: _PtyProcess,
+        screen: str,
+        on_progress: ProgressCallback | None,
+    ) -> float:
+        """Hold a turn the TUI has parked on a usage limit; return seconds waited.
+
+        The interactive CLI does not kill a limited turn the way ``claude -p``
+        does — it says "continuing automatically at 4pm" and resumes by itself
+        when the window reopens, keeping the session and its context. So the
+        cheapest correct thing ola can do is nothing: killing the turn to let
+        ``ola-monitor`` relaunch would discard context the CLI is still holding
+        and re-derive a plan that has not changed.
+
+        This is a deliberate exception to "ola never waits out a window", not a
+        forgotten one. That rule exists because a ``cc`` turn the limit rejects
+        is *dead* — there is no in-flight work to protect, so parking a process
+        buys nothing. Here the work is alive and waiting. The distinguishing
+        signal is the CLI stating its own intent on screen, not a threshold ola
+        picked, so there is still one reaction per condition.
+
+        Escalates instead (unchanged behaviour) when the reset time cannot be
+        read: parking for an unknown duration is the one case where stopping and
+        letting the supervisor wait really is better.
+        """
+        reset_at = parse_reset_at(screen)
+        if reset_at is None:
+            raise RateLimitedError(strip_ansi(screen)[-500:])
+
+        wait = max(0.0, reset_at - time.time()) + _PARK_GRACE_SEC
+        resumes = datetime.fromtimestamp(reset_at).strftime("%H:%M")
+        logger.warning(
+            "ct: usage limit reached — the TUI resumes this turn by itself at "
+            "%s local (%.0f min); holding rather than restarting it.",
+            resumes,
+            wait / 60,
+        )
+
+        started = time.monotonic()
+        while time.monotonic() - started < wait:
+            if not child.alive():
+                # The TUI died while parked; let the caller's liveness check
+                # treat it as end-of-turn rather than sleeping out the window.
+                break
+            if is_auth_error(child.tail()):
+                raise AuthenticationError(strip_ansi(child.tail())[-500:])
+            if on_progress is not None:
+                remaining = (wait - (time.monotonic() - started)) / 60
+                try:
+                    on_progress(
+                        f"usage limit — resuming at {resumes} (~{remaining:.0f} min)",
+                        None,
+                    )
+                except Exception:
+                    logger.exception("on_progress raised; continuing")
+            time.sleep(_PARK_POLL_SEC)
+
+        logger.info("ct: usage-limit window reopened; turn continuing.")
+        return time.monotonic() - started
 
     def _teardown(self, child: _PtyProcess) -> None:
         """Ask the TUI to exit cleanly, then make sure the process is gone."""

@@ -7,6 +7,7 @@ teardown) is exercised without spawning ``claude``.
 """
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,18 @@ LIMIT_SCREEN = (
     "Claude usage limit reached. Your limit will reset at 3pm (Europe/Madrid)."
 )
 LIMIT_SCREEN_SHORT = "5-hour limit reached ∙ resets 3pm"
+# Verbatim from a real limit (2026-08-25 15:33 UTC). Note the pty garbling —
+# "Continug", "Usge", "cancl" — which is why the parser tolerates dropped
+# characters and prefers the copy carrying a timezone.
+LIMIT_SCREEN_REAL = (
+    "your session limit \u00b7resets4pm(UTC)   Continug automatically at 4pm \u00b7 "
+    "esc to cancl\u25cfUsge limit reached \u00b7 continuing automaticallyat4pm"
+    "\u00b7escortypetocancel\u273bBrewedfor0s          \u25cfhigh\u00b7/effort"
+    "\u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014 \u276f \u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014  "
+    "\u26a0 Usage limit reached \u00b7 continuing automatically at 4pm \u00b7 esc to cancel"
+)
+# No reset time anywhere — the escalate-instead-of-park path.
+LIMIT_SCREEN_NO_TIME = "\u26a0 Usage limit reached \u00b7 esc to cancel"
 LIMIT_WARNING_SCREEN = "Approaching usage limit · /model to use best available model"
 
 
@@ -109,6 +122,34 @@ def test_is_rate_limited():
     # The two global-stop detectors must not claim each other's screens.
     assert not is_rate_limited(AUTH_SCREEN)
     assert not is_auth_error(LIMIT_SCREEN)
+
+
+def test_parse_reset_at_reads_the_real_banner():
+    """The reset time is prose, not an epoch — but it is still readable.
+
+    Pinned to the 2026-08-25 capture. Without this the marker carries
+    resets_at: null, ola-monitor falls back to its floor wait, and a 27-minute
+    window costs ~23 relaunches instead of one.
+    """
+    now = datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()
+    reset = ct.parse_reset_at(LIMIT_SCREEN_REAL, now=now)
+
+    assert reset is not None
+    assert datetime.fromtimestamp(reset, timezone.utc) == datetime(
+        2026, 8, 25, 16, 0, tzinfo=timezone.utc
+    )
+
+
+def test_parse_reset_at_rolls_to_tomorrow_when_the_hour_has_passed():
+    now = datetime(2026, 8, 25, 17, 0, tzinfo=timezone.utc).timestamp()
+    reset = ct.parse_reset_at("Usage limit reached · resets 4pm (UTC)", now=now)
+    # 4pm today is behind us; the next 4pm is 23h out, past the misparse guard.
+    assert reset is None
+
+
+def test_parse_reset_at_none_without_a_time():
+    assert ct.parse_reset_at(LIMIT_SCREEN_NO_TIME) is None
+    assert ct.parse_reset_at(READY_SPACED) is None
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +432,9 @@ def test_run_rate_limited_escalates_instead_of_looking_successful(monkeypatch):
         """Banner is printed (activity), then the pty goes quiet for good."""
 
         def tail(self, n=4000):
-            return self.ready_screen if not self.paste_done else LIMIT_SCREEN
+            return (
+                self.ready_screen if not self.paste_done else LIMIT_SCREEN_NO_TIME
+            )
 
         def idle_for(self):
             if not self.paste_done:
@@ -415,7 +458,7 @@ def test_run_rate_limited_escalates_instead_of_looking_successful(monkeypatch):
     assert resp.stats.rate_limit_resets_at is None
     assert resp.stats.error_message == ct._RATE_LIMIT_MESSAGE
     # The banner itself stays diagnosable in the output.
-    assert "usage limit reached" in resp.output
+    assert "usage limit reached" in resp.output.lower()
     # Teardown still ran, so no pty is leaked on the escalation path.
     assert fake.alive() is False
 
@@ -425,7 +468,7 @@ def test_run_rate_limited_before_the_prompt_is_pasted(monkeypatch):
 
     class LimitedPty(FakePty):
         def tail(self, n=4000):
-            return LIMIT_SCREEN
+            return LIMIT_SCREEN_NO_TIME
 
     monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: LimitedPty())
 
@@ -453,6 +496,49 @@ def test_run_logs_the_screen_tail_when_no_banner_matched(monkeypatch, caplog):
     tails = [r for r in caplog.records if "end-of-turn screen tail" in r.message]
     assert tails, "no screen tail logged"
     assert READY_SPACELESS in tails[-1].getMessage()
+
+
+def test_run_parks_and_continues_when_the_tui_will_resume_itself(monkeypatch):
+    """The TUI says "continuing automatically at 4pm" — so ola waits, not restarts.
+
+    Killing the turn would discard context the CLI is still holding and force a
+    relaunch that re-derives an unchanged plan. Regression for the 2026-08-25
+    run, where escalating on a self-continuing banner produced a relaunch every
+    ~70s for 27 minutes.
+    """
+    clock = {"t": datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()}
+    monkeypatch.setattr(ct.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(ct.time, "sleep", lambda n=0: clock.__setitem__("t", clock["t"] + max(n, 1)))
+
+    reset = datetime(2026, 8, 25, 16, 0, tzinfo=timezone.utc).timestamp()
+
+    class ParkedPty(FakePty):
+        """Banner up and pty silent, then the TUI resumes itself at the reset."""
+
+        def tail(self, n=4000):
+            return self.ready_screen if not self.paste_done else LIMIT_SCREEN_REAL
+
+        def idle_for(self):
+            if not self.paste_done:
+                return 99.0
+            # Silent while parked — without the park this ends the turn at once.
+            if clock["t"] < reset:
+                return 99.0
+            # Window reopened: the TUI resumes, emits for a poll, then finishes.
+            self._busy_polls += 1
+            return 0.1 if self._busy_polls == 1 else 99.0
+
+    fake = ParkedPty()
+    monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: fake)
+
+    resp = ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
+
+    # It waited out the window instead of escalating...
+    assert resp.stats.error_type != "rate_limited"
+    # ...for roughly the 27 minutes the banner stated (4pm UTC minus 15:33).
+    waited_min = (clock["t"] - datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()) / 60
+    assert 26 < waited_min < 29, waited_min
 
 
 def test_run_pty_alloc_failure(monkeypatch):
