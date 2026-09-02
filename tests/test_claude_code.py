@@ -1488,6 +1488,44 @@ def test_bootstrap_copy_against_per_task_state_dir(monkeypatch, tmp_path):
     assert captured["env"]["CLAUDE_CONFIG_DIR"] == str(sd)
 
 
+def test_bootstrap_refreshes_settings_but_not_claude_json(monkeypatch, tmp_path):
+    """A stale per-task settings.json is overwritten; .claude.json is kept.
+
+    ola generates settings.json (``_ola_inject_cc_settings`` in ola.sh), so the
+    per-task copy is a cache of a single source — and per-task config dirs are
+    derived from the task id and never deleted, so copy-once would pin a task to
+    whatever settings existed the first time it ran. ``.claude.json`` is the
+    opposite: it accumulates real per-task state and must survive.
+    """
+    for k in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_SKIP_TLS_VERIFY"):
+        monkeypatch.delenv(k, raising=False)
+
+    fake_home = tmp_path / "fake_home"
+    fake_claude = fake_home / ".claude"
+    fake_claude.mkdir(parents=True)
+    (fake_claude / ".credentials.json").write_text('{"token": "fresh"}')
+    (fake_claude / ".claude.json").write_text('{"from": "home"}')
+    (fake_claude / "settings.json").write_text('{"disableRemoteControl": true}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setattr(
+        "ola.agents.claude_code.subprocess.Popen",
+        lambda cmd, **kw: _make_proc([_result()]),
+    )
+
+    # A config dir left behind by an earlier run, before the key existed.
+    sd = tmp_path / "phase" / ".claude" / "t-abc1234"
+    sd.mkdir(parents=True)
+    (sd / "settings.json").write_text('{"permissions": {"defaultMode": "stale"}}')
+    (sd / ".claude.json").write_text('{"from": "previous run"}')
+
+    ClaudeCodeAgent()._run_once("hi", str(tmp_path), state_dir=str(sd))
+
+    assert json.loads((sd / "settings.json").read_text()) == {
+        "disableRemoteControl": True
+    }
+    assert json.loads((sd / ".claude.json").read_text()) == {"from": "previous run"}
+
+
 # ---------------------------------------------------------------------------
 # Shadowing per-CLAUDE_CONFIG_DIR Keychain entry (macOS)
 # ---------------------------------------------------------------------------

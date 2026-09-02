@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.7.1
+version: 2.8.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -249,6 +249,22 @@ the host, not looped back inside the sandbox.
 
 ### Credentials
 - **Claude subscription (OAuth)**: `ola-sandbox` copies `~/.claude/.credentials.json` from host into the sandbox at creation/reconnection time (via `sbx exec` + base64). No API key needed.
+- **Claude Code `settings.json` is ola-owned, not copied from the host.**
+  `_ola_inject_cc_settings` writes a generated file into the sandbox on every
+  create/reconnect; the `cc`/`ct` backends then copy it into each per-task
+  `CLAUDE_CONFIG_DIR`, **every run** (it is in `_ALWAYS_REFRESH`) — per-task
+  dirs are stable across runs and never deleted, so copy-once would pin a task
+  to the settings that existed the first time it ran. Edit
+  `_ola_inject_cc_settings` and every task picks the change up on the next run;
+  that function is the single place any of these keys is declared. Three keys,
+  and deliberately **no** `"sandbox"`: Claude Code's own command sandbox is
+  redundant inside the docker one and would confine writes to the worktree cwd,
+  silently blocking the ola-blocked marker (which lands in the agent folder,
+  above the worktree). The third key is `"disableRemoteControl": true` — a task
+  agent is unattended, so claude.ai/code, `claude remote-control`, `--rc`, the
+  auto-start and the in-session toggle have no operator behind them; the softer
+  `remoteControlAtStartup: false` leaves the toggle live, so it is the wrong
+  knob. Never copy the host `settings.json` in: it drags in personal hooks/MCP.
 - **macOS Keychain shadows the file — host runs only.** Claude Code caches OAuth
   credentials *per `CLAUDE_CONFIG_DIR`* in the macOS Keychain under
   `Claude Code-credentials-<sha256(dir)[:8]>`, and that entry **outranks** the

@@ -381,15 +381,23 @@ _ola_inject_file() {
 # sandbox is redundant inside it; worse, that sandbox confines writes to the
 # worktree cwd, which silently blocks the ola-blocked marker (it lands in the
 # agent folder, above the worktree) and any other cross-worktree write. Copying
-# the host file would also drag in personal hooks/MCP. Keep it to exactly two
-# keys: bypass permissions and skip the dangerous-mode prompt. No "sandbox".
+# the host file would also drag in personal hooks/MCP. Keep it to the three keys
+# below and no "sandbox": bypass permissions, skip the dangerous-mode prompt,
+# and hard-disable Remote Control. The last one is not a preference — a task
+# agent is unattended and headless-equivalent, so claude.ai/code, `--rc` and the
+# in-session toggle have no operator behind them and no business reaching into a
+# worktree; `disableRemoteControl` kills the auto-start too, which the softer
+# `remoteControlAtStartup: false` does not. This file is the ONLY place any of
+# them is declared: the backends refresh their per-task copy from it every run
+# (see _ALWAYS_REFRESH in claude_code.py), so editing here reaches every task.
 _ola_inject_cc_settings() {
   local name="$1"
   local settings='{
   "permissions": {
     "defaultMode": "bypassPermissions"
   },
-  "skipDangerousModePermissionPrompt": true
+  "skipDangerousModePermissionPrompt": true,
+  "disableRemoteControl": true
 }'
   sbx exec "$name" bash -c 'mkdir -p "$HOME/.claude"' 2>/dev/null
   local data

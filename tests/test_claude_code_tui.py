@@ -231,6 +231,28 @@ def test_build_env_bootstraps_and_seeds(tmp_path, monkeypatch):
     assert (state / ".claude.json").exists()
 
 
+def test_build_env_refreshes_stale_settings(tmp_path, monkeypatch):
+    """``ct`` shares ``cc``'s copy-every-run rule for the generated settings.json."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / ".credentials.json").write_text("{}")
+    (home / ".claude" / "settings.json").write_text('{"disableRemoteControl": true}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "settings.json").write_text('{"permissions": {"defaultMode": "stale"}}')
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    ClaudeCodeTUIAgent(model="opus")._build_env(str(workdir), str(state))
+
+    assert json.loads((state / "settings.json").read_text()) == {
+        "disableRemoteControl": True
+    }
+
+
 def test_build_env_self_hosted_skips_credentials(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)

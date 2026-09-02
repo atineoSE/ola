@@ -17,7 +17,13 @@ from ola.stats import IterationStats
 logger = logging.getLogger(__name__)
 
 _BOOTSTRAP_FILES = (".credentials.json", ".claude.json", "settings.json")
-_ALWAYS_REFRESH = {".credentials.json"}
+# Copied every run, not just when absent. Per-task config dirs are derived from
+# the task id and nothing ever deletes them, so a copy-once file would pin a
+# task to whatever settings existed the first time it ran — and ola *generates*
+# settings.json (_ola_inject_cc_settings in ola.sh), so the per-task copy is a
+# cache of a single source, never state worth preserving. The credentials are
+# here for the orthogonal reason that the OAuth token expires.
+_ALWAYS_REFRESH = {".credentials.json", "settings.json"}
 _STATUS_LINES = 3
 _MAX_LINE_LEN = 72
 

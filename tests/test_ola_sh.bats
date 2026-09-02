@@ -424,6 +424,19 @@ _decode_written() {
   printf '%s' "$b64" | base64 -d
 }
 
+@test "inject_cc_settings: ola-owned body, no CC sandbox, Remote Control off" {
+  _ola_inject_cc_settings box
+  local out
+  out="$(_decode_written settings.json)"
+  [ "$(echo "$out" | jq -r '.permissions.defaultMode')" = "bypassPermissions" ]
+  [ "$(echo "$out" | jq -r '.skipDangerousModePermissionPrompt')" = "true" ]
+  # Remote Control has no operator behind an unattended task agent.
+  [ "$(echo "$out" | jq -r '.disableRemoteControl')" = "true" ]
+  # The CC command sandbox would confine writes to the worktree cwd and block
+  # the ola-blocked marker, which lands in the agent folder above it.
+  [ "$(echo "$out" | jq 'has("sandbox")')" = "false" ]
+}
+
 @test "inject_oh_settings: patches llm + condenser.llm, preserves the rest" {
   export HOME="$TMPDIR_TEST/oh_patch_home"
   mkdir -p "$HOME/.openhands"

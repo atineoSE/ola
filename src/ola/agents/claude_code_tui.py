@@ -89,7 +89,9 @@ _PTY_ROWS, _PTY_COLS = 50, 120
 # is intentionally NOT here — it lives at ~/.claude.json (home root), and we build
 # a pruned one ourselves in ``seed_claude_json``.
 _BOOTSTRAP_FILES = (".credentials.json", "settings.json")
-_ALWAYS_REFRESH = {".credentials.json"}
+# settings.json is refreshed every run for the same reason as in ``cc`` — ola
+# generates it, so the per-task copy is a cache, not state. See claude_code.py.
+_ALWAYS_REFRESH = {".credentials.json", "settings.json"}
 
 
 # Tunables (seconds). Turn timeout is generous — interactive tasks can be long.
