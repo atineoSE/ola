@@ -23,28 +23,42 @@ CLI during a spike (see git history / the ``ct`` skill):
   That is acceptable because ola's only real completion signal is the ticked
   PLAN.md checkbox (checkbox-is-truth); the harness re-derives success from the
   worktree regardless of what this backend returns.
-* **Global stops come off the screen.** A dead credential and an exhausted
-  subscription window are global — one shared resource behind every task — so
-  each aborts the whole run rather than failing task-by-task (``cc`` does the
-  same from its stream; see ``error_type`` in ``claude_code.py``). The TUI
-  publishes no machine-readable stream, so both are detected as screen banners
-  (``is_auth_error`` / ``is_rate_limited``), one detector each. Neither can wait
-  for quiescence: a limited turn goes silent at once, which the end-of-turn
-  heuristic below would read as a finished turn that simply did not tick — i.e.
-  stagnation, and every task burning its attempts against an unmoved wall.
+* **Global stops come off the transcript, not the screen.** A dead credential
+  and an exhausted subscription window are global — one shared resource behind
+  every task — so each aborts the whole run rather than failing task-by-task
+  (``cc`` does the same from its stream; see ``error_type`` in
+  ``claude_code.py``). The TUI publishes no stdout stream, but it *does* append
+  a machine-readable record to the session transcript the moment a request
+  fails, and it appends it **live**, not at exit: ``isApiErrorMessage: true``
+  with an ``error`` field (``rate_limit`` / ``authentication_failed``), an
+  ``apiErrorStatus``, and — for a limit — a ``quotaLimits`` block carrying the
+  very same ``status``/``resetsAt``/``rateLimitType`` payload ``cc`` reads off
+  its ``rate_limit_event``. :class:`_TranscriptWatcher` tails that file during
+  the turn, so both stops are read from a *structured* wire.
+  The screen stays the wire only for state that never reaches an API call and
+  so leaves no record: the trust dialog, the ready box, and a credential dead
+  enough that the TUI never opens a session at all. That boundary is
+  structural, not a preference — where a transcript exists it is the wire, and
+  before one exists there is nothing else to read — so the two can never
+  disagree about the same event.
+  Neither stop can wait for quiescence: a limited turn goes silent at once,
+  which the end-of-turn heuristic below would read as a finished turn that
+  simply did not tick — i.e. stagnation, and every task burning its attempts
+  against an unmoved wall.
 * **A usage limit is waited out here, not escalated** — the one place ``ct``
   diverges from ``cc``. The interactive CLI does not kill a limited turn: it
   says "continuing automatically at 4pm" and resumes by itself, holding the
   session and its context. Restarting it would throw that away to re-derive a
-  plan that has not changed, so :meth:`_park_for_limit` holds the turn until the
-  reset the banner states (:func:`parse_reset_at` reads it out of the prose).
-  When the reset time will not parse it falls back to the next five-hour window
-  boundary (:func:`next_window_boundary`). So this backend never raises a
-  rate-limit escalation: ``error_type="rate_limited"`` and exit 41 are ``cc``'s
-  alone.
-* **Metrics, post-turn.** Any session that runs long enough to flush persists a
-  full transcript under ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl``.
-  On teardown (after ``/exit`` flushes it) we read that transcript and recover
+  plan that has not changed, so :meth:`_park_for_limit` holds the turn until
+  the record's ``quotaLimits.resetsAt`` — an epoch the CLI states outright, so
+  there is nothing to parse and nothing to guess. Only a record without one
+  falls back to the next five-hour window boundary
+  (:func:`next_window_boundary`). So this backend never raises a rate-limit
+  escalation: ``error_type="rate_limited"`` and exit 41 are ``cc``'s alone.
+* **Metrics, post-turn.** The same transcript the watcher tails —
+  ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl`` — is where the usage
+  blocks land. It is appended as the session runs, but metrics are read *after*
+  teardown so the last turn's records are certainly in it. From it we recover
   per-task token counts, turn count, models, and peak context — enough for cost
   and cache-hit reporting (see :func:`transcript_stats`). What is **not**
   recoverable is the streaming-only timing: TTFT and decode-isolated tok/sec are
@@ -65,7 +79,8 @@ import subprocess
 import termios
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
@@ -141,53 +156,26 @@ _AUTH_MARKERS = (
     "invalidauthenticationcredentials",
     "/login·apierror",
 )
-# Subscription-limit banners. The TUI says the same thing two ways — the window
-# "reached", or "you've hit" it — so this is one alternation over both, and
-# every branch carries a *stop* verb. That is what keeps the warnings out: the
-# hint ("Approaching usage limit · /model to use best available") and the meter
-# ("You've used 93% of your session limit · resets 11:10am (UTC)") name a limit
-# without hitting one, and the CLI keeps working on the fallback model. The
-# separator glyph before the reset time varies (· vs ∙), so no branch spans it.
-#
-# Both families are pinned to real captures: "Usage limit reached · continuing
-# automatically at 4pm" (2026-08-25, LIMIT_SCREEN_REAL in the tests) and
-# "You've hit your session limit · resets 11:10am (UTC)" (2026-09-02,
-# LIMIT_SCREEN_SESSION). The second one is why the alternation exists: while
-# every branch required "reached", a whole run of limited turns went undetected
-# — each read as an agent that finished without ticking, i.e. stagnation, and
-# burned its attempts against the wall this path exists to wait out. The
-# 2026-08-25 capture had already carried an unmatched "your session limit"
-# copy; leaving it unpinned cost that run.
-#
-# The noun after "reached/hit your" tracks whichever window ran out
-# (session/usage/weekly/…), so it is a bounded wildcard rather than an
-# enumeration of wordings — anchoring on the verb, not the noun, is what
-# separates a stop from a warning. Keep the end-of-turn screen logging in
-# _run_tui: it is the only trace a still-unknown third wording would leave.
-_LIMIT_RE = re.compile(
-    r"usagelimitreached|hourlimitreached|(?:reached|hit)your[a-z0-9]{0,10}limit"
-)
+# Authentication before a session exists is the one stop with no transcript to
+# read: a credential dead enough that the TUI never opens a session writes no
+# record, because it never makes a request. That is why _AUTH_MARKERS above are
+# consulted only while waiting for the ready box — see _await_ready. Once a
+# turn is running, the same failure arrives as a structured record instead
+# (error: "authentication_failed"), and _TranscriptWatcher is the only reader.
 
-# "…resets 4pm (UTC)", "…continuing automatically at 4pm", "…at 3:30pm".
-# Matched against compact() output, so no whitespace and the parenthesised
-# timezone (when present) runs straight into the time. The banner states the
-# same time more than once and the pty tail garbles early copies (dropped
-# characters — see _await_turn_end), so every match is collected and the one
-# carrying a timezone wins; a garbled copy simply fails to match.
-_RESET_RE = re.compile(
-    r"(?:resets|automaticallyat|at)(\d{1,2})(?::(\d{2}))?(am|pm)\(?([a-z]{2,4})?\)?"
-)
-
-# A parsed reset further out than this is a misparse, not a real window — the
-# longest subscription window is five hours. Falling back to None escalates,
-# which is the safe direction: ola-monitor waits instead, rather than this
-# process parking for a day on a bad regex hit.
+# A reset further out than this is not a five-hour window — most likely a
+# weekly cap, which the TUI has never been observed to sit through. Parking a
+# worktree, a sandbox slot and a thread for days on one is worse than waking at
+# the next boundary and finding out: the turn simply re-parks on the next
+# record. The cap also bounds a nonsense epoch, though the CLI states this one
+# outright and has never sent a bad one.
 _MAX_PARK_SEC = 6 * 3600
 
 # Subscription windows are five hours long and, for this account, fall on a
 # boundary at 18:00 Europe/Madrid — so 18:00, 23:00, 04:00, 09:00, 14:00 local.
-# Used only when the banner's own reset time cannot be read: a derived boundary
-# is a good guess, never better than what the CLI actually said.
+# Used only for a limit record that carries no usable ``resetsAt`` — never
+# observed, since all 34 captured records state one. A derived boundary is a
+# good guess, never better than what the CLI actually said.
 #
 # This is an empirical observation about one account, not a documented API. The
 # window is *rolling* — anchored to the first message after an idle stretch — so
@@ -232,10 +220,6 @@ def is_auth_error(screen: str) -> bool:
     return any(m in compact(screen) for m in _AUTH_MARKERS)
 
 
-def is_rate_limited(screen: str) -> bool:
-    return _LIMIT_RE.search(compact(screen)) is not None
-
-
 def next_window_boundary(now: float | None = None) -> float:
     """Next five-hour subscription-window boundary, as epoch seconds.
 
@@ -253,47 +237,6 @@ def next_window_boundary(now: float | None = None) -> float:
     # step forward gives the next one strictly ahead.
     elapsed = now - anchor.timestamp()
     return anchor.timestamp() + (elapsed // step + 1) * step
-
-
-def parse_reset_at(screen: str, now: float | None = None) -> float | None:
-    """Epoch seconds the limit banner says the window reopens, or None.
-
-    The TUI states the reset as prose ("resets 4pm (UTC)", "continuing
-    automatically at 4pm") rather than as an epoch, but prose is not the same as
-    unusable — and it is the difference between one relaunch and twenty. Returns
-    None when nothing parses, which escalates instead: a wrong epoch is worse
-    than no epoch, so every uncertain case degrades to the old behaviour.
-
-    A bare hour with no timezone is read as local, which is how the TUI renders
-    it when it does not say otherwise.
-    """
-    text = compact(screen)
-    matches = _RESET_RE.findall(text)
-    if not matches:
-        return None
-    # The banner repeats the time; prefer a copy carrying an explicit timezone,
-    # since that one needs no assumption about the host's clock.
-    hour_s, minute_s, meridiem, tz = next(
-        (m for m in matches if m[3] in ("utc", "gmt")), matches[0]
-    )
-    hour = int(hour_s)
-    if hour > 12:
-        return None
-    minute = int(minute_s) if minute_s else 0
-    if meridiem == "pm" and hour != 12:
-        hour += 12
-    elif meridiem == "am" and hour == 12:
-        hour = 0
-
-    now = time.time() if now is None else now
-    utc = tz in ("utc", "gmt")
-    base = datetime.fromtimestamp(now, tz=timezone.utc) if utc else datetime.fromtimestamp(now)
-    target = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if target.timestamp() <= now:
-        target += timedelta(days=1)
-    reset = target.timestamp()
-    # Guard a misparse rather than parking on it — see _MAX_PARK_SEC.
-    return reset if reset - now <= _MAX_PARK_SEC else None
 
 
 def is_idle_box(screen: str) -> bool:
@@ -451,6 +394,152 @@ def _transcript_paths(config_dir: Path) -> set[Path]:
     never masquerades as the task's own session.
     """
     return set((config_dir / "projects").glob("*/*.jsonl"))
+
+
+@dataclass(frozen=True)
+class _ApiError:
+    """One ``isApiErrorMessage`` record from the live session transcript.
+
+    This is ``ct``'s wire for the two global stops. The TUI renders both as
+    prose in a banner, but writes them here as fields — and prose is what the
+    CLI is free to rewrite between releases: the "You've hit your session
+    limit" wording matched no screen marker for a whole run of limited turns,
+    each of which then read as an agent that finished without ticking.
+
+    ``quotaLimits`` is the same payload ``cc`` gets from its ``rate_limit_event``
+    (``status``/``resetsAt``/``rateLimitType``), which is what makes ``resetsAt``
+    an epoch to park on rather than an hour to parse out of a sentence.
+    """
+
+    error: str
+    text: str
+    status: int | None = None
+    quota_status: str | None = None
+    limit_type: str | None = None
+    resets_at: float | None = None
+
+    @property
+    def is_rate_limit(self) -> bool:
+        return self.error == "rate_limit"
+
+    @property
+    def is_auth_failure(self) -> bool:
+        return self.error == "authentication_failed"
+
+    def describe(self) -> str:
+        """One-line log form — the fields, not the prose, so a shape change shows."""
+        bits = [f"error={self.error}", f"status={self.status}"]
+        if self.quota_status:
+            bits.append(f"quota={self.quota_status}")
+        if self.limit_type:
+            bits.append(f"type={self.limit_type}")
+        return f"{' '.join(bits)}: {self.text}"
+
+
+def _record_text(record: dict) -> str:
+    """The human-readable text of an error record, for logs and messages."""
+    content = ((record.get("message") or {}).get("content")) or []
+    if isinstance(content, list):
+        parts = [
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        return " ".join(t for t in parts if t).strip()
+    return str(content)[:200]
+
+
+def parse_api_error(line: str | bytes) -> _ApiError | None:
+    """Read one transcript line as an API-error record, or None.
+
+    Only records the CLI itself flags with ``isApiErrorMessage`` count: an
+    ordinary assistant message that happens to *discuss* a rate limit (an agent
+    writing one into a test fixture, say) carries no such flag, which is a
+    distinction no amount of screen-matching could make.
+    """
+    if isinstance(line, bytes):
+        if b"isApiErrorMessage" not in line:
+            return None
+        text = line.decode("utf-8", "replace")
+    else:
+        if "isApiErrorMessage" not in line:
+            return None
+        text = line
+    try:
+        record = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(record, dict) or not record.get("isApiErrorMessage"):
+        return None
+    quota = record.get("quotaLimits")
+    quota = quota if isinstance(quota, dict) else {}
+    resets = quota.get("resetsAt")
+    status = record.get("apiErrorStatus")
+    return _ApiError(
+        error=str(record.get("error") or ""),
+        text=_record_text(record),
+        status=status if isinstance(status, int) else None,
+        quota_status=quota.get("status"),
+        limit_type=quota.get("rateLimitType"),
+        resets_at=float(resets) if isinstance(resets, (int, float)) else None,
+    )
+
+
+class _TranscriptWatcher:
+    """Tails this attempt's transcript(s) for API-error records, live.
+
+    The TUI appends to ``projects/<slug>/<session>.jsonl`` as the turn runs, so
+    a record lands about half a second after the request that failed — well
+    inside the quiescence window the end-of-turn heuristic waits out, which is
+    the whole reason a limit can be caught before it is mistaken for a finished
+    turn.
+
+    Every *new* file under the config dir is followed, not just the newest one:
+    picking a single session file would mean picking it before the CLI has
+    created it, and a wrong pick loses the only copy of the event. Each file
+    keeps its own byte offset, and only whole lines are consumed, so a record
+    still being written is read on the next poll rather than half-parsed.
+
+    Scoped to :func:`_transcript_paths`, so a *sub-agent's* transcript is not
+    watched, for the same reason it is not counted in metrics — it is not this
+    task's session. A limit that rejects a sub-agent's request rejects the main
+    session's next one too, which is the record this reads.
+    """
+
+    def __init__(self, config_dir: Path | None, before: set[Path]):
+        self._config_dir = config_dir
+        self._before = before
+        self._offsets: dict[Path, int] = {}
+
+    def poll(self) -> list[_ApiError]:
+        """Return error records appended since the last call (oldest first)."""
+        if self._config_dir is None:
+            return []
+        events: list[_ApiError] = []
+        try:
+            paths = sorted(_transcript_paths(self._config_dir) - self._before)
+        except OSError:
+            return events
+        for path in paths:
+            offset = self._offsets.get(path, 0)
+            try:
+                if path.stat().st_size < offset:
+                    offset = 0  # truncated/replaced — start over
+                with path.open("rb") as fh:
+                    fh.seek(offset)
+                    chunk = fh.read()
+            except OSError:
+                continue
+            cut = chunk.rfind(b"\n")
+            if cut == -1:
+                continue  # nothing but a partial line yet
+            self._offsets[path] = offset + cut + 1
+            for line in chunk[:cut].split(b"\n"):
+                event = parse_api_error(line)
+                if event is not None:
+                    events.append(event)
+        return events
+
 
 
 class _PtyProcess:
@@ -645,6 +734,17 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         # after teardown (the per-task config dir accumulates one per attempt).
         config_dir = Path(state_dir) if state_dir else None
         before = _transcript_paths(config_dir) if config_dir else set()
+        # The same snapshot serves the live watcher: this attempt's transcript
+        # is whatever appears under the config dir that was not there before.
+        # Without a config dir there is no transcript and therefore no wire —
+        # ola always passes one (``state_dir_name = ".claude"``), so this is a
+        # bare-call shape, but say so rather than fail a limit silently.
+        watcher = _TranscriptWatcher(config_dir, before)
+        if config_dir is None:
+            logger.warning(
+                "ct: no state_dir — a usage limit or auth failure mid-turn "
+                "cannot be detected (no transcript to read)."
+            )
 
         try:
             child = _PtyProcess(argv, workdir, env)
@@ -666,7 +766,7 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         success = False
         error_type: str | None = None
         try:
-            if not self._await_ready(child):
+            if not self._await_ready(child, watcher):
                 output = "TUI never reached a ready prompt:\n" + strip_ansi(
                     child.tail(2000)
                 )
@@ -678,7 +778,7 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                         on_progress("running (interactive TUI)…", None)
                     except Exception:
                         logger.exception("on_progress raised; continuing")
-                done = self._await_turn_end(child, on_progress)
+                done = self._await_turn_end(child, watcher, on_progress)
                 output = strip_ansi(child.tail(2000))
                 if done:
                     success = True
@@ -690,14 +790,16 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             # transcript — so stats are recovered *after* this returns.
             self._teardown(child)
 
-        # Reaching here means no banner matched — the turn ended normally, or
-        # timed out. Log the tail anyway: the screen is this backend's only
-        # wire, and a *missed* limit banner leaves no other trace, because such
-        # a turn reads as finished-but-unticked and the scheduler drops
-        # ``output`` on that path. Without this the evidence costs another full
-        # window to reproduce. This is exactly how the "You've hit your session
-        # limit" wording was found (2026-09-02) after it slipped past every
-        # marker; keep it while any wording of _LIMIT_RE stays unobserved.
+        # Reaching here means nothing stopped the turn — it ended normally, or
+        # timed out. Log the tail anyway: a stop this backend fails to
+        # recognise leaves no other trace, because such a turn reads as
+        # finished-but-unticked and the scheduler drops ``output`` on that
+        # path, so the evidence would cost another full window to reproduce.
+        # That is not hypothetical — it is exactly how the "You've hit your
+        # session limit" wording was found (2026-09-02) while detection was
+        # still screen-scraped. Detection has moved to the transcript since,
+        # which narrows what this can catch but does not close it: the record
+        # shape is no more a public API than the prose was.
         logger.debug("ct: end-of-turn screen tail:\n%s", output[-1000:])
 
         stats = self._recover_stats(config_dir, before, error_type)
@@ -732,25 +834,23 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             stats.models = [self.model]
         return stats
 
-    def _await_ready(self, child: _PtyProcess) -> bool:
+    def _await_ready(self, child: _PtyProcess, watcher: _TranscriptWatcher) -> bool:
         """Wait until the input box appears, clearing the trust dialog if shown."""
         deadline = time.monotonic() + _READY_TIMEOUT_SEC
         trust_handled = False
-        parked = False  # one park per wait; see _await_turn_end
         while time.monotonic() < deadline:
             if not child.alive():
                 return False
             screen = child.tail()
+            # The one place the *screen* still carries a global stop: a
+            # credential this dead never reaches a request, so it never writes
+            # a record. There is no transcript yet to disagree with.
             if is_auth_error(screen):
                 raise AuthenticationError(strip_ansi(screen)[-500:])
-            # The limit banner is usually already up here, before the prompt is
-            # ever pasted — the 2026-08-25 capture hit this branch five seconds
-            # after spawn, not the mid-turn one. Park the same way: the TUI is
-            # going to sit there until the window reopens either way.
-            if not parked and is_rate_limited(screen):
-                parked = True
-                deadline += self._park_for_limit(child, screen, None)
-                continue
+            # Same watcher as the turn loop, in case the CLI ever makes a
+            # request before the prompt is pasted (every captured limit record
+            # so far follows one, so this has not been observed firing).
+            deadline += self._handle_api_errors(child, watcher, None)
             if is_trust_dialog(screen) and not trust_handled:
                 trust_handled = True
                 logger.debug("ct: trust dialog shown — sending Enter to accept")
@@ -764,7 +864,10 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         return False
 
     def _await_turn_end(
-        self, child: _PtyProcess, on_progress: ProgressCallback | None
+        self,
+        child: _PtyProcess,
+        watcher: _TranscriptWatcher,
+        on_progress: ProgressCallback | None,
     ) -> bool:
         """Return True once the turn is over, detected by the pty going quiet.
 
@@ -778,25 +881,17 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         deadline = time.monotonic() + _TURN_TIMEOUT_SEC
         saw_activity = False
         last_ping = 0.0
-        # One park per turn. The banner never leaves ``tail()`` once printed —
-        # the tail is the raw cumulative byte stream, so a stale frame lingers
-        # (the same reason the "esc to interrupt" footer is not gated on) — so
-        # re-testing the marker after the park would re-park forever.
-        parked = False
         while time.monotonic() < deadline:
             if not child.alive():
                 # Process exited on its own — treat as turn end.
                 return True
-            screen = child.tail()
-            if is_auth_error(screen):
-                raise AuthenticationError(strip_ansi(screen)[-500:])
             # Must be handled here, not left to quiescence: a parked turn goes
             # silent, so _DONE_QUIESCENCE_SEC elapses and this would return True
             # — an agent that "finished" without ticking its checkbox, which is
             # stagnation to the scheduler and burns every task's attempts.
-            if not parked and is_rate_limited(screen):
-                parked = True
-                deadline += self._park_for_limit(child, screen, on_progress)
+            waited = self._handle_api_errors(child, watcher, on_progress)
+            if waited:
+                deadline += waited
                 # Forget any activity seen before the limit hit. The turn may
                 # only end on output the TUI produces *after* resuming, so a
                 # park that wakes early (a derived boundary can be off) just
@@ -819,10 +914,58 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             time.sleep(0.5)
         return False
 
+    def _handle_api_errors(
+        self,
+        child: _PtyProcess,
+        watcher: _TranscriptWatcher,
+        on_progress: ProgressCallback | None,
+    ) -> float:
+        """React to error records the TUI appended; return seconds parked.
+
+        One reader for both global stops, because they arrive on one wire in
+        one shape and differ only by a field. Anything else the CLI flags is
+        logged and left alone: an unhandled shape showing up in the log is how
+        the next missing reaction gets found, and reacting to one ola has no
+        answer for would be worse than letting the turn run.
+        """
+        waited = 0.0
+        for event in watcher.poll():
+            if event.is_auth_failure:
+                # Global: every task shares this credential, so the scheduler
+                # aborts the run instead of requeueing this one.
+                raise AuthenticationError(event.text or event.describe())
+            if event.is_rate_limit:
+                logger.debug("ct: limit record: %s", event.describe())
+                waited += self._park_for_limit(child, event, watcher, on_progress)
+                continue
+            logger.debug("ct: transcript API error, no ola reaction: %s", event.describe())
+        return waited
+
+    def _reset_epoch(self, event: _ApiError) -> float:
+        """When the window reopens, per the record — or the derived boundary.
+
+        The CLI states ``resetsAt`` outright, so there is nothing to parse. The
+        fallback covers a record that carries none, or one further out than a
+        five-hour window (see _MAX_PARK_SEC): waking at the next boundary and
+        re-parking on the next record beats holding a worktree for days.
+        """
+        reset_at = event.resets_at
+        if reset_at is not None and 0 < reset_at - time.time() <= _MAX_PARK_SEC:
+            return reset_at
+        boundary = next_window_boundary()
+        logger.warning(
+            "ct: usage limit with no usable resetsAt (%s) — falling back to the "
+            "next %dh window boundary.",
+            event.describe(),
+            _WINDOW_HOURS,
+        )
+        return boundary
+
     def _park_for_limit(
         self,
         child: _PtyProcess,
-        screen: str,
+        event: _ApiError,
+        watcher: _TranscriptWatcher,
         on_progress: ProgressCallback | None,
     ) -> float:
         """Hold a turn the TUI has parked on a usage limit; return seconds waited.
@@ -838,33 +981,16 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         forgotten one. That rule exists because a ``cc`` turn the limit rejects
         is *dead* — there is no in-flight work to protect, so parking a process
         buys nothing. Here the work is alive and waiting. The distinguishing
-        signal is the CLI stating its own intent on screen, not a threshold ola
+        signal is the CLI reporting the rejection itself, not a threshold ola
         picked, so there is still one reaction per condition.
-
-        Escalates instead (unchanged behaviour) when the reset time cannot be
-        read: parking for an unknown duration is the one case where stopping and
-        letting the supervisor wait really is better.
         """
-        reset_at = parse_reset_at(screen)
-        if reset_at is None:
-            # The banner said something we could not read. Windows are five
-            # hours on a known grid, so a derived boundary beats both guessing
-            # and giving up — and being wrong is survivable in a way it is not
-            # elsewhere: waking early costs a busier poll (the caller clears
-            # ``saw_activity``, so the turn cannot end until the TUI really
-            # resumes), waking late costs idle time bounded by one window.
-            reset_at = next_window_boundary()
-            logger.warning(
-                "ct: usage limit reached but no reset time on screen — "
-                "falling back to the next %dh window boundary.",
-                _WINDOW_HOURS,
-            )
-
+        reset_at = self._reset_epoch(event)
         wait = max(0.0, reset_at - time.time()) + _PARK_GRACE_SEC
         resumes = datetime.fromtimestamp(reset_at).strftime("%H:%M")
         logger.warning(
-            "ct: usage limit reached — the TUI resumes this turn by itself at "
+            "ct: usage limit (%s) — the TUI resumes this turn by itself at "
             "%s local (%.0f min); holding rather than restarting it.",
+            event.limit_type or "unknown window",
             resumes,
             wait / 60,
         )
@@ -875,8 +1001,29 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                 # The TUI died while parked; let the caller's liveness check
                 # treat it as end-of-turn rather than sleeping out the window.
                 break
-            if is_auth_error(child.tail()):
-                raise AuthenticationError(strip_ansi(child.tail())[-500:])
+            # Keep reading the wire while parked. A credential that dies during
+            # the wait must still escalate, and a *second* limit record (the
+            # window reopened, the turn resumed, and it ran out again) extends
+            # the wait rather than being swallowed — the record is consumed
+            # from the transcript, so nobody else will see it.
+            for later in watcher.poll():
+                if later.is_auth_failure:
+                    raise AuthenticationError(later.text or later.describe())
+                if not later.is_rate_limit:
+                    continue
+                next_reset = self._reset_epoch(later)
+                if next_reset > reset_at:
+                    reset_at = next_reset
+                    wait = (
+                        max(0.0, reset_at - time.time())
+                        + _PARK_GRACE_SEC
+                        + (time.monotonic() - started)
+                    )
+                    resumes = datetime.fromtimestamp(reset_at).strftime("%H:%M")
+                    logger.warning(
+                        "ct: still limited — extending the park to %s local.",
+                        resumes,
+                    )
             if on_progress is not None:
                 remaining = (wait - (time.monotonic() - started)) / 60
                 try:

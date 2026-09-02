@@ -1,7 +1,12 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.13.0
+version: 1.14.0
+# 1.14.0: extend the one-detector item — ask whether the obvious wire is the
+#          only one, and prefer a structured record (even one a CLI writes to
+#          a file for its own reasons) over prose; keep the pin-and-log rule
+#          for where prose really is all there is (minor: tightens 1.13.0,
+#          no rule reversed).
 # 1.13.0: extend the one-detector item to prose wires — pin each wording to a
 #          capture, anchor on the condition's invariant rather than one
 #          sentence, and log the screen that did not match (minor: tightens
@@ -172,22 +177,29 @@ the answer is wrong:
   detector is dead code that a transcript-shaped fixture will happily prove
   green. Corollary: once a condition's own event has fired, classify on it —
   don't second-guess it with a downstream field the CLI never promised to set
-  (see the `rate_limit_event`-not-`result.subtype` rule in CLAUDE.md). A backend
-  whose only transport is a *screen* (`ct`) owes the same treatment — the screen
-  is its wire — and owes it especially where the stop manifests as **silence**:
-  an end-of-turn heuristic built on quiescence cannot tell "finished" from
-  "killed mid-turn", so a condition that goes quiet must be detected explicitly
-  or it is silently reclassified as success-without-a-tick, i.e. stagnation.
-  Where that wire is **prose**, the detector is only as good as its wordings,
-  and a CLI rephrases without notice: pin every branch to a real capture, and
-  anchor on the invariant the condition turns on rather than on one sentence —
-  ola's limit detector keys on the *stop verb* ("reached"/"hit") and wildcards
-  the window noun, which is also what keeps the warning that names the same
-  limit ("used 93% of your session limit") from tripping it. A wording the
-  detector misses fails *silently* — that is the whole point of the previous
-  paragraph — so a prose detector owes a log of the screen it did not match;
-  ola's `_run_tui` end-of-turn tail is how the "hit" wording was found, a
-  window after it cost a run.
+  (see the `rate_limit_event`-not-`result.subtype` rule in CLAUDE.md). This
+  matters most where the stop manifests as **silence**: an end-of-turn
+  heuristic built on quiescence cannot tell "finished" from "killed mid-turn",
+  so a condition that goes quiet must be detected explicitly or it is silently
+  reclassified as success-without-a-tick, i.e. stagnation.
+  Then ask the harder question: **is the obvious wire the only one?** A UI
+  backend looks like it forces prose — `ct` scraped screen banners for a year
+  on that assumption — but the CLI was appending a structured record
+  (`isApiErrorMessage`, `error`, `quotaLimits.resetsAt`) to its transcript the
+  whole time, live, half a second after each failed request. Prose cost a run
+  to find out: every marker required the word "reached", the CLI said "hit",
+  and two folders burned their attempts against a wall that was already
+  reported in a field. Prefer the structured wire even when it is somewhere
+  unglamorous — a file the CLI writes for its own reasons — and prefer it for
+  the second-order reasons too: an epoch beats an hour in a sentence (no
+  parsing, no invented fallback grid), and a `status: "rejected"` field beats
+  inferring a stop from a verb, since only the field can separate the CLI's own
+  report from an agent *writing about* the same condition.
+  Where prose really is all there is, pin every wording to a real capture and
+  anchor on the invariant, not the sentence — and either way, log the input
+  that matched nothing: a missed wording or a renamed field fails *silently*,
+  and ola's `_run_tui` end-of-turn tail is the only reason the "hit" wording
+  was ever found.
 - When a stop is **global by nature** — one shared resource behind every task,
   like the credential or the subscription window — does it abort the run once,
   or fail task-by-task? Requeuing against an unmoved wall burns every task's

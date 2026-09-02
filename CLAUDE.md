@@ -36,41 +36,64 @@ to exercise the real TUI form factor. The trade-offs are documented in
 `src/ola/agents/claude_code_tui.py`: it detects end-of-turn from the screen going
 idle (no result event), which is sound because the ticked PLAN.md checkbox is the
 only completion signal the harness trusts (checkbox-is-truth). For metrics, `ct`
-reads the per-task transcript the TUI flushes on exit
-(`<state_dir>/projects/.../<session>.jsonl`) and recovers token counts, turns,
+reads the per-task transcript at
+`<state_dir>/projects/.../<session>.jsonl` (appended live, though metrics are
+only *read* after `/exit`) and recovers token counts, turns,
 models, and peak context (cost/cache-hit) — but **not** the streaming-only
 timings (TTFT, decode-isolated tok/sec), which are never written to disk, and
 nothing for a session too short to flush. Use `cc` when you need live timing;
 use `ct` to drive the interactive UI with post-hoc token economics.
 
 `ct` runs on the same subscription as `cc`, so the two global stops below apply
-to it identically — but the interactive TUI publishes no machine-readable
-stream, so both are detected as **screen banners** (`is_auth_error`,
-`is_rate_limited`) and raised as exceptions that `run()` maps onto the same
-`error_type` the scheduler keys on. A rate limit in particular must not be left
-to the idle heuristic: a limited turn goes silent immediately, so quiescence
-reads it as a finished turn that merely failed to tick — stagnation, attempts
-burned against an unmoved wall, the same stall `cc` hit until 2026-08.
+to it identically. The interactive TUI publishes no *stdout* stream, but it
+does append a machine-readable record to the session transcript the moment a
+request fails, and it appends it **live** — so `ct` reads both stops off that
+file (`_TranscriptWatcher`, `parse_api_error`) rather than off the screen, and
+raises them as exceptions that `run()` maps onto the same `error_type` the
+scheduler keys on. The record is flagged `isApiErrorMessage: true` and carries
+`error` (`rate_limit` / `authentication_failed`), `apiErrorStatus` (429 / —)
+and, for a limit, a `quotaLimits` block with the same
+`status` / `resetsAt` / `rateLimitType` payload `cc` gets from its
+`rate_limit_event`. Note the wire/disk spelling difference still holds
+(`is_api_error_message` on `cc`'s stream, `isApiErrorMessage` here) — same
+condition, two serializations.
+
+A rate limit in particular must not be left to the idle heuristic: a limited
+turn goes silent immediately, so quiescence reads it as a finished turn that
+merely failed to tick — stagnation, attempts burned against an unmoved wall,
+the same stall `cc` hit until 2026-08.
+
+**The screen is still the wire for state that never reaches a request** and so
+writes no record: the trust dialog, the ready box, and a credential dead enough
+that the TUI never opens a session (`is_auth_error`, consulted only in
+`_await_ready`). That split is structural rather than a preference — before a
+transcript exists there is nothing else to read, and once one exists it is the
+only reader — so the two can never disagree about one event.
 
 **A usage limit is where `ct` deliberately diverges from `cc`: it waits, in
 process.** The interactive CLI does not kill a limited turn the way `claude -p`
 does — it prints "continuing automatically at 4pm" and resumes by itself, still
-holding the session and its context. So `ct` parks the turn until the stated
-reset (`_park_for_limit`, with `parse_reset_at` reading the time out of the
-banner's prose) instead of escalating. This is an exception to "ola never waits
-out a window", not an oversight: that rule assumes the turn is *dead* and there
+holding the session and its context. So `ct` parks the turn until the record's
+own `quotaLimits.resetsAt` (`_park_for_limit`) instead of escalating — an epoch
+the CLI states outright, so there is nothing to parse and nothing to guess.
+This is an exception to "ola never waits out a window", not an oversight: that
+rule assumes the turn is *dead* and there
 is no in-flight work to protect, which is true of `cc` and false here — and the
-signal that distinguishes them is the CLI stating its own intent on screen, not
-a duration threshold ola invented.
+signal that distinguishes them is the CLI reporting the rejection itself, not a
+duration threshold ola invented.
 
-When the banner's reset time will not parse, `ct` falls back to the next
-five-hour **window boundary** (`next_window_boundary`), a continuous grid
-stepping from one boundary this account was observed to hit — not a daily
+When a limit record carries no usable `resetsAt` — never yet observed; all 34
+captured records state one — or states a reset further out than a five-hour
+window (`_MAX_PARK_SEC`, i.e. a weekly cap the TUI has never been seen sitting
+through), `ct` falls back to the next five-hour **window boundary**
+(`next_window_boundary`), a continuous grid stepping from one boundary this
+account was observed to hit — not a daily
 "every day at HH:00", since 24 is not a multiple of 5 and the wall-clock hour
 therefore shifts an hour per day. Being wrong is survivable by construction:
 waking early only costs a busier poll, because the park clears `saw_activity`
 so the turn cannot end until the TUI actually produces output again; waking
-late costs idle time bounded by one window. The anchor is an empirical fact
+late costs idle time bounded by one window — and a turn that wakes still
+limited simply parks again on the next record. The anchor is an empirical fact
 about one account (the window is *rolling*, anchored to first use after an idle
 stretch), so `_WINDOW_ANCHOR_LOCAL` is where to correct the phase when it
 drifts.
@@ -84,19 +107,25 @@ the turn on `_TURN_TIMEOUT_SEC` — an ordinary non-stagnant failure that
 requeues, not a fast global abort. If that shows up in practice, that is the
 signal to bring a bounded escalation back.
 
-The limit detector matches two pinned wordings — "Usage limit reached ·
-continuing automatically at 4pm" (2026-08-25) and "You've hit your session
-limit · resets 11:10am (UTC)" (2026-09-02) — so it anchors on the *stop verb*
-("reached"/"hit"), with the window noun after "your" left as a bounded
-wildcard. The verb is what separates a stop from a warning: both the
-"Approaching usage limit" hint and the "You've used 93% of your session limit"
-meter name a limit without hitting one, and the CLI keeps working through them.
-Until 2026-09-02 every marker required "reached", so the "hit" wording parked
-nothing: each limited turn went silent, quiesced, and was read as an agent that
-finished without ticking — stagnant, attempts burned, folder circuit breaker
-tripped, which is precisely the failure the park exists to prevent. That miss
-was diagnosable only from the end-of-turn screen tail `_run_tui` logs, which is
-why that logging stays.
+Detection moved to the transcript on 2026-09-02, after a screen-scraped one
+failed exactly the way prose fails. Every marker required the word "reached";
+the CLI printed "You've hit your session limit · resets 11:10am (UTC)"; nothing
+matched, so two plans' limited turns went silent, quiesced, and were read as
+agents that finished without ticking — stagnant, attempts burned, both folders'
+circuit breakers tripped ~13 minutes before the window reopened. The records
+were on disk the whole time. Prose also forced a distinction the fields make
+outright: the meter ("You've used 93% of your session limit") names the same
+limit without hitting one, and writes no record at all, while the
+`quotaLimits` `status` field says `rejected` in as many words.
+
+Two properties are worth keeping in mind when changing this. `isApiErrorMessage`
+is what separates the CLI's own report from an agent merely *writing about* a
+rate limit — the runs above were building a dispatcher whose tests inject 429s,
+so the string appears throughout their transcripts, and no screen match could
+have told those apart. And the record shape is no more a public API than the
+prose was, so `_run_tui` still logs the end-of-turn screen tail: a stop this
+backend fails to recognise leaves no other trace, because such a turn reads as
+finished-but-unticked and the scheduler drops `output` on that path.
 
 ### Claude Code credentials (`cc`/`ct`)
 
@@ -399,7 +428,7 @@ its frontmatter (semver, starting at `1.0.0`).
 
 | Skill | Version | Purpose |
 |-------|---------|---------|
-| `ola-design` | 1.13.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
+| `ola-design` | 1.14.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 2.0.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts; and the instructions-vs-data split — a task cannot open the agent folder, so the design is **inlined per stage into `TASK-PROMPT.md`** and never pointed at or committed to the project repo, while paths the *running code* opens must be in `HEAD` (`git cat-file -e HEAD:<path>`, not `git check-ignore`). |

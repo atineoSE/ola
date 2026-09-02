@@ -15,14 +15,15 @@ import pytest
 from ola.agents import claude_code_tui as ct
 from ola.agents.claude_code_tui import (
     ClaudeCodeTUIAgent,
+    _TranscriptWatcher,
     _transcript_paths,
     is_auth_error,
-    is_rate_limited,
     is_busy,
     is_idle_box,
     is_onboarding,
     is_ready,
     is_trust_dialog,
+    parse_api_error,
     seed_claude_json,
     transcript_stats,
 )
@@ -52,38 +53,69 @@ TRUST_SCREEN = "Quick safety check: Is this a project you created or one you tru
 ONBOARDING_SCREEN = "Let's get started.\nChoose the text style that looks best"
 BUSY_SCREEN = "✶ Hyperspacing… (6s · esc to interrupt) ⏵⏵ bypass permissions on"
 AUTH_SCREEN = "⏺ Please run /login · API Error: 401 Invalid authentication credentials"
-LIMIT_SCREEN = (
-    "Claude usage limit reached. Your limit will reset at 3pm (Europe/Madrid)."
+# --- transcript records: ct's wire for the two global stops -----------------
+# Verbatim from a real limit (2026-09-02 10:57:15Z), trimmed to the fields ola
+# reads. The screen rendered this as "You've hit your session limit" — a
+# wording that matched no marker for a whole run of turns, each read as an
+# agent that finished without ticking. The record says the same thing in
+# fields, and carries the reset as an epoch instead of an hour in a sentence.
+LIMIT_RECORD_REAL = json.dumps(
+    {
+        "type": "assistant",
+        "timestamp": "2026-09-02T10:57:15.877Z",
+        "uuid": "0c4f0a1e-0000-4000-8000-000000000000",
+        "sessionId": "1528ca33-b6d1-4891-a7da-735017a7aa24",
+        "requestId": "req_011CeeVYYAQKnwhKVQnt2x6G",
+        "version": "2.1.258",
+        "error": "rate_limit",
+        "apiErrorStatus": 429,
+        "isApiErrorMessage": True,
+        "quotaLimits": {
+            "status": "rejected",
+            "resetsAt": 1788347400,
+            "unifiedRateLimitFallbackAvailable": False,
+            "rateLimitType": "five_hour",
+            "overageStatus": "rejected",
+        },
+        "message": {
+            "model": "<synthetic>",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "You've hit your session limit \u00b7 resets 11:10am (UTC)",
+                }
+            ],
+        },
+    }
 )
-LIMIT_SCREEN_SHORT = "5-hour limit reached ∙ resets 3pm"
-# Verbatim from a real limit (2026-08-25 15:33 UTC). Note the pty garbling —
-# "Continug", "Usge", "cancl" — which is why the parser tolerates dropped
-# characters and prefers the copy carrying a timezone.
-LIMIT_SCREEN_REAL = (
-    "your session limit \u00b7resets4pm(UTC)   Continug automatically at 4pm \u00b7 "
-    "esc to cancl\u25cfUsge limit reached \u00b7 continuing automaticallyat4pm"
-    "\u00b7escortypetocancel\u273bBrewedfor0s          \u25cfhigh\u00b7/effort"
-    "\u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014 \u276f \u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014  "
-    "\u26a0 Usage limit reached \u00b7 continuing automatically at 4pm \u00b7 esc to cancel"
+# 1788347400 == 2026-09-02 11:10:00 UTC, exactly what the banner said in prose.
+LIMIT_RESETS_AT = 1788347400.0
+# Verbatim from a real mid-session credential death (2026-09-02 09:52:10Z).
+AUTH_RECORD = json.dumps(
+    {
+        "type": "assistant",
+        "timestamp": "2026-09-02T09:52:10.511Z",
+        "error": "authentication_failed",
+        "isApiErrorMessage": True,
+        "message": {
+            "model": "<synthetic>",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Login expired \u00b7 Please run /login"}],
+        },
+    }
 )
-# No reset time anywhere — the escalate-instead-of-park path.
-LIMIT_SCREEN_NO_TIME = "\u26a0 Usage limit reached \u00b7 esc to cancel"
-LIMIT_WARNING_SCREEN = "Approaching usage limit · /model to use best available model"
-# Verbatim from a real limit (2026-09-02), garbled earlier copy included. This
-# wording says "hit", never "reached", so it slipped past every marker: the
-# turns read as finished-but-unticked and burned their attempts on a wall.
-LIMIT_SCREEN_SESSION = (
-    "⎿  Yu've hit your ssion limit·resets11:10am(UTC)"
-    "/upgradetoincreaseyourusagelimit.✻Sautéed for0s·done10:57AM\n"
-    "⎿  You've hit your session limit · resets 11:10am (UTC)\n"
-    "   /upgrade to increase your usage limit."
-)
-# The meter, not the wall: the run is still working, so parking on this would
-# cost hours the subscription had not actually taken away.
-LIMIT_METER_SCREEN = (
-    "You've used 93% of your session limit · resets 11:10am (UTC) · "
-    "/upgrade to keep using Claude Code"
-)
+
+
+def limit_record(resets_at, *, limit_type="five_hour"):
+    """A limit record with a chosen reset epoch (None = the field is absent)."""
+    record = json.loads(LIMIT_RECORD_REAL)
+    record["quotaLimits"]["rateLimitType"] = limit_type
+    if resets_at is None:
+        del record["quotaLimits"]["resetsAt"]
+    else:
+        record["quotaLimits"]["resetsAt"] = resets_at
+    return json.dumps(record)
 
 
 @pytest.mark.parametrize("screen", [READY_SPACED, READY_SPACELESS])
@@ -123,70 +155,120 @@ def test_is_auth_error():
     assert not is_auth_error(READY_SPACED)
 
 
-def test_is_rate_limited():
-    assert is_rate_limited(LIMIT_SCREEN)
-    assert is_rate_limited(LIMIT_SCREEN_SHORT)
-    assert is_rate_limited("You've reached your weekly limit for Claude Opus")
-    # The TUI renders words without spaces (cursor-move escapes).
-    assert is_rate_limited("Claudeusagelimitreached.Yourlimitwillresetat3pm")
-    # Regression (2026-09-02): the CLI also says "hit", never "reached". While
-    # every marker required "reached", these turns went silent, quiesced, and
-    # were read as finished-without-ticking — stagnation, attempts burned.
-    assert is_rate_limited(LIMIT_SCREEN_SESSION)
-    assert is_rate_limited("You've hit your weekly limit")
-    # A *warning* is not a stop — the CLI keeps running on the fallback model,
-    # so treating it as global would abort a run that is still working. The
-    # meter names the same limit, in the same words, without hitting it.
-    assert not is_rate_limited(LIMIT_WARNING_SCREEN)
-    assert not is_rate_limited(LIMIT_METER_SCREEN)
-    assert not is_rate_limited(READY_SPACED)
-    assert not is_rate_limited(BUSY_SCREEN)
-    # The two global-stop detectors must not claim each other's screens.
-    assert not is_rate_limited(AUTH_SCREEN)
-    assert not is_auth_error(LIMIT_SCREEN)
+def test_parse_api_error_reads_the_real_limit_record():
+    """The wire ct actually reads: fields, not a sentence.
 
-
-def test_parse_reset_at_reads_the_real_banner():
-    """The reset time is prose, not an epoch — but it is still readable.
-
-    Pinned to the 2026-08-25 capture. Without this the marker carries
-    resets_at: null, ola-monitor falls back to its floor wait, and a 27-minute
-    window costs ~23 relaunches instead of one.
+    Pinned to the 2026-09-02 capture. The prose form of this same event
+    ("You've hit your session limit") matched no screen marker and cost two
+    plans their remaining attempts; the record states the condition in
+    ``error``/``apiErrorStatus`` and the reset as an epoch.
     """
-    now = datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()
-    reset = ct.parse_reset_at(LIMIT_SCREEN_REAL, now=now)
+    event = parse_api_error(LIMIT_RECORD_REAL)
 
-    assert reset is not None
-    assert datetime.fromtimestamp(reset, timezone.utc) == datetime(
-        2026, 8, 25, 16, 0, tzinfo=timezone.utc
-    )
-
-
-def test_parse_reset_at_reads_the_session_banner():
-    """The "hit your session limit" wording states its reset the same way.
-
-    Pinned to the 2026-09-02 capture, so the newly-detected banner parks until
-    the CLI's own stated time instead of falling back to a derived boundary.
-    """
-    now = datetime(2026, 9, 2, 8, 57, tzinfo=timezone.utc).timestamp()
-    reset = ct.parse_reset_at(LIMIT_SCREEN_SESSION, now=now)
-
-    assert reset is not None
-    assert datetime.fromtimestamp(reset, timezone.utc) == datetime(
+    assert event is not None
+    assert event.is_rate_limit and not event.is_auth_failure
+    assert event.status == 429
+    assert event.quota_status == "rejected"
+    assert event.limit_type == "five_hour"
+    assert event.resets_at == LIMIT_RESETS_AT
+    assert datetime.fromtimestamp(event.resets_at, timezone.utc) == datetime(
         2026, 9, 2, 11, 10, tzinfo=timezone.utc
     )
+    assert "hit your session limit" in event.text
 
 
-def test_parse_reset_at_rolls_to_tomorrow_when_the_hour_has_passed():
-    now = datetime(2026, 8, 25, 17, 0, tzinfo=timezone.utc).timestamp()
-    reset = ct.parse_reset_at("Usage limit reached · resets 4pm (UTC)", now=now)
-    # 4pm today is behind us; the next 4pm is 23h out, past the misparse guard.
-    assert reset is None
+def test_parse_api_error_reads_the_auth_record():
+    event = parse_api_error(AUTH_RECORD)
+
+    assert event is not None
+    assert event.is_auth_failure and not event.is_rate_limit
+    assert "Please run /login" in event.text
 
 
-def test_parse_reset_at_none_without_a_time():
-    assert ct.parse_reset_at(LIMIT_SCREEN_NO_TIME) is None
-    assert ct.parse_reset_at(READY_SPACED) is None
+def test_parse_api_error_ignores_messages_that_merely_mention_a_limit():
+    """Only the CLI's own flag counts — text about a limit is not a limit.
+
+    Not hypothetical: the runs this detector was written from were building a
+    dispatcher whose tests inject 429s, so "rate_limit" appears throughout the
+    transcript as ordinary agent output. ``isApiErrorMessage`` is a distinction
+    no screen match could make.
+    """
+    chatty = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "model": "claude-sonnet-5",
+                "content": [
+                    {"type": "text", "text": "I set RATE_LIMIT_PROBABILITY=0.5 and"
+                     " asserted the provider reports rate_limit on a 429."}
+                ],
+            },
+        }
+    )
+    assert parse_api_error(chatty) is None
+
+
+def test_parse_api_error_ignores_junk():
+    assert parse_api_error("") is None
+    assert parse_api_error(b"") is None
+    assert parse_api_error("not json at all") is None
+    # A half-written line: flagged but unparseable, so it must not be guessed at.
+    assert parse_api_error(LIMIT_RECORD_REAL[:80]) is None
+
+
+def _session_file(config_dir: Path) -> Path:
+    d = config_dir / "projects" / "-tmp-wd"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "session.jsonl"
+
+
+def test_transcript_watcher_reads_appended_records_once(tmp_path):
+    """The wire is a growing file, so it is tailed, not re-read."""
+    watcher = _TranscriptWatcher(tmp_path, _transcript_paths(tmp_path))
+    session = _session_file(tmp_path)
+
+    assert watcher.poll() == []  # nothing written yet
+
+    session.write_text(LIMIT_RECORD_REAL + "\n")
+    first = watcher.poll()
+    assert len(first) == 1 and first[0].is_rate_limit
+    # Already consumed: a second poll must not park the turn all over again.
+    assert watcher.poll() == []
+
+    with session.open("a") as fh:
+        fh.write(AUTH_RECORD + "\n")
+    second = watcher.poll()
+    assert len(second) == 1 and second[0].is_auth_failure
+
+
+def test_transcript_watcher_waits_for_a_whole_line(tmp_path):
+    """A record still being written is read next poll, never half-parsed."""
+    watcher = _TranscriptWatcher(tmp_path, _transcript_paths(tmp_path))
+    session = _session_file(tmp_path)
+
+    session.write_text(LIMIT_RECORD_REAL[:60])  # no trailing newline yet
+    assert watcher.poll() == []
+
+    session.write_text(LIMIT_RECORD_REAL + "\n")
+    assert len(watcher.poll()) == 1
+
+
+def test_transcript_watcher_ignores_transcripts_from_earlier_attempts(tmp_path):
+    """Per-task config dirs accumulate one transcript per attempt.
+
+    A limit that stopped attempt 1 must not park attempt 2 before it has even
+    made a request — the snapshot taken at spawn is what scopes the wire to
+    this attempt.
+    """
+    stale = _session_file(tmp_path)
+    stale.write_text(LIMIT_RECORD_REAL + "\n")
+
+    watcher = _TranscriptWatcher(tmp_path, _transcript_paths(tmp_path))
+    assert watcher.poll() == []
+
+
+def test_transcript_watcher_no_config_dir(tmp_path):
+    assert _TranscriptWatcher(None, set()).poll() == []
 
 
 # ---------------------------------------------------------------------------
@@ -477,120 +559,195 @@ def test_run_auth_error_returns_friendly_message(monkeypatch):
     assert "Authentication failed" in resp.output
 
 
-def test_run_parks_on_the_derived_boundary_when_no_reset_time_is_shown(monkeypatch):
-    """No readable reset time must not mean no wait.
-
-    Windows are five hours on a known grid, so a derived boundary beats both
-    guessing and aborting. Regression for the 2026-08-25 run: escalating here
-    handed ola-monitor a null resets_at, it fell back to its 60s floor, and a
-    27-minute window cost ~23 relaunches.
-    """
-    start = datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()
-    clock = {"t": start}
+@pytest.fixture
+def parked_clock(monkeypatch):
+    """A fake clock starting just before the real 2026-09-02 limit."""
+    clock = {"t": datetime(2026, 9, 2, 10, 57, 15, tzinfo=timezone.utc).timestamp()}
     monkeypatch.setattr(ct.time, "time", lambda: clock["t"])
     monkeypatch.setattr(ct.time, "monotonic", lambda: clock["t"])
     monkeypatch.setattr(
         ct.time, "sleep", lambda n=0: clock.__setitem__("t", clock["t"] + max(n, 1))
     )
-    boundary = ct.next_window_boundary(start)
+    return clock
 
-    class LimitedPty(FakePty):
-        def tail(self, n=4000):
-            return (
-                self.ready_screen if not self.paste_done else LIMIT_SCREEN_NO_TIME
-            )
 
-        def idle_for(self):
-            if not self.paste_done or clock["t"] < boundary:
-                return 99.0
-            self._busy_polls += 1
-            return 0.1 if self._busy_polls == 1 else 99.0
+class LimitedPty(FakePty):
+    """Writes a limit record on paste, then goes silent until ``reset``.
 
-    fake = LimitedPty()
+    The silence is the point: without a park, _DONE_QUIESCENCE_SEC elapses and
+    the turn is reported finished-without-a-tick — stagnation, and the task's
+    attempts burned against a wall that has not moved.
+    """
+
+    def __init__(self, clock, session: Path, record: str, reset: float):
+        super().__init__()
+        self._clock = clock
+        self._session = session
+        self._record = record
+        self._reset = reset
+        self._written = False
+
+    def send(self, data: bytes):
+        super().send(data)
+        if self.paste_done and not self._written:
+            self._written = True
+            self._session.write_text(self._record + "\n")
+
+    def tail(self, n=4000):
+        return self.ready_screen
+
+    def idle_for(self):
+        if not self.paste_done or self._clock["t"] < self._reset:
+            return 99.0  # silent — parked, or not started
+        self._busy_polls += 1
+        return 0.1 if self._busy_polls == 1 else 99.0
+
+
+def _run_with_transcript(monkeypatch, tmp_path, make_pty):
+    """Run ct against a real per-task config dir the fake TUI writes into."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir(exist_ok=True)
+    config_dir = tmp_path / "cfg"
+    session = _session_file(config_dir)
+    fake = make_pty(session)
     monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: fake)
+    resp = ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=str(config_dir))
+    return resp, fake
 
-    resp = ClaudeCodeTUIAgent(model="opus").run("x", "/tmp/wd", state_dir=None)
 
-    # It waited rather than aborting the run.
+def test_run_parks_until_the_records_reset_epoch(parked_clock, monkeypatch, tmp_path):
+    """The CLI states the reset; ola waits for it instead of restarting.
+
+    Killing the turn would discard context the TUI is still holding and force a
+    relaunch that re-derives an unchanged plan. Regression for 2026-09-02,
+    where the limit went undetected and two folders tripped their stagnation
+    breaker ~13 minutes before this reset.
+    """
+    resp, fake = _run_with_transcript(
+        monkeypatch,
+        tmp_path,
+        lambda session: LimitedPty(
+            parked_clock, session, LIMIT_RECORD_REAL, LIMIT_RESETS_AT
+        ),
+    )
+
+    # It waited out the window rather than escalating...
     assert resp.stats.error_type != "rate_limited"
-    assert clock["t"] >= boundary
+    assert parked_clock["t"] >= LIMIT_RESETS_AT
+    # ...for the ~13 minutes the record stated, not a round number ola invented.
+    waited_min = (
+        parked_clock["t"] - datetime(2026, 9, 2, 10, 57, 15, tzinfo=timezone.utc).timestamp()
+    ) / 60
+    assert 12 < waited_min < 15, waited_min
     assert fake.alive() is False  # teardown still ran
 
 
-def test_run_parks_when_the_banner_is_up_before_the_prompt_is_pasted(monkeypatch):
-    """The real capture hit _await_ready, 5s after spawn — not the mid-turn path.
+def test_run_parks_on_the_derived_boundary_when_the_record_has_no_reset(
+    parked_clock, monkeypatch, tmp_path
+):
+    """No usable ``resetsAt`` must not mean no wait.
 
-    A park wired only into _await_turn_end would never have fired for it.
+    Every captured record carries one, so this is the unobserved path — but
+    windows are five hours on a known grid, and waking early only costs a
+    busier poll, because the park clears ``saw_activity``.
     """
-    start = datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()
-    clock = {"t": start}
-    monkeypatch.setattr(ct.time, "time", lambda: clock["t"])
-    monkeypatch.setattr(ct.time, "monotonic", lambda: clock["t"])
-    monkeypatch.setattr(
-        ct.time, "sleep", lambda n=0: clock.__setitem__("t", clock["t"] + max(n, 1))
+    boundary = ct.next_window_boundary(parked_clock["t"])
+    resp, _ = _run_with_transcript(
+        monkeypatch,
+        tmp_path,
+        lambda session: LimitedPty(
+            parked_clock, session, limit_record(None), boundary
+        ),
     )
-    reset = datetime(2026, 8, 25, 16, 0, tzinfo=timezone.utc).timestamp()
-
-    class LimitedAtStartupPty(FakePty):
-        """Banner up instead of a ready box, until the window reopens."""
-
-        def tail(self, n=4000):
-            if clock["t"] < reset:
-                return LIMIT_SCREEN_REAL
-            return super().tail(n)
-
-    fake = LimitedAtStartupPty()
-    monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: fake)
-
-    resp = ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
 
     assert resp.stats.error_type != "rate_limited"
-    # Waited to the stated 4pm UTC reset rather than timing out on ready.
-    assert clock["t"] >= reset
+    assert parked_clock["t"] >= boundary
+
+
+def test_run_ignores_a_reset_further_out_than_a_window(
+    parked_clock, monkeypatch, tmp_path
+):
+    """A weekly cap is not something to hold a worktree for.
+
+    The TUI has never been seen sitting through one, so ola waits to the next
+    five-hour boundary and re-parks if it is still limited, rather than
+    sleeping for days on the CLI's word.
+    """
+    boundary = ct.next_window_boundary(parked_clock["t"])
+    week_out = parked_clock["t"] + 6 * 24 * 3600
+    resp, _ = _run_with_transcript(
+        monkeypatch,
+        tmp_path,
+        lambda session: LimitedPty(
+            parked_clock,
+            session,
+            limit_record(week_out, limit_type="weekly"),
+            boundary,
+        ),
+    )
+
+    assert resp.stats.error_type != "rate_limited"
+    assert boundary <= parked_clock["t"] < week_out
+
+
+class LimitedBeforeReadyPty(FakePty):
+    """A limit recorded before the prompt is ever pasted; no ready box until reset."""
+
+    def __init__(self, clock, session: Path, reset: float):
+        super().__init__()
+        self._clock = clock
+        self._reset = reset
+        self._session = session
+        self._written = False
+
+    def tail(self, n=4000):
+        # Written on first poll, not in __init__: run() snapshots the config
+        # dir before spawning, so a file that predates the spawn belongs to an
+        # earlier attempt and is deliberately not this attempt's wire.
+        if not self._written:
+            self._written = True
+            self._session.write_text(LIMIT_RECORD_REAL + "\n")
+        if self._clock["t"] < self._reset and not self.paste_done:
+            return ""  # no input box while the CLI is blocked
+        return super().tail(n)
+
+
+def test_run_parks_from_the_ready_wait_too(parked_clock, monkeypatch, tmp_path):
+    """One detector, both wait loops.
+
+    Every captured record so far follows a pasted prompt, so this branch has
+    not been observed firing — but a limit during the ready wait would
+    otherwise expire _READY_TIMEOUT_SEC and requeue the task against the same
+    wall, which is the failure the park exists to avoid.
+    """
+    resp, fake = _run_with_transcript(
+        monkeypatch,
+        tmp_path,
+        lambda session: LimitedBeforeReadyPty(parked_clock, session, LIMIT_RESETS_AT),
+    )
+
+    assert resp.stats.error_type != "tui_not_ready"
+    assert parked_clock["t"] >= LIMIT_RESETS_AT
     assert any(b"\x1b[200~" in sent for sent in fake.sent), "prompt never pasted"
 
 
-def test_run_parks_and_continues_when_the_tui_will_resume_itself(monkeypatch):
-    """The TUI says "continuing automatically at 4pm" — so ola waits, not restarts.
+def test_run_escalates_on_an_auth_record_mid_turn(monkeypatch, tmp_path):
+    """A credential that dies mid-turn is global — abort, don't requeue.
 
-    Killing the turn would discard context the CLI is still holding and force a
-    relaunch that re-derives an unchanged plan. Regression for the 2026-08-25
-    run, where escalating on a self-continuing banner produced a relaunch every
-    ~70s for 27 minutes.
+    Pre-session the screen is the only wire (test_run_auth_error_...); once a
+    turn is running the transcript is, and it says ``authentication_failed``.
     """
-    clock = {"t": datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()}
-    monkeypatch.setattr(ct.time, "time", lambda: clock["t"])
-    monkeypatch.setattr(ct.time, "monotonic", lambda: clock["t"])
-    monkeypatch.setattr(ct.time, "sleep", lambda n=0: clock.__setitem__("t", clock["t"] + max(n, 1)))
+    resp, _ = _run_with_transcript(
+        monkeypatch,
+        tmp_path,
+        lambda session: LimitedPty(
+            {"t": 0.0}, session, AUTH_RECORD, float("inf")
+        ),
+    )
 
-    reset = datetime(2026, 8, 25, 16, 0, tzinfo=timezone.utc).timestamp()
-
-    class ParkedPty(FakePty):
-        """Banner up and pty silent, then the TUI resumes itself at the reset."""
-
-        def tail(self, n=4000):
-            return self.ready_screen if not self.paste_done else LIMIT_SCREEN_REAL
-
-        def idle_for(self):
-            if not self.paste_done:
-                return 99.0
-            # Silent while parked — without the park this ends the turn at once.
-            if clock["t"] < reset:
-                return 99.0
-            # Window reopened: the TUI resumes, emits for a poll, then finishes.
-            self._busy_polls += 1
-            return 0.1 if self._busy_polls == 1 else 99.0
-
-    fake = ParkedPty()
-    monkeypatch.setattr(ct, "_PtyProcess", lambda *a, **k: fake)
-
-    resp = ClaudeCodeTUIAgent().run("x", "/tmp/wd", state_dir=None)
-
-    # It waited out the window instead of escalating...
-    assert resp.stats.error_type != "rate_limited"
-    # ...for roughly the 27 minutes the banner stated (4pm UTC minus 15:33).
-    waited_min = (clock["t"] - datetime(2026, 8, 25, 15, 33, 17, tzinfo=timezone.utc).timestamp()) / 60
-    assert 26 < waited_min < 29, waited_min
+    assert resp.success is False
+    assert resp.stats.error_type == "authentication_error"
+    assert "Authentication failed" in resp.output
 
 
 def test_run_pty_alloc_failure(monkeypatch):
