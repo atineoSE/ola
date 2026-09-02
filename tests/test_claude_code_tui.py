@@ -7,6 +7,7 @@ teardown) is exercised without spawning ``claude``.
 """
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -603,6 +604,15 @@ class LimitedPty(FakePty):
         return 0.1 if self._busy_polls == 1 else 99.0
 
 
+def _pasted(fake) -> list[str]:
+    """Every prompt handed to the fake TUI, in order, unwrapped from its paste."""
+    joined = b"".join(fake.sent)
+    return [
+        chunk.decode("utf-8")
+        for chunk in re.findall(rb"\x1b\[200~(.*?)\x1b\[201~", joined, re.S)
+    ]
+
+
 def _run_with_transcript(monkeypatch, tmp_path, make_pty):
     """Run ct against a real per-task config dir the fake TUI writes into."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -729,6 +739,54 @@ def test_run_parks_from_the_ready_wait_too(parked_clock, monkeypatch, tmp_path):
     assert resp.stats.error_type != "tui_not_ready"
     assert parked_clock["t"] >= LIMIT_RESETS_AT
     assert any(b"\x1b[200~" in sent for sent in fake.sent), "prompt never pasted"
+
+
+def test_run_nudges_the_turn_back_to_life_after_the_park(
+    parked_clock, monkeypatch, tmp_path
+):
+    """Waiting out the window is only half of it — ola restarts the turn itself.
+
+    The CLI's own auto-continue is gated on ``autoContinueAtUsageLimit`` *and* a
+    server-delivered config ola can neither read nor set, and its no-dialog arm
+    is skipped in background/job contexts. On 2026-09-02 it did not fire: the
+    session sat at the prompt until a human typed "continue". Without the nudge
+    the resumed turn stays silent to _TURN_TIMEOUT_SEC and burns the attempt.
+    """
+    _, fake = _run_with_transcript(
+        monkeypatch,
+        tmp_path,
+        lambda session: LimitedPty(
+            parked_clock, session, LIMIT_RECORD_REAL, LIMIT_RESETS_AT
+        ),
+    )
+
+    assert _pasted(fake) == ["x", ct._RESUME_NUDGE]
+
+
+def test_run_does_not_nudge_from_the_ready_wait(parked_clock, monkeypatch, tmp_path):
+    """A limit before the prompt exists has no turn to restart.
+
+    The ready wait parks on the very same records and then resumes by pasting
+    the prompt it was always going to paste; a nudge would land in the input box
+    ahead of it and corrupt that prompt.
+    """
+    _, fake = _run_with_transcript(
+        monkeypatch,
+        tmp_path,
+        lambda session: LimitedBeforeReadyPty(parked_clock, session, LIMIT_RESETS_AT),
+    )
+
+    assert _pasted(fake) == ["x"]
+
+
+def test_no_nudge_when_the_tui_died_while_parked():
+    """Nothing to resume; the caller's liveness check ends the turn instead."""
+    fake = FakePty()
+    fake.close()
+
+    ClaudeCodeTUIAgent()._nudge_after_limit(fake)
+
+    assert fake.sent == []
 
 
 def test_run_escalates_on_an_auth_record_mid_turn(monkeypatch, tmp_path):

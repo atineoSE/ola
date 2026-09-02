@@ -1,7 +1,7 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.14.0
+version: 1.15.0
 # 1.14.0: extend the one-detector item — ask whether the obvious wire is the
 #          only one, and prefer a structured record (even one a CLI writes to
 #          a file for its own reasons) over prose; keep the pin-and-log rule
@@ -220,17 +220,31 @@ the answer is wrong:
   The rule's premise is that the in-flight turn is **dead** — nothing to
   protect, so parking buys nothing. Check that premise per backend before
   applying it: `ct` drives the interactive CLI, which does *not* kill a
-  rate-limited turn but parks it ("continuing automatically at 4pm") and resumes
-  with its context intact, so there stopping would destroy live work to
-  re-derive an unchanged plan, and `ct` waits instead. That is not the banned
-  threshold — the branch is the CLI *stating its own intent*, a fact read off
-  the wire, not a constant the harness picked. Where the CLI states nothing
-  (no parsable reset), `ct` derives the next five-hour window boundary rather
-  than stopping — a wrong guess is recoverable there because waking early only
-  costs polling, so the usual "don't invent a duration" caution is outweighed.
+  rate-limited turn — the session and its context survive the window — so there
+  stopping would destroy live work to re-derive an unchanged plan, and `ct`
+  waits instead. That is not the banned threshold: the branch is the CLI
+  *reporting the rejection itself*, a fact read off the wire, not a constant the
+  harness picked. Where the CLI states nothing (no parsable reset), `ct` derives
+  the next five-hour window boundary rather than stopping — a wrong guess is
+  recoverable there because waking early only costs polling, so the usual
+  "don't invent a duration" caution is outweighed.
   Removing a reaction removes its plumbing too: `ct` no longer raises the
   rate-limit escalation at all, and the branch was deleted rather than left
   behind as something that can never fire.
+- Waiting out a stop is not the same as **clearing** it. Ask separately what
+  restarts the work, and be suspicious of any answer that is "the tool does it
+  for us" — a convenience the vendor can gate is not a contract. `ct` parked on
+  the strength of the CLI printing "continuing automatically at 4pm", which is
+  real but conditional: arming it needs a user setting **and** a server-delivered
+  config the harness can neither read nor set, and it is skipped in background
+  contexts — so the one form factor ola runs is the one least likely to get it.
+  When it did not fire, the park succeeded and the turn still sat silent to its
+  timeout. Own the resumption: `ct` now pastes a nudge the moment the park ends.
+  And do not add a detector for "did the tool already do it?" when the only
+  evidence is *silence* — that is the same signal the end-of-turn heuristic
+  reads, and the whole reason this path exists is that silence is ambiguous
+  here. Prefer the reaction whose wrong case is cheap and self-correcting: a
+  redundant nudge costs one queued prompt, a missing one costs a whole turn.
 - Does it give each distinct terminal run-state its own process exit code
   (generic `1`, `128+signum` operator-interrupt, `40` Claude Code
   auth-escalation, `41` rate-limit escalation — see `RunInterrupted`/

@@ -46,15 +46,25 @@ CLI during a spike (see git history / the ``ct`` skill):
   simply did not tick — i.e. stagnation, and every task burning its attempts
   against an unmoved wall.
 * **A usage limit is waited out here, not escalated** — the one place ``ct``
-  diverges from ``cc``. The interactive CLI does not kill a limited turn: it
-  says "continuing automatically at 4pm" and resumes by itself, holding the
-  session and its context. Restarting it would throw that away to re-derive a
-  plan that has not changed, so :meth:`_park_for_limit` holds the turn until
-  the record's ``quotaLimits.resetsAt`` — an epoch the CLI states outright, so
-  there is nothing to parse and nothing to guess. Only a record without one
-  falls back to the next five-hour window boundary
-  (:func:`next_window_boundary`). So this backend never raises a rate-limit
-  escalation: ``error_type="rate_limited"`` and exit 41 are ``cc``'s alone.
+  diverges from ``cc``. The interactive CLI does not kill a limited turn the
+  way ``claude -p`` does: the session and its context stay live across the
+  window, so restarting would throw them away to re-derive a plan that has not
+  changed. :meth:`_park_for_limit` holds the turn until the record's
+  ``quotaLimits.resetsAt`` — an epoch the CLI states outright, so there is
+  nothing to parse and nothing to guess. Only a record without one falls back
+  to the next five-hour window boundary (:func:`next_window_boundary`). So this
+  backend never raises a rate-limit escalation: ``error_type="rate_limited"``
+  and exit 41 are ``cc``'s alone.
+* **ola restarts the parked turn itself** (:meth:`_nudge_after_limit`) rather
+  than trusting the CLI to. The CLI does have an auto-continue — it says
+  "continuing automatically at 4pm" and re-sends the turn when the window
+  reopens — but arming it requires the ``autoContinueAtUsageLimit`` setting
+  *and* a server-delivered config ola can neither read nor set, and its
+  no-dialog arm is skipped outright in background/job contexts. On 2026-09-02
+  it did not fire: the session sat at the prompt until a human typed
+  "continue". ola does not try to tell the two cases apart — a nudge that was
+  not needed costs one queued prompt, a nudge that was skipped costs
+  :data:`_TURN_TIMEOUT_SEC`.
 * **Metrics, post-turn.** The same transcript the watcher tails —
   ``<CLAUDE_CONFIG_DIR>/projects/<slug>/<session>.jsonl`` — is where the usage
   blocks land. It is appended as the session runs, but metrics are read *after*
@@ -197,6 +207,20 @@ _PARK_GRACE_SEC = 30.0
 # Poll cadence while parked — long enough to be free, short enough that a dead
 # TUI or a dead credential is noticed in seconds rather than at the reset.
 _PARK_POLL_SEC = 10.0
+# Pasted once the window reopens, to restart the turn the limit interrupted.
+# Sent unconditionally: whether the CLI would have resumed by itself depends on
+# a server-side flag ola cannot observe (see the module docstring), and
+# "did it resume?" is only answerable from silence — the same signal the
+# end-of-turn heuristic reads, which is exactly what must not be trusted here.
+# Sending it when it was not needed is self-correcting in both directions: the
+# CLI's own banner offers "esc or type to cancel", so typing cancels a still-
+# armed auto-continue and submits this instead (same outcome), and a nudge sent
+# before the window really reopened is rejected, writes another limit record,
+# and re-parks through the caller's ordinary loop.
+_RESUME_NUDGE = (
+    "The usage limit has reset. Continue the task you were working on when the "
+    "limit interrupted you; do not repeat work that is already complete."
+)
 
 
 def is_ready(screen: str) -> bool:
@@ -892,6 +916,7 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
             waited = self._handle_api_errors(child, watcher, on_progress)
             if waited:
                 deadline += waited
+                self._nudge_after_limit(child)
                 # Forget any activity seen before the limit hit. The turn may
                 # only end on output the TUI produces *after* resuming, so a
                 # park that wakes early (a derived boundary can be off) just
@@ -971,11 +996,9 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         """Hold a turn the TUI has parked on a usage limit; return seconds waited.
 
         The interactive CLI does not kill a limited turn the way ``claude -p``
-        does — it says "continuing automatically at 4pm" and resumes by itself
-        when the window reopens, keeping the session and its context. So the
-        cheapest correct thing ola can do is nothing: killing the turn to let
-        ``ola-monitor`` relaunch would discard context the CLI is still holding
-        and re-derive a plan that has not changed.
+        does — the session and the context it has built survive the window. So
+        killing the turn to let ``ola-monitor`` relaunch would discard live work
+        and re-derive a plan that has not changed; waiting keeps it.
 
         This is a deliberate exception to "ola never waits out a window", not a
         forgotten one. That rule exists because a ``cc`` turn the limit rejects
@@ -983,13 +1006,19 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         buys nothing. Here the work is alive and waiting. The distinguishing
         signal is the CLI reporting the rejection itself, not a threshold ola
         picked, so there is still one reaction per condition.
+
+        Waiting is all this does. Getting the turn *moving* again is the
+        caller's, because only the turn loop has a turn to restart:
+        :meth:`_await_ready` parks on the very same records and then resumes by
+        pasting the prompt it was always going to paste, and a nudge there would
+        land in the input box ahead of it.
         """
         reset_at = self._reset_epoch(event)
         wait = max(0.0, reset_at - time.time()) + _PARK_GRACE_SEC
         resumes = datetime.fromtimestamp(reset_at).strftime("%H:%M")
         logger.warning(
-            "ct: usage limit (%s) — the TUI resumes this turn by itself at "
-            "%s local (%.0f min); holding rather than restarting it.",
+            "ct: usage limit (%s) — window reopens at %s local (%.0f min); "
+            "holding the turn rather than restarting it.",
             event.limit_type or "unknown window",
             resumes,
             wait / 60,
@@ -1035,8 +1064,20 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
                     logger.exception("on_progress raised; continuing")
             time.sleep(_PARK_POLL_SEC)
 
-        logger.info("ct: usage-limit window reopened; turn continuing.")
+        logger.info("ct: usage-limit window reopened.")
         return time.monotonic() - started
+
+    def _nudge_after_limit(self, child: _PtyProcess) -> None:
+        """Ask the TUI to pick the turn back up now the window has reopened.
+
+        See :data:`_RESUME_NUDGE` for why this is unconditional. Skipped only
+        when the TUI died while parked — there the caller's liveness check ends
+        the turn, and pasting into a dead pty would just raise.
+        """
+        if not child.alive():
+            return
+        logger.info("ct: nudging the TUI to resume the turn the limit stopped.")
+        _paste(child, _RESUME_NUDGE)
 
     def _teardown(self, child: _PtyProcess) -> None:
         """Ask the TUI to exit cleanly, then make sure the process is gone."""

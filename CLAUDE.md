@@ -72,15 +72,39 @@ only reader — so the two can never disagree about one event.
 
 **A usage limit is where `ct` deliberately diverges from `cc`: it waits, in
 process.** The interactive CLI does not kill a limited turn the way `claude -p`
-does — it prints "continuing automatically at 4pm" and resumes by itself, still
-holding the session and its context. So `ct` parks the turn until the record's
-own `quotaLimits.resetsAt` (`_park_for_limit`) instead of escalating — an epoch
-the CLI states outright, so there is nothing to parse and nothing to guess.
-This is an exception to "ola never waits out a window", not an oversight: that
-rule assumes the turn is *dead* and there
-is no in-flight work to protect, which is true of `cc` and false here — and the
-signal that distinguishes them is the CLI reporting the rejection itself, not a
-duration threshold ola invented.
+does — the session and the context it has built survive the window. So `ct`
+parks the turn until the record's own `quotaLimits.resetsAt`
+(`_park_for_limit`) instead of escalating — an epoch the CLI states outright,
+so there is nothing to parse and nothing to guess. This is an exception to
+"ola never waits out a window", not an oversight: that rule assumes the turn
+is *dead* and there is no in-flight work to protect, which is true of `cc` and
+false here — and the signal that distinguishes them is the CLI reporting the
+rejection itself, not a duration threshold ola invented.
+
+**Waiting is only half of it: `ct` restarts the parked turn itself**
+(`_nudge_after_limit` pastes `_RESUME_NUDGE` the moment the park ends). Claude
+Code does have an auto-continue — it prints "continuing automatically at 4pm"
+and re-sends the turn — but arming it requires the `autoContinueAtUsageLimit`
+setting *and* a server-delivered config (`tengu_marble_heron`: `enabled`,
+`autoArm`) that ola can neither read nor set, and the no-dialog arm is
+additionally skipped in background/job contexts. The setting alone cannot force
+it on: it is ANDed with both server flags, and it already defaults to *true*
+when unset, so writing it changes nothing. Verified against a real session on
+2026-09-02 — the CLI wrote its limit record, ended the turn, and sat at the
+prompt until a human typed "continue".
+
+ola does **not** try to work out which happened. "Did it resume by itself?" is
+only answerable from silence — the very signal the end-of-turn heuristic reads
+and the one thing that must not be trusted around a limit — and the nudge is
+self-correcting either way: the CLI's own banner offers "esc **or type** to
+cancel", so typing cancels a still-armed auto-continue and submits ola's prompt
+instead (same outcome), while a nudge sent before the window truly reopened is
+rejected, writes another limit record, and re-parks through the ordinary loop.
+The asymmetry settles it: an unnecessary nudge costs one queued prompt, a
+skipped one costs `_TURN_TIMEOUT_SEC` and the attempt. The nudge is the turn
+loop's alone — `_await_ready` parks on the same records but has no turn to
+restart, and pasting there would land in the input box ahead of the real
+prompt.
 
 When a limit record carries no usable `resetsAt` — never yet observed; all 34
 captured records state one — or states a reset further out than a five-hour
@@ -428,7 +452,7 @@ its frontmatter (semver, starting at `1.0.0`).
 
 | Skill | Version | Purpose |
 |-------|---------|---------|
-| `ola-design` | 1.14.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
+| `ola-design` | 1.15.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 2.0.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts; and the instructions-vs-data split — a task cannot open the agent folder, so the design is **inlined per stage into `TASK-PROMPT.md`** and never pointed at or committed to the project repo, while paths the *running code* opens must be in `HEAD` (`git cat-file -e HEAD:<path>`, not `git check-ignore`). |
