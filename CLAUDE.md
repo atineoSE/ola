@@ -84,8 +84,19 @@ the turn on `_TURN_TIMEOUT_SEC` — an ordinary non-stagnant failure that
 requeues, not a fast global abort. If that shows up in practice, that is the
 signal to bring a bounded escalation back.
 
-The limit markers and the reset parser are pinned to a live capture from
-2026-08-25; the other marker variants are still unobserved.
+The limit detector matches two pinned wordings — "Usage limit reached ·
+continuing automatically at 4pm" (2026-08-25) and "You've hit your session
+limit · resets 11:10am (UTC)" (2026-09-02) — so it anchors on the *stop verb*
+("reached"/"hit"), with the window noun after "your" left as a bounded
+wildcard. The verb is what separates a stop from a warning: both the
+"Approaching usage limit" hint and the "You've used 93% of your session limit"
+meter name a limit without hitting one, and the CLI keeps working through them.
+Until 2026-09-02 every marker required "reached", so the "hit" wording parked
+nothing: each limited turn went silent, quiesced, and was read as an agent that
+finished without ticking — stagnant, attempts burned, folder circuit breaker
+tripped, which is precisely the failure the park exists to prevent. That miss
+was diagnosable only from the end-of-turn screen tail `_run_tui` logs, which is
+why that logging stays.
 
 ### Claude Code credentials (`cc`/`ct`)
 
@@ -388,7 +399,7 @@ its frontmatter (semver, starting at `1.0.0`).
 
 | Skill | Version | Purpose |
 |-------|---------|---------|
-| `ola-design` | 1.12.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
+| `ola-design` | 1.13.0 | Design philosophy and folder contract for the ola harness. Load whenever changing ola itself. |
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 2.0.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts; and the instructions-vs-data split — a task cannot open the agent folder, so the design is **inlined per stage into `TASK-PROMPT.md`** and never pointed at or committed to the project repo, while paths the *running code* opens must be in `HEAD` (`git cat-file -e HEAD:<path>`, not `git check-ignore`). |

@@ -69,6 +69,21 @@ LIMIT_SCREEN_REAL = (
 # No reset time anywhere — the escalate-instead-of-park path.
 LIMIT_SCREEN_NO_TIME = "\u26a0 Usage limit reached \u00b7 esc to cancel"
 LIMIT_WARNING_SCREEN = "Approaching usage limit · /model to use best available model"
+# Verbatim from a real limit (2026-09-02), garbled earlier copy included. This
+# wording says "hit", never "reached", so it slipped past every marker: the
+# turns read as finished-but-unticked and burned their attempts on a wall.
+LIMIT_SCREEN_SESSION = (
+    "⎿  Yu've hit your ssion limit·resets11:10am(UTC)"
+    "/upgradetoincreaseyourusagelimit.✻Sautéed for0s·done10:57AM\n"
+    "⎿  You've hit your session limit · resets 11:10am (UTC)\n"
+    "   /upgrade to increase your usage limit."
+)
+# The meter, not the wall: the run is still working, so parking on this would
+# cost hours the subscription had not actually taken away.
+LIMIT_METER_SCREEN = (
+    "You've used 93% of your session limit · resets 11:10am (UTC) · "
+    "/upgrade to keep using Claude Code"
+)
 
 
 @pytest.mark.parametrize("screen", [READY_SPACED, READY_SPACELESS])
@@ -114,9 +129,16 @@ def test_is_rate_limited():
     assert is_rate_limited("You've reached your weekly limit for Claude Opus")
     # The TUI renders words without spaces (cursor-move escapes).
     assert is_rate_limited("Claudeusagelimitreached.Yourlimitwillresetat3pm")
+    # Regression (2026-09-02): the CLI also says "hit", never "reached". While
+    # every marker required "reached", these turns went silent, quiesced, and
+    # were read as finished-without-ticking — stagnation, attempts burned.
+    assert is_rate_limited(LIMIT_SCREEN_SESSION)
+    assert is_rate_limited("You've hit your weekly limit")
     # A *warning* is not a stop — the CLI keeps running on the fallback model,
-    # so treating it as global would abort a run that is still working.
+    # so treating it as global would abort a run that is still working. The
+    # meter names the same limit, in the same words, without hitting it.
     assert not is_rate_limited(LIMIT_WARNING_SCREEN)
+    assert not is_rate_limited(LIMIT_METER_SCREEN)
     assert not is_rate_limited(READY_SPACED)
     assert not is_rate_limited(BUSY_SCREEN)
     # The two global-stop detectors must not claim each other's screens.
@@ -137,6 +159,21 @@ def test_parse_reset_at_reads_the_real_banner():
     assert reset is not None
     assert datetime.fromtimestamp(reset, timezone.utc) == datetime(
         2026, 8, 25, 16, 0, tzinfo=timezone.utc
+    )
+
+
+def test_parse_reset_at_reads_the_session_banner():
+    """The "hit your session limit" wording states its reset the same way.
+
+    Pinned to the 2026-09-02 capture, so the newly-detected banner parks until
+    the CLI's own stated time instead of falling back to a derived boundary.
+    """
+    now = datetime(2026, 9, 2, 8, 57, tzinfo=timezone.utc).timestamp()
+    reset = ct.parse_reset_at(LIMIT_SCREEN_SESSION, now=now)
+
+    assert reset is not None
+    assert datetime.fromtimestamp(reset, timezone.utc) == datetime(
+        2026, 9, 2, 11, 10, tzinfo=timezone.utc
     )
 
 

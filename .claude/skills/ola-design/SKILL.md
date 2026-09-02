@@ -1,7 +1,11 @@
 ---
 name: ola-design
 description: Design philosophy and folder contract for the ola harness. Load whenever changing ola itself — every change must be checked against this philosophy.
-version: 1.12.0
+version: 1.13.0
+# 1.13.0: extend the one-detector item to prose wires — pin each wording to a
+#          capture, anchor on the condition's invariant rather than one
+#          sentence, and log the screen that did not match (minor: tightens
+#          1.7.0's guidance, no rule reversed).
 # 1.9.0: sharpen the shared-resource item — the harness stops and lets the
 #         supervisor wait, rather than sleeping in-process behind a duration
 #         threshold (minor: tightens 1.8.0's guidance, no rule reversed).
@@ -174,6 +178,16 @@ the answer is wrong:
   an end-of-turn heuristic built on quiescence cannot tell "finished" from
   "killed mid-turn", so a condition that goes quiet must be detected explicitly
   or it is silently reclassified as success-without-a-tick, i.e. stagnation.
+  Where that wire is **prose**, the detector is only as good as its wordings,
+  and a CLI rephrases without notice: pin every branch to a real capture, and
+  anchor on the invariant the condition turns on rather than on one sentence —
+  ola's limit detector keys on the *stop verb* ("reached"/"hit") and wildcards
+  the window noun, which is also what keeps the warning that names the same
+  limit ("used 93% of your session limit") from tripping it. A wording the
+  detector misses fails *silently* — that is the whole point of the previous
+  paragraph — so a prose detector owes a log of the screen it did not match;
+  ola's `_run_tui` end-of-turn tail is how the "hit" wording was found, a
+  window after it cost a run.
 - When a stop is **global by nature** — one shared resource behind every task,
   like the credential or the subscription window — does it abort the run once,
   or fail task-by-task? Requeuing against an unmoved wall burns every task's

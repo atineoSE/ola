@@ -141,23 +141,31 @@ _AUTH_MARKERS = (
     "invalidauthenticationcredentials",
     "/login·apierror",
 )
-# Subscription-limit banners. Every marker requires the word "reached", so the
-# *warning* banners ("Approaching usage limit · /model to use best available")
-# stay out: a warning is not a stop, and the CLI keeps running on the fallback
-# model. The separator glyph between "limit reached" and the reset time varies
-# (· vs ∙), so no marker spans it.
+# Subscription-limit banners. The TUI says the same thing two ways — the window
+# "reached", or "you've hit" it — so this is one alternation over both, and
+# every branch carries a *stop* verb. That is what keeps the warnings out: the
+# hint ("Approaching usage limit · /model to use best available") and the meter
+# ("You've used 93% of your session limit · resets 11:10am (UTC)") name a limit
+# without hitting one, and the CLI keeps working on the fallback model. The
+# separator glyph before the reset time varies (· vs ∙), so no branch spans it.
 #
-# "usagelimitreached" is pinned to a real capture (2026-08-25, see
-# LIMIT_SCREEN_REAL in the tests). The other three are still written from known
-# wordings and have never been observed firing; the same capture also carried an
-# unmatched "your session limit · resets 4pm (UTC)" phrasing, so a session
-# variant likely exists. Keep the end-of-turn screen logging in _run_tui until
-# they are pinned too.
-_LIMIT_MARKERS = (
-    "usagelimitreached",
-    "hourlimitreached",
-    "reachedyourusagelimit",
-    "reachedyourweeklylimit",
+# Both families are pinned to real captures: "Usage limit reached · continuing
+# automatically at 4pm" (2026-08-25, LIMIT_SCREEN_REAL in the tests) and
+# "You've hit your session limit · resets 11:10am (UTC)" (2026-09-02,
+# LIMIT_SCREEN_SESSION). The second one is why the alternation exists: while
+# every branch required "reached", a whole run of limited turns went undetected
+# — each read as an agent that finished without ticking, i.e. stagnation, and
+# burned its attempts against the wall this path exists to wait out. The
+# 2026-08-25 capture had already carried an unmatched "your session limit"
+# copy; leaving it unpinned cost that run.
+#
+# The noun after "reached/hit your" tracks whichever window ran out
+# (session/usage/weekly/…), so it is a bounded wildcard rather than an
+# enumeration of wordings — anchoring on the verb, not the noun, is what
+# separates a stop from a warning. Keep the end-of-turn screen logging in
+# _run_tui: it is the only trace a still-unknown third wording would leave.
+_LIMIT_RE = re.compile(
+    r"usagelimitreached|hourlimitreached|(?:reached|hit)your[a-z0-9]{0,10}limit"
 )
 
 # "…resets 4pm (UTC)", "…continuing automatically at 4pm", "…at 3:30pm".
@@ -225,7 +233,7 @@ def is_auth_error(screen: str) -> bool:
 
 
 def is_rate_limited(screen: str) -> bool:
-    return any(m in compact(screen) for m in _LIMIT_MARKERS)
+    return _LIMIT_RE.search(compact(screen)) is not None
 
 
 def next_window_boundary(now: float | None = None) -> float:
@@ -687,8 +695,9 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
         # wire, and a *missed* limit banner leaves no other trace, because such
         # a turn reads as finished-but-unticked and the scheduler drops
         # ``output`` on that path. Without this the evidence costs another full
-        # window to reproduce, which is why _LIMIT_MARKERS are still unpinned.
-        # Drop this once they are pinned to a live capture.
+        # window to reproduce. This is exactly how the "You've hit your session
+        # limit" wording was found (2026-09-02) after it slipped past every
+        # marker; keep it while any wording of _LIMIT_RE stays unobserved.
         logger.debug("ct: end-of-turn screen tail:\n%s", output[-1000:])
 
         stats = self._recover_stats(config_dir, before, error_type)
