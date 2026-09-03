@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Create an ola plan
@@ -97,10 +97,23 @@ Each stage becomes one numbered folder: `01-<slug>/`, `02-<slug>/`, … Order th
 so that everything a stage needs is produced by an *earlier-numbered* stage. Use
 short, descriptive slugs (`01-schema`, `02-api`, `03-frontend`).
 
-Prefer **fewer, well-justified stages**. Every extra stage boundary is a barrier
-that serializes the run, so only introduce one for a *real* dependency, not for
-conceptual tidiness. Conversely, never merge two genuinely dependent pieces into
-one stage to "save a folder."
+Introduce a stage for a **real prerequisite**, never for conceptual tidiness —
+but be clear about what a boundary actually costs, because the reflex "keep the
+folder count down" is what produces the hour-long task that loses an hour.
+Splitting a chain that was serial anyway — A must exist before B — costs no
+wall-clock at all: those two were never going to overlap, and as two folders you
+get a **checkpoint** between them instead of one long task that throws both
+halves away when it fails. What a boundary does cost is the **barrier**: a
+folder must complete *entirely* before the next starts, so the slowest task in
+`01` gates every task in `02`, including the ones that never needed it.
+
+So the question at each boundary is not "is this one folder too many" but
+**"what am I parking behind it"**. Push every task into the earliest folder
+whose prerequisites it already satisfies; a task sitting a folder later than it
+has to is pure serialization. And never merge two genuinely dependent pieces
+into one stage to save a folder — "do A, then B" inside a single checkbox is a
+stage boundary you have hidden rather than removed, and it is the exact shape
+that burns three attempts getting nearly-finished.
 
 ### 4. Split each stage into parallel tasks (the parallel axis)
 
@@ -108,18 +121,55 @@ Within a stage, list the units of work that are **mutually independent** — the
 touch different files/modules and neither needs the other's output. Each becomes
 one `- [ ]` task in that folder's `PLAN.md`.
 
-Good task granularity:
+#### Size a task by what a failed attempt throws away
 
-- **One self-contained, independently verifiable unit** — ideally one that ships
-  with its own automated tests, since a task verifies itself before ticking.
-- **Names the files/interfaces it owns**, so a fresh-context agent knows exactly
-  where to work without the planning conversation.
-- **Does not touch the same files as a sibling task** (parallel tasks merge back
-  from separate worktrees; overlapping edits collide).
+**A tick is the only checkpoint ola has.** It is what merges the worktree back
+onto the project repo. An attempt that fails, hits its turn timeout, or simply
+finishes without ticking is discarded *whole*: the next dispatch clears the
+stale worktree and re-branches off the current project HEAD, so the retry starts
+from nothing, and the agent that did the work is gone with its context. There is
+no partial credit and no resume. The task is therefore the **unit of loss** — a
+task big enough to be "nearly done" after half an hour is a task big enough to
+lose half an hour, three times over, before `--max-attempts` gives up on it.
 
-If you find two "tasks" in the same stage where one needs the other first, that
-is a signal they belong in **different stages** — promote the dependent one to a
-later folder.
+Splitting is what buys the checkpoints back, and it pays twice. Each piece that
+ticks is **banked** on the project HEAD; and because a retry re-branches off the
+*updated* HEAD, the retry of the one piece that failed starts on top of its
+siblings' landed work rather than beside it. Each piece also carries its own
+`--max-attempts` budget, so one genuinely hard sub-problem burns its own retries
+instead of dragging a whole feature through the same three.
+
+So **prefer the smallest unit that can prove itself.** Two properties fix the
+size from above and below:
+
+- **It is independently verifiable** — it can run a check (its own tests, a
+  build, a script) that proves it done before ticking, because a task verifies
+  itself and then its context is gone. A unit you cannot name a check for is
+  usually too big to have one; say what the check is in the task text.
+- **It needs nothing from a sibling** — it names the files and interfaces it
+  owns, and does not touch a sibling's (parallel tasks merge back from separate
+  worktrees, and overlapping edits collide). If two units in one stage need each
+  other, you have not found two tasks; you have found a **stage boundary**, and
+  the dependent one belongs in a later folder. That is the good kind of extra
+  folder, and it is the main reason a well-decomposed plan has more of them.
+
+#### What stops you splitting further
+
+Smaller is not free, so there is a floor. Every task pays a fixed tax — a fresh
+context that re-derives the codebase and its conventions from scratch, a
+worktree, a merge back — and below some size the tax dominates the work. Shards
+small enough to be neighbours in the same file are also shards that collide on
+merge-back, which turns saved minutes back into retried attempts. And the
+folder-wide circuit breaker does not care how you sliced: it counts consecutive
+attempts that finish **without a tick** across the whole folder, so five small
+tasks that each fail to tick trip it exactly as fast as one big one. Splitting
+protects the work already done; it does not buy extra patience.
+
+The balance, stated once: **shrink along the parallel axis freely, and let the
+sequential axis grow only where the dependency is real.** More tasks and more
+folders are the expected result of taking this seriously — what you must not end
+up with is a folder whose tasks secretly need each other, which is the one
+failure this decomposition can introduce and stage ordering is the cure for.
 
 ### 5. Write the files
 
@@ -346,6 +396,14 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
   task order within a plan?
 - Could each task be handed to an agent with **no memory of this conversation**
   and still be done from the code alone?
+- For the **largest** task in the plan: if its attempt failed at the last
+  minute, is the work it throws away an amount you would mind losing three times
+  over? If so, split it — an unticked attempt is discarded whole.
+- Does any single checkbox hide a "then" — first do A, then use A to do B? That
+  is a stage boundary written inside a task; promote B to a later folder.
+- Can you name the **check that proves each task done** (its tests, a build, a
+  script)? If not, the boundary is in the wrong place — and say what the check
+  is in the task text either way.
 - Are stage boundaries justified by **real** prerequisites, not tidiness — and
   is anything that could be parallel needlessly split across folders?
 - Does each folder have a `PLAN.md` (the only thing that makes a folder run), and
