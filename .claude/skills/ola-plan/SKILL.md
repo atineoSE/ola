@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 2.1.0
+version: 2.2.0
 ---
 
 # Create an ola plan
@@ -232,8 +232,17 @@ Optional, per folder, when it helps:
   export, a schema loaded at runtime. That is data, not instructions, and it
   must be in `HEAD`; see step 5b.
 - **`.ola/concurrency`** — a single integer: how many tasks in this folder run
-  at once (default 1). Set it (e.g. `4`) when a stage has many independent tasks
-  worth running in parallel. The cap is re-read live during the run.
+  at once. **Default it to the number of tasks in that folder's `PLAN.md`** —
+  i.e. run the whole stage at once — unless the user asked for a lower cap.
+  Write the file for *every* folder with more than one task; ola's own fallback
+  is `1`, which would serialize a stage you already proved parallel-safe, so
+  leaving it out silently throws the parallelism away. The stage's tasks are
+  independent by construction (step 4) — that is the only correctness question,
+  and once it is answered there is nothing left for a smaller number to buy.
+  Lower it only for a reason you can name: the user capped it, a subscription or
+  self-hosted model server saturates below that width, or the tasks contend for
+  a machine-wide resource. The cap is re-read live during the run, so a run that
+  turns out too wide can be narrowed without restarting.
 
 At the **agent-folder root** (not per stage), one more file may be needed:
 
@@ -441,17 +450,20 @@ agent/
   01-schema/
     PLAN.md            # - [ ] add tags table + migration
                        # - [ ] add Tag model with tests
+    .ola/concurrency   # 2  (one per task in this folder)
   02-api/              # needs the schema → later folder
     PLAN.md            # - [ ] POST /tags endpoint
                        # - [ ] GET /notes?tag= filter
                        # - [ ] attach/detach tag endpoints
-    .ola/concurrency   # 3  (these three endpoints are independent)
+    .ola/concurrency   # 3  (one per task in this folder)
   03-ui/               # needs the API → later folder
     PLAN.md            # - [ ] tag chip component
                        # - [ ] tag filter bar
+    .ola/concurrency   # 2  (one per task in this folder)
     TASK-PROMPT.md     # project's component conventions + "run vitest before ticking"
 ```
 
 `01` before `02` because the endpoints need the table; `02` before `03` because
 the UI calls the endpoints. Within `02`, the three endpoints touch different
-handlers and run in parallel.
+handlers and run in parallel — and because they do, the concurrency is 3, not a
+smaller number: every folder runs as wide as its own task list.
