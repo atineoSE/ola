@@ -44,3 +44,12 @@ if [ "$reaped" -gt 0 ]; then
   done
 fi
 echo "run-init: ok ($reaped reaped)"
+
+# Containers leak the same way, and are owned by the sandbox's own dockerd
+# rather than by the task — but they need no process matching at all if the
+# plan labels them at start (`docker run --label ola-task=<id> ...`):
+#
+#   docker rm -f $(docker ps -aq --filter label=ola-task) 2>/dev/null || true
+#
+# Add `docker image prune -f` if the tasks build images: the sandbox's image
+# store persists across runs and only grows.

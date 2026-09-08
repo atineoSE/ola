@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.8.0
+version: 2.9.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -160,6 +160,41 @@ one.**
   it (`target_workload_peak ≪ -m`), because nothing absorbs a spike. For ola's
   parallel runs this is the binding constraint — `concurrency × peak_RAM_per_agent`
   must sit comfortably below `-m`.
+
+### Docker *inside* a sandbox (verified 2026-09-08, sbx v0.39.0, ola image v0.6.5)
+
+A sandbox can run containers itself. The stock `shell` agent template — and
+therefore ola's image, which is `FROM docker/sandbox-templates:shell-docker` —
+ships a **nested `dockerd`**, already running before the first command
+(observed: PID 16, `ppid` 1, root). The `agent` user is in the `docker` group,
+so `docker` needs no sudo, and `provision.sh` has nothing to install.
+
+Observed inside a live ola sandbox: `/usr/bin/docker`, client **and** server
+`29.7.2`, storage driver `overlayfs`, cgroup v2, `Docker Root Dir:
+/var/lib/docker`, socket `/var/run/docker.sock` (`root:docker`, `srw-rw----`).
+
+- **It is a nested daemon, not the host socket mounted in.** `docker ps` inside
+  lists none of the host's containers — including the sandboxes themselves,
+  which is the tell — and the image store holds only what was pulled or built
+  in there. Consequence: **an image built on the host is invisible**; every
+  image is pulled or built inside, and the first pull is paid inside.
+- **Pulls go out through the ordinary policy proxy**, so registries obey the
+  same rules as any other egress. The default profile already allows
+  `docker.io`, `ghcr.io`, `quay.io`, `gcr.io` and `registry.k8s.io` (`sbx
+  policy check network registry-1.docker.io` → `Allowed`; a live
+  `docker pull alpine:3.20` succeeded with no sandbox-specific rule). A
+  **private registry needs an allow rule** like anything else.
+- **Containers spend the sandbox's `-m`, not the host's** — same budget, same
+  no-swap hard wall as the section above. `concurrency × peak_RAM_per_agent`
+  becomes `concurrency × (agent + its containers)`.
+- **A container outlives the task that started it.** It is a child of the
+  sandbox's `dockerd`, not of the process that ran `docker run`, so killing the
+  agent, ola, or the `sbx exec` does not stop it, and neither does deleting the
+  worktree — the same trap as a daemonized server, one level down. The image
+  store likewise persists across runs and only grows. Reclaim both at run
+  boundaries from the agent folder's `run-init.sh` (label containers at
+  `docker run` and reap by label; `docker image prune -f` if tasks build
+  images) — see the `ola-plan` skill, which carries the planning-side rules.
 
 ### Network Policies
 **Global is the default scope (v0.33.0); `-g`/`--global` is deprecated.**

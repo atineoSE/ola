@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 2.2.0
+version: 2.3.0
 ---
 
 # Create an ola plan
@@ -279,6 +279,34 @@ At the **agent-folder root** (not per stage), one more file may be needed:
   it otherwise and may conclude "no browser available" instead. Screenshotting
   a `localhost` dev server needs no `allowlist.txt` entry; a remote URL does.
 
+- **Docker runs *inside* the sandbox.** The sandbox image is built on
+  `docker/sandbox-templates:shell-docker` and carries its own `dockerd`,
+  already running when the first task starts (verified on the v0.6.5 image:
+  client and server 29.7.2). So a task can `docker build`, `docker run` and
+  `docker compose up` — a real Postgres or Redis, a testcontainers suite, a
+  service the project ships as an image — with nothing to provision. Say so in
+  the task text or `TASK-PROMPT.md` for the same reason as the browser above: a
+  fresh-context agent running inside a container has no reason to assume it can
+  start containers, and will work around the absence instead of asking.
+
+  Three consequences follow from that daemon being *nested*:
+
+  - **Its image store is not the host's.** It is `/var/lib/docker` inside the
+    sandbox, so an image built or pulled on the host is invisible; every image
+    is pulled or built in there, and the first pull is paid there too. The
+    default policy already allows `docker.io`, `ghcr.io`, `quay.io`, `gcr.io`
+    and `registry.k8s.io`, so ordinary pulls need no `allowlist.txt` entry — a
+    private registry does. The store persists across runs and only grows.
+  - **Containers spend the sandbox's memory, not the host's**, against a cap
+    with no swap behind it. A stage whose every task runs its own database is
+    that footprint times the folder's `.ola/concurrency`, against one ceiling;
+    either size the concurrency for it, or start one shared container in
+    `run-init.sh` and give each task its own database *inside* it.
+  - **A container is the purest case of the rule below**: it is a child of the
+    sandbox's `dockerd`, not of the task agent, so killing the agent, ola or
+    the `sbx exec` leaves it running — as does deleting the worktree it was
+    started from.
+
 - **`provision.sh`** — tooling the sandbox image does **not** ship. If the plan's
   tasks need a binary, service or runtime that is not already there (a database
   server, a language toolchain, a vendor CLI), the project installs it here
@@ -314,12 +342,17 @@ its disk. Three consequences for the plan:
   fixed lockfile turns "independent tasks" into a race that shows up as a
   flaky, order-dependent failure. Prefer something per-worktree — a unix socket
   or a per-task directory. That is what actually makes such a task parallel-safe.
+  A fixed container name or a published host port collides identically; derive
+  the container name from the task id, and reach the service over the container
+  network rather than publishing a fixed port inside the sandbox.
 - **Tell the task to stop what it started**, in the task text or
   `TASK-PROMPT.md`; a shell `trap` is the usual form. This covers the happy path
   only — a timeout, a crash or a killed run skips it entirely.
 - **Sweep the rest in `run-init.sh`.** That reclaims at run *boundaries*, so a
   leak inside one long run survives until the next run starts; leave the sandbox
-  headroom for it.
+  headroom for it. Containers make this easy if you plan for it: label them at
+  `docker run` (`--label ola-task=<id>`) and the sweep is one `docker rm -f`
+  filtered on that label, with no process matching at all.
 
 Keep per-task state **under the worktree** (ola git-excludes `.ola/`, so
 `<worktree>/.ola/<thing>` is invisible to `git add -A` and dies with the
@@ -426,9 +459,11 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
   `chromium-headless` (the sandbox's baked-in headless Chromium) rather than a
   macOS-only browser path, and does a remote URL it screenshots appear in
   `allowlist.txt`?
-- Does any task start a **long-lived process**? If so: is it addressed by a
-  per-task path rather than a shared port/name, is the task told to stop it, and
-  does `run-init.sh` sweep what a crashed run would leave behind?
+- Does any task start a **long-lived process** — a container counts, and is
+  owned by the sandbox's `dockerd` rather than by the task? If so: is it
+  addressed by a per-task path or name rather than a shared port/name, is the
+  task told to stop it, and does `run-init.sh` sweep what a crashed run would
+  leave behind?
 - Does any `TASK-PROMPT.md` **point at a document instead of carrying it**? A
   task cannot open the agent folder, and the design write-up is not in the
   project's `HEAD`, so a pointer reaches nothing — inline that stage's slice as
