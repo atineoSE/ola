@@ -1,7 +1,7 @@
 ---
 name: ola-plan
 description: Turn a settled plan into an ola agent-folder tree — numbered sequential folders, with parallel-safe tasks inside each PLAN.md. Use at the end of a planning session, when the plan is agreed and the user says "create the ola plan for this", "make an ola plan out of this", or "lay this out for ola".
-version: 2.3.0
+version: 2.4.0
 ---
 
 # Create an ola plan
@@ -319,6 +319,55 @@ At the **agent-folder root** (not per stage), one more file may be needed:
   downloads needs its host in `allowlist.txt` too. Worked example:
   `examples/provision.sh`.
 
+  **It is also where you settle an environment that is merely *wrong* rather
+  than missing** — and that case is the one that thrashes, because it does not
+  fail cleanly. A default that is wrong inside the sandbox (a Python venv on
+  the host-shared project mount, which cannot hardlink; a `.venv` built on the
+  macOS host carrying an interpreter this Linux container cannot execute; a
+  cache directory on the wrong filesystem) fails *once per task*: every
+  fresh-context agent rediscovers it from scratch, invents its own workaround,
+  spends most of its attempt there instead of on the task, and the workarounds
+  then contradict each other across the stage. **Sort the environment out
+  before the first agent starts and no agent ever sees it.** Worked example:
+  `examples/provision-env.sh`.
+
+  The seam for that is **`/etc/sandbox-persistent.sh`**: the sandbox image
+  exports `BASH_ENV` pointing at it, so every non-interactive bash sources it —
+  including the shells the task agents spawn — with no login shell and no
+  per-task setup. Writing that file from `provision.sh` is the only way an
+  agent-folder script can change the environment that every later task
+  inherits. Two limits: it is **bash-only** (a function defined there is
+  invisible to `sh`, and to a binary exec'd directly from Python or Node, so
+  prefer exporting a plain variable wherever one exists), and `provision.sh`
+  re-runs on every reconnect, so write the whole file rather than appending to
+  it.
+
+  **Check this before you commit to the plan, not after the first stage burns
+  its attempts.** The sandbox is already there to be asked, and each probe is
+  one line:
+
+  ```bash
+  SBX=<sandbox>     # ola-sandbox's name: the project checkout dir's basename
+  D=/workspace/<project>   # wherever the project is mounted in the sandbox
+
+  # Does the project mount support hardlinks? (No → venvs/caches must move off it.)
+  sbx exec "$SBX" bash -c "cd $D && : > .p && ln .p .p2 && echo HARDLINKS-OK; rm -f .p .p2"
+
+  # Is a committed .venv/node_modules a host build this container cannot run?
+  sbx exec "$SBX" bash -c "cd $D && file .venv/bin/python* 2>/dev/null | head -1"
+
+  # Does the toolchain the tasks assume actually exist, at the version they assume?
+  sbx exec "$SBX" bash -c 'uv --version; node --version; python3 --version'
+
+  # Does the build/test command a task will tick its checkbox on actually pass
+  # here, from a clean checkout? This is the real test — run it once by hand.
+  sbx exec "$SBX" bash -c "cd $D && <the stage's test command>"
+  ```
+
+  Run the last one in particular. If it fails in the sandbox but passes on the
+  host, that difference is `provision.sh`'s job, and finding it now costs one
+  command instead of `--max-attempts` × every task in the stage.
+
 - **`run-init.sh`** — what must be **true before the tasks start**. ola runs
   this one itself at startup: once per run, from the project repo, inside the
   sandbox only, and a non-zero exit aborts the run before the first task. Use it
@@ -459,6 +508,11 @@ Challenge the plan you wrote against each of these; fix it if the answer is wron
   `chromium-headless` (the sandbox's baked-in headless Chromium) rather than a
   macOS-only browser path, and does a remote URL it screenshots appear in
   `allowlist.txt`?
+- Have you **run the stage's own test command inside the sandbox once**, by
+  hand? Anything that passes on the host and fails there is an environment
+  difference every task will hit separately — fix it in `provision.sh` (and
+  publish it through `/etc/sandbox-persistent.sh` if later shells must inherit
+  it), not in the task text.
 - Does any task start a **long-lived process** — a container counts, and is
   owned by the sandbox's `dockerd` rather than by the task? If so: is it
   addressed by a per-task path or name rather than a shared port/name, is the
