@@ -432,6 +432,11 @@ _decode_written() {
   [ "$(echo "$out" | jq -r '.skipDangerousModePermissionPrompt')" = "true" ]
   # Remote Control has no operator behind an unattended task agent.
   [ "$(echo "$out" | jq -r '.disableRemoteControl')" = "true" ]
+  # Detached background agents (claude agents / --bg / the daemon) outlive the
+  # claude process ola started, so the task lifetime stops bounding them.
+  [ "$(echo "$out" | jq -r '.disableAgentView')" = "true" ]
+  # In-session background subagents fan out behind ola's own concurrency plan.
+  [ "$(echo "$out" | jq -r '.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS')" = "1" ]
   # The CC command sandbox would confine writes to the worktree cwd and block
   # the ola-blocked marker, which lands in the agent folder above it.
   [ "$(echo "$out" | jq 'has("sandbox")')" = "false" ]

@@ -171,14 +171,30 @@ would drag in personal hooks/MCP. It is the single place its keys are declared,
 so it is copied into each per-task config dir on *every* run (it sits in
 `_ALWAYS_REFRESH` alongside the credentials): per-task dirs are derived from the
 task id and never deleted, so a copy-once file would pin a task to the settings
-that existed the first time it ran. Three keys, and deliberately no `"sandbox"`
-— Claude Code's own command sandbox is redundant inside the docker one and
-confines writes to the worktree cwd, silently blocking the ola-blocked marker
-that lands in the agent folder above it. The third is
-`"disableRemoteControl": true`: an ola task agent is unattended, so
-claude.ai/code, `--rc`, the auto-start and the in-session toggle have no
-operator behind them (`remoteControlAtStartup: false` only stops the auto-start
-and leaves the toggle live, so it is the wrong knob).
+that existed the first time it ran. Deliberately no `"sandbox"` — Claude Code's
+own command sandbox is redundant inside the docker one and confines writes to
+the worktree cwd, silently blocking the ola-blocked marker that lands in the
+agent folder above it. Past bypass-permissions, every remaining key turns off a
+way the session could escape or outlive the one task agent ola is supervising:
+
+- `"disableRemoteControl": true` — an ola task agent is unattended, so
+  claude.ai/code, `--rc`, the auto-start and the in-session toggle have no
+  operator behind them (`remoteControlAtStartup: false` only stops the
+  auto-start and leaves the toggle live, so it is the wrong knob).
+- `"disableAgentView": true` — the *detached* background agents (`claude
+  agents`, `--bg`, `/background`, the on-demand daemon). They outlive the
+  `claude` process ola started, so the task lifetime stops bounding them and
+  they keep spending the one subscription every other task is queued behind.
+- `"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}` — the *in-session*
+  background subagents (`Agent(run_in_background: true)`), an unrelated
+  mechanism that shares the name. It has no settings key of its own, hence the
+  `env` block; it drops `run_in_background` from the Agent tool's schema **and**
+  forces every spawn synchronous. ola plans concurrency per folder
+  (`.ola/concurrency`); a task agent fanning out behind ola's back makes that
+  number a fiction. The same flag also disables Bash `run_in_background`, which
+  is the point rather than collateral damage: a process that must survive its
+  own tool call is the long-lived-process case that has to daemonize explicitly
+  and be reclaimed by `run-init.sh`.
 
 Gotcha (macOS host only): Claude Code also caches OAuth credentials **per
 `CLAUDE_CONFIG_DIR`** in the Keychain, under
@@ -459,7 +475,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-release` | 1.1.0 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.9.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), host `gh` auth injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.39.0; re-verify on sbx upgrade. |
+| `sbx` | 2.10.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), host `gh` auth injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control and both flavours of background agent hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.39.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

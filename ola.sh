@@ -381,15 +381,38 @@ _ola_inject_file() {
 # sandbox is redundant inside it; worse, that sandbox confines writes to the
 # worktree cwd, which silently blocks the ola-blocked marker (it lands in the
 # agent folder, above the worktree) and any other cross-worktree write. Copying
-# the host file would also drag in personal hooks/MCP. Keep it to the three keys
+# the host file would also drag in personal hooks/MCP. Keep it to the keys
 # below and no "sandbox": bypass permissions, skip the dangerous-mode prompt,
-# and hard-disable Remote Control. The last one is not a preference — a task
-# agent is unattended and headless-equivalent, so claude.ai/code, `--rc` and the
-# in-session toggle have no operator behind them and no business reaching into a
-# worktree; `disableRemoteControl` kills the auto-start too, which the softer
-# `remoteControlAtStartup: false` does not. This file is the ONLY place any of
-# them is declared: the backends refresh their per-task copy from it every run
-# (see _ALWAYS_REFRESH in claude_code.py), so editing here reaches every task.
+# and hard-disable everything that outlives or escapes the one task agent ola
+# is supervising.
+#
+# Remote Control is not a preference — a task agent is unattended and
+# headless-equivalent, so claude.ai/code, `--rc` and the in-session toggle have
+# no operator behind them and no business reaching into a worktree;
+# `disableRemoteControl` kills the auto-start too, which the softer
+# `remoteControlAtStartup: false` does not.
+#
+# The same argument disables both flavours of "background agent", which are two
+# unrelated mechanisms despite the shared name:
+#   - `disableAgentView` covers the *detached* ones — `claude agents`, `--bg`,
+#     /background and the on-demand daemon. Those outlive the `claude` process
+#     ola started, so the scheduler's task lifetime stops bounding them: nothing
+#     ola kills stops them, and they keep spending the one subscription every
+#     other task is queued behind.
+#   - `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` covers *in-session* background
+#     subagents (`Agent(run_in_background: true)`). It has no settings key of
+#     its own, so it goes through the `env` block; it both drops
+#     `run_in_background` from the Agent tool's schema and forces every spawn
+#     synchronous. ola's concurrency is planned per folder (`.ola/concurrency`),
+#     and a task agent fanning out behind ola's back makes that number a
+#     fiction. It also disables Bash `run_in_background` — the same flag drives
+#     both — which is deliberate rather than collateral: a process that must
+#     survive its own tool call is exactly the long-lived-process case that has
+#     to daemonize explicitly and be reclaimed by `run-init.sh`.
+#
+# This file is the ONLY place any of them is declared: the backends refresh
+# their per-task copy from it every run (see _ALWAYS_REFRESH in
+# claude_code.py), so editing here reaches every task.
 _ola_inject_cc_settings() {
   local name="$1"
   local settings='{
@@ -397,7 +420,11 @@ _ola_inject_cc_settings() {
     "defaultMode": "bypassPermissions"
   },
   "skipDangerousModePermissionPrompt": true,
-  "disableRemoteControl": true
+  "disableRemoteControl": true,
+  "disableAgentView": true,
+  "env": {
+    "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"
+  }
 }'
   sbx exec "$name" bash -c 'mkdir -p "$HOME/.claude"' 2>/dev/null
   local data

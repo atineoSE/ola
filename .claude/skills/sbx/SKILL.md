@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.9.0
+version: 2.10.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -291,15 +291,27 @@ the host, not looped back inside the sandbox.
   dirs are stable across runs and never deleted, so copy-once would pin a task
   to the settings that existed the first time it ran. Edit
   `_ola_inject_cc_settings` and every task picks the change up on the next run;
-  that function is the single place any of these keys is declared. Three keys,
-  and deliberately **no** `"sandbox"`: Claude Code's own command sandbox is
-  redundant inside the docker one and would confine writes to the worktree cwd,
-  silently blocking the ola-blocked marker (which lands in the agent folder,
-  above the worktree). The third key is `"disableRemoteControl": true` — a task
-  agent is unattended, so claude.ai/code, `claude remote-control`, `--rc`, the
-  auto-start and the in-session toggle have no operator behind them; the softer
-  `remoteControlAtStartup: false` leaves the toggle live, so it is the wrong
-  knob. Never copy the host `settings.json` in: it drags in personal hooks/MCP.
+  that function is the single place any of these keys is declared. Deliberately
+  **no** `"sandbox"`: Claude Code's own command sandbox is redundant inside the
+  docker one and would confine writes to the worktree cwd, silently blocking
+  the ola-blocked marker (which lands in the agent folder, above the worktree).
+  Past bypass-permissions, the remaining keys each close a way the session
+  could escape or outlive the one task agent ola supervises:
+  `"disableRemoteControl": true` (a task agent is unattended, so claude.ai/code,
+  `claude remote-control`, `--rc`, the auto-start and the in-session toggle have
+  no operator behind them; the softer `remoteControlAtStartup: false` leaves the
+  toggle live, so it is the wrong knob); `"disableAgentView": true` for the
+  *detached* background agents (`claude agents`, `--bg`, `/background`, the
+  on-demand daemon), which outlive the `claude` process ola started and so are
+  no longer bounded by the task; and
+  `"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}` for the *in-session*
+  background subagents (`Agent(run_in_background: true)`) — a different
+  mechanism with the same name, with no settings key of its own, which the flag
+  both removes from the Agent tool's schema and forces synchronous. That flag
+  disables Bash `run_in_background` too: intended, since a process meant to
+  survive its own tool call is the long-lived-process case that must daemonize
+  explicitly and be reclaimed by `run-init.sh`.
+  Never copy the host `settings.json` in: it drags in personal hooks/MCP.
 - **macOS Keychain shadows the file — host runs only.** Claude Code caches OAuth
   credentials *per `CLAUDE_CONFIG_DIR`* in the macOS Keychain under
   `Claude Code-credentials-<sha256(dir)[:8]>`, and that entry **outranks** the
