@@ -401,6 +401,36 @@ LMNR_HTTP_PORT="8000"'
   grep -q 'gh auth setup-git' "$SBX_LOG"
 }
 
+# ===== _ola_inject_git_identity =====
+
+@test "inject_git_identity: host has none — warns and keeps image default" {
+  export GIT_CONFIG_GLOBAL="$TMPDIR_TEST/empty.gitconfig"
+  : > "$GIT_CONFIG_GLOBAL"
+  run _ola_inject_git_identity box
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ola <ola@localhost>"* ]]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "inject_git_identity: half-set host — warns and no-ops" {
+  export GIT_CONFIG_GLOBAL="$TMPDIR_TEST/half.gitconfig"
+  printf '[user]\n\tname = Only Name\n' > "$GIT_CONFIG_GLOBAL"
+  run _ola_inject_git_identity box
+  [ "$status" -eq 0 ]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "inject_git_identity: sets the FIRST global user.name/email in the sandbox" {
+  export GIT_CONFIG_GLOBAL="$TMPDIR_TEST/multi.gitconfig"
+  printf '[user]\n\tname = Jane O'"'"'Doe\n\temail = jane@example.com\n[user]\n\tname = Later\n\temail = later@example.com\n' \
+    > "$GIT_CONFIG_GLOBAL"
+  _ola_inject_git_identity box
+  grep -qF "$(printf '%s' "Jane O'Doe" | base64)" "$SBX_LOG"
+  grep -qF "$(printf '%s' "jane@example.com" | base64)" "$SBX_LOG"
+  ! grep -qF "$(printf '%s' "Later" | base64)" "$SBX_LOG"
+  grep -q 'git config --global user.name' "$SBX_LOG"
+}
+
 # ===== _ola_inject_oh_settings / _ola_setup_shell_rc =====
 
 # Minimal but schema-faithful agent_settings.json (llm + nested

@@ -282,6 +282,28 @@ _ola_inject_gh() {
   sbx exec "$name" bash -c "export GH_TOKEN=\$(echo '$tok_b64' | base64 -d); gh auth setup-git" 2>/dev/null
 }
 
+# Commit as the host's git identity rather than the image's ola@localhost
+# placeholder: the first user.name/user.email in the host's *global* config
+# (`--get-all | head -1` — plain `--get` would return the last one;
+# `--includes` because --global otherwise ignores include.path). Re-read on
+# every create AND reconnect, like gh auth, so a changed identity follows.
+# Both or neither: a half-set host keeps the image default rather than
+# minting a mixed name/email. A repo-local user.* in the mounted checkout
+# still wins, exactly as it does on the host.
+_ola_inject_git_identity() {
+  local name="$1" git_name git_email
+  git_name="$(git config --global --includes --get-all user.name 2>/dev/null | head -n1)"
+  git_email="$(git config --global --includes --get-all user.email 2>/dev/null | head -n1)"
+  if [ -z "$git_name" ] || [ -z "$git_email" ]; then
+    echo "Warning: no global git user.name/user.email on host — sandbox commits as ola <ola@localhost>." >&2
+    return 0
+  fi
+  local name_b64 email_b64
+  name_b64="$(printf '%s' "$git_name" | base64)"
+  email_b64="$(printf '%s' "$git_email" | base64)"
+  sbx exec "$name" bash -c "git config --global user.name \"\$(echo '$name_b64' | base64 -d)\" && git config --global user.email \"\$(echo '$email_b64' | base64 -d)\"" 2>/dev/null
+}
+
 # Sync the sbx network policy from the two project config files:
 #   - agent/allowlist.txt : static domains
 #   - agent/.env          : LLM + Laminar endpoints (resolved by `ola env`,
@@ -699,6 +721,7 @@ _ola_sandbox_prepare() {
     _ola_inject_credentials "$name"
     _ola_inject_sidecar "$name" "$_env_blob"
     _ola_inject_gh "$name"
+    _ola_inject_git_identity "$name"
     _ola_inject_oh_settings "$name" "$_env_blob"
     _ola_provision "$name" "$agent_dir" || return 1
     return 0
@@ -741,6 +764,7 @@ _ola_sandbox_prepare() {
   _ola_inject_credentials "$name"
   _ola_inject_sidecar "$name" "$_env_blob"
   _ola_inject_gh "$name"
+  _ola_inject_git_identity "$name"
   _ola_inject_oh_settings "$name" "$_env_blob"
   _ola_provision "$name" "$agent_dir" || return 1
 

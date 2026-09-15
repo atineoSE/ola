@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.10.0
+version: 2.11.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -336,6 +336,13 @@ the host, not looped back inside the sandbox.
   credentials flow above. It also auto-allows `github.com,*.github.com` egress.
   Non-fatal when the host has no `gh` login (or no `gh` installed): a warning is
   printed and the sandbox still comes up, just without `gh`/git-over-HTTPS auth.
+- **Git commit identity**: on the same create/reconnect path,
+  `_ola_inject_git_identity` copies the *first* `user.name`/`user.email` from the
+  host's global git config (`--get-all | head -1`, `--includes` honoured) into the
+  sandbox's `git config --global`, so task commits carry the developer's identity.
+  Both or neither: if either is unset on the host it warns and the image default
+  `ola <ola@localhost>` (baked in `docker/Dockerfile`) stays. A repo-local `user.*`
+  in the mounted checkout still wins, as on the host.
 - Service secrets are held by the sbx proxy (NOT the agent / not the OS keychain); the proxy injects them into outbound API calls.
 
 **Scoping reversed in v0.39.0 — global is now the default.** `secret` caught up
