@@ -123,18 +123,37 @@ _ola_policy_allow() {
   return 0
 }
 
-# Allow a resolved endpoint host in the sbx network policy. A bare IPv4
-# literal must NOT get a `*.<ip>` wildcard appended — that is not a valid
-# host pattern and sbx can reject the whole rule, which is exactly what
-# silently blocked the LLM endpoint before.
+# Allow one host in the sbx network policy, adding the `,*.<host>` subdomain
+# companion only where that is a valid pattern.
+#
+# A bare IPv4 literal must NOT get a `*.<ip>` wildcard appended — that is not a
+# valid host pattern and sbx rejects the whole rule, which is exactly what
+# silently blocked the LLM endpoint before. sbx v0.45.0 widened the RESOURCES
+# grammar (CIDR prefixes, `**.`/`?`/`[…]` globs, bracketed IPv6) and made it
+# STRICT at the same time: a malformed pattern is now rejected outright rather
+# than stored as a rule that quietly matches nothing. Since a rejected rule
+# aborts the whole sandbox prepare (_ola_apply_policy returns non-zero), that
+# turns every such mistake from invisible into fatal — so anything already
+# explicit is passed through untouched and only a plain domain is expanded:
+#   - `*.foo` / `**.foo` — the caller wrote the wildcard themselves
+#   - `10.0.0.0/24`      — CIDR prefix (`*.` on it is not a pattern)
+#   - `[::1]:443`, `::1` — IPv6 (a bare one is refused by sbx; pass it through
+#                          so sbx reports that, rather than masking it with a
+#                          `*.` we invented)
+#   - `example.com:443`  — an explicit port means the caller was specific
 _ola_allow_host() {
   local h="$1"
   [ -z "$h" ] && return 0
-  if printf '%s' "$h" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
-    _ola_policy_allow "$h"
-  else
-    _ola_policy_allow "$h,*.$h"
-  fi
+  case "$h" in
+    \*.*|\*\*.*|*/*|*:*) _ola_policy_allow "$h" ;;
+    *)
+      if printf '%s' "$h" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+        _ola_policy_allow "$h"
+      else
+        _ola_policy_allow "$h,*.$h"
+      fi
+      ;;
+  esac
 }
 
 # Extract a resolved value from an `ola env` blob (KEY="VALUE" lines).
@@ -173,7 +192,12 @@ _ola_apply_policy() {
       local host
       read -r host _ <<< "$line"
       [ -z "$host" ] && continue
-      if _ola_policy_allow "$host,*.$host"; then
+      # Through _ola_allow_host, not _ola_policy_allow directly: an IP, CIDR
+      # or already-wildcarded entry here must not get a second `*.` glued on.
+      # sbx v0.45.0 rejects the result instead of ignoring it, and a rejected
+      # rule aborts the prepare — so one stray IP in allowlist.txt would take
+      # the whole sandbox down.
+      if _ola_allow_host "$host"; then
         count=$((count + 1))
       else
         failed=$((failed + 1))
@@ -657,13 +681,32 @@ _ola_sandbox_prepare() {
   local project_dir="$(cd .. && pwd)"
   local agent_dir="$(cd "$agent_arg" 2>/dev/null && pwd)"
 
-  # Fail fast if sbx is not authenticated — unauthenticated sbx commands stall.
+  # Fail fast if sbx is not usable — unauthenticated sbx commands stall.
+  # One probe, two very different failures, so key the remedy off the message
+  # rather than printing the login advice for both. An unreachable daemon
+  # reports `ensure daemon: sandboxd (PID N) remained running but did not
+  # respond within 10s` while `sbx daemon status` still says "stopped" — most
+  # often a stale sandboxd left behind by an sbx upgrade (seen on both
+  # v0.39.0 -> v0.43.0 and v0.43.0 -> v0.45.0), though the same message
+  # appears any time the client cannot reach the daemon socket. Diagnosing
+  # that as "not authenticated" sends the user to `sbx login`, which cannot
+  # fix it — and ola-monitor relaunching across an upgrade lands here first.
   local _sbx_out
   _sbx_out="$(sbx ls 2>&1)"
   if [ $? -ne 0 ]; then
-    echo "Error: sbx is not authenticated or unavailable." >&2
-    echo "$_sbx_out" >&2
-    echo "Run 'sbx login' and ensure Docker Desktop is running, then retry." >&2
+    case "$_sbx_out" in
+      *"ensure daemon"*|*"did not respond"*)
+        echo "Error: the sbx daemon (sandboxd) is not reachable." >&2
+        echo "$_sbx_out" >&2
+        echo "Usually a stale daemon after an sbx upgrade. Run 'sbx daemon restart'" >&2
+        echo "(sbx >= v0.45.0), or kill the PID named above / restart Docker Desktop." >&2
+        ;;
+      *)
+        echo "Error: sbx is not authenticated or unavailable." >&2
+        echo "$_sbx_out" >&2
+        echo "Run 'sbx login' and ensure Docker Desktop is running, then retry." >&2
+        ;;
+    esac
     return 1
   fi
 
@@ -751,9 +794,19 @@ _ola_sandbox_prepare() {
     echo "ola-sandbox: memory -m $_mem (80% of Docker VM; override with OLA_SBX_MEMORY)" >&2
   fi
 
+  # --skills off: sbx mounts a host-side shared skills store into every new
+  # sandbox by default (readonly, at the agent's skills dir). A skill sitting
+  # in that store would become ambient context for every task agent ola runs —
+  # undeclared in the agent folder, absent from the plan and from the project
+  # repo, and different on another machine. The agent folder is the database
+  # for how the work runs (allowlist.txt, provision.sh, run-init.sh), so
+  # sandbox tooling arrives through those seams or not at all. Inert while the
+  # host store is empty; this keeps it inert once it isn't.
+  # Requires sbx >= v0.43.0 (the flag does not exist before it).
   sbx create shell \
     --name "$name" \
     --template "$image" \
+    --skills off \
     "${mem_arg[@]}" \
     -q \
     "$project_dir" || {

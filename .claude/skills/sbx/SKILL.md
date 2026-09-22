@@ -1,17 +1,62 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.12.0
+version: 2.13.0
 ---
 
 # sbx — Docker Sandbox CLI
 
-> **Contract re-verified against sbx CLI `v0.43.0`** (`79805a6e3c6667520dc2da4f6bdeddae9b700969`,
-> client; previously verified at v0.39.0). All of ola's actual invocations
+> **Contract re-verified against sbx CLI `v0.45.0`** (`2f44e0511c4fa02d9a137d2702f90ce8284c7c14`,
+> client; previously verified at v0.43.0). All of ola's actual invocations
 > (`create shell --name --template -m -q <path>`, `run --name`, `exec [-w]`,
 > `ls`, `policy allow network` / `policy ls --type network`, `template ls`) are
-> byte-for-byte unchanged from v0.35.0 through v0.43.0 — no ola-side fix was
+> byte-for-byte unchanged from v0.35.0 through v0.45.0 — no ola-side fix was
 > needed for this bump either.
+>
+> **v0.45.0 pass — read this before the v0.43.0 notes below.** Read off
+> `--help` surfaces, then the two load-bearing items were confirmed against a
+> live daemon with throwaway sandboxes.
+>
+> - **`policy allow network` grammar widened and got strict** — the one change
+>   that touches ola's own code path. Patterns now also accept CIDR prefixes,
+>   multi-label wildcards (`**.example.com`), single-character globs
+>   (`api?.example.com`) and character classes (`api[12]`, `api[!1]`); a bare
+>   IPv6 address is **refused** (write `[2001:db8::1]:443` or
+>   `2001:db8::1/128`); and **a bare `*`, an escaped glob (`\*`), or any other
+>   pattern outside these forms is now rejected outright rather than stored as
+>   a rule that matches nothing.** ola turns a rejected rule into an aborted
+>   sandbox prepare, so this converts a silent no-op into a hard stop — see
+>   *Network Policies* for the `*.<ip-literal>` case that reaches ola.
+> - **`policy allow network --protocol tcp|udp` exists, and rules are TCP-only
+>   by default.** This contradicts what this skill said flatly until now — see
+>   the UDP bullet under *Non-HTTP TCP egress*, which is now marked unverified
+>   rather than silently rewritten.
+> - **`--pull always|missing|never` on `create`/`run`, defaulting to
+>   `always`** — never documented by this skill on those verbs, and it looked
+>   like a live hazard because `ola.sh` creates with `--template ola:dev`, an
+>   unqualified tag that only exists in the local sbx image store. **Tested,
+>   and it is not:** a template loaded locally under an unqualified tag
+>   (`sbx template load` of a `docker save` tar, stored as
+>   `docker.io/library/<name>:<tag>`) creates fine under the default `always`,
+>   exit 0, no pull attempted. **No ola change needed** — do not add
+>   `--pull never` on the strength of the flag's name. `sbx template save
+>   --help` does still tell you to pass `--pull never`, so the advice and the
+>   behaviour disagree; the behaviour won.
+> - **`sbx daemon restart`** is new, and is the first-line fix for the
+>   post-upgrade wedge instead of hunting the PID. Note it needs privileges to
+>   SIGKILL the old daemon: from inside a restricted shell it fails with
+>   `force kill process N: operation not permitted; daemon left running, not
+>   restarted`.
+> - Re-checked and **unchanged** at v0.45.0: the `secret` service list, the
+>   `-m` range text, `--skills` defaulting to `readonly`.
+> - **ola now passes `--skills off` on `sbx create shell`** (verified accepted;
+>   create exits 0). See *Shared skills store*.
+> - New and **unused by ola**: `create` with no PATH at all (no workspace bind
+>   mount); `policy ls --created-via` and `--protocol` filters; `template save
+>   --capture-mode`/`--description`; `secret set --show-error`. `--cloud`'s
+>   verb set has grown well past the four below — `cp`, `ports`, `stop`, `rm`,
+>   `secret`, `policy`, `template`, `mcp`, `env`, `kit`, `setup` all take it
+>   now — but ola never passes it.
 >
 > **The v0.43.0 headline is `--cloud`**: a global flag plus four new verbs
 > (`attach`, `move`, `ttl`, `volume`) that run sandboxes on Docker's hosted
@@ -91,6 +136,18 @@ version: 2.12.0
 Resource flags on `create`/`run`: `-m`/`--memory` (e.g. `8g`; min 512 MiB, default 50% of host clamped to 512 MiB–32 GiB, hard ceiling 75% of host — above it `create` fails),
 `--cpus` (0 = auto: **all** host CPUs — was N-1 before v0.35.0), `--profile <governance-profile>`, `--kit <ref>` (experimental; repeatable — see *Custom Templates*), `--kit-arg name=value` / `--kit-args-file FILE` (experimental).
 
+Image flags on `create`/`run`: `-t`/`--template <image>`, and **`--pull
+always|missing|never`, which defaults to `always`**. `sbx template save --help`
+says to pass `--pull never` "to use the saved image without trying to pull it
+from a registry", which reads like a locally-loaded template needs it —
+**tested at v0.45.0, it does not**. A tar loaded with `sbx template load` under
+an unqualified tag lands in the store as `docker.io/library/<name>:<tag>` and
+`sbx create shell --template <name>:<tag>` succeeds under the default `always`,
+exit 0, with no pull attempted. So `ola.sh`'s `ola:dev` rung (`make
+sandbox-dev` → `docker save` → `sbx template load`, then `create --template
+ola:dev` with no `--pull`) is correct as written, and `--pull never` would be
+cargo cult. Kept here because the help text implies the opposite.
+
 Env, port and policy flags on `create`/`run` (**none used by ola today**):
 - `-e`/`--env KEY=VALUE` or bare `-e KEY` (takes the value from the host environment); repeatable.
 - `--env-file FILE`; repeatable. `--env` beats any file; a later file beats an earlier one.
@@ -142,21 +199,27 @@ own agent dirs (checked in order: `~/.agents/skills`, `~/.claude/skills`,
 with `--skills off|readonly|readwrite` at create time, or globally with the
 `skills.defaultMode` setting.
 
-**Relevance to ola:** this is the first sbx default that writes into the
-sandbox's `$HOME` without ola asking, and `~/.claude` is a directory ola
-populates itself (`_ola_inject_cc_settings` writes `$HOME/.claude/
-settings.json`; the `cc`/`ct` backends build per-task `CLAUDE_CONFIG_DIR`s
-*elsewhere*, under the agent folder). A read-only mount on the `skills`
-subdirectory does not block writing a sibling file, and the store is **empty
-on a host that never ran `skills add`/`import`**, so today this is inert.
-Two things to watch if it stops being empty: a skill in the store becomes
-ambient context for every task agent ola runs — invisible in the ola plan and
-in the project repo — and `--skills readwrite` would let a task agent mutate a
-store shared with every other sandbox on the host. If ola ever needs
-determinism here, `--skills off` on `sbx create shell` is the one-flag answer.
-**Not verified against a live ola sandbox** (the `shell` agent's skills
-directory, if it has one, was not observed) — check `mount | grep skills`
-inside a running sandbox before relying on either claim.
+**ola opts out: `ola.sh` passes `--skills off` on `sbx create shell`.** This
+was the first sbx default that writes into the sandbox's `$HOME` without ola
+asking, and `~/.claude` is a directory ola populates itself
+(`_ola_inject_cc_settings` writes `$HOME/.claude/settings.json`; the `cc`/`ct`
+backends build per-task `CLAUDE_CONFIG_DIR`s *elsewhere*, under the agent
+folder). The reason to opt out is not the collision, though — it is that a
+skill in the host store becomes **ambient context for every task agent ola
+runs**: undeclared in the agent folder, absent from the plan and the project
+repo, and different on the next machine. ola's contract is that the agent
+folder declares its own environment (`allowlist.txt`, `provision.sh`,
+`run-init.sh`), so sandbox tooling arrives through those seams or not at all.
+(`--skills readwrite` would be worse still: a task agent mutating a store
+shared with every other sandbox on the host.)
+
+The flag is **verified accepted at v0.45.0** — `sbx create shell … --skills
+off` exits 0 — and requires sbx >= v0.43.0. It is inert today either way: on a
+host that never ran `skills add`/`import` the store is empty, and
+`mount | grep -i skill` inside a freshly created sandbox showed **no skills
+mount at all**, with or without the flag (the stock `shell` agent may simply
+have no skills directory). So this locks in determinism ahead of the default
+mattering, rather than fixing something that currently bites.
 
 ### sbx runs its own `apt-get update` at every start (verified 2026-08-24, v0.37.1)
 Every sandbox *start* — including the one an `sbx exec` triggers on a stopped
@@ -187,7 +250,7 @@ micro-VM until `sbx exec`/`sbx stop` themselves wedge (recover with
 `sbx rm --force <name>`, or restart Docker Desktop). `sbx stop <name>` is the
 blunt alternative — it tears down the whole sandbox (all processes), not one.
 
-Agents for `create`/`run` (v0.43.0): claude, codex, copilot, cursor, **devin**, docker-agent, droid, gemini, kiro, opencode, shell. The first positional may also be a *kit reference* (directory, ZIP, git repo, or OCI) instead of a built-in agent name — a relative one must be written explicitly (`./my-kit`), since a bare word keeps its agent/sandbox-name meaning. ola always passes `shell`.
+Agents for `create`/`run` (unchanged v0.43.0 → v0.45.0): claude, codex, copilot, cursor, **devin**, docker-agent, droid, gemini, kiro, opencode, shell. The first positional may also be a *kit reference* (directory, ZIP, git repo, or OCI) instead of a built-in agent name — a relative one must be written explicitly (`./my-kit`), since a bare word keeps its agent/sandbox-name meaning. ola always passes `shell`. As of v0.45.0 the PATH may be omitted entirely, creating a sandbox with **no workspace bind mount** (the agent works in the container's own filesystem); ola always passes the project dir.
 
 ### Resource limits & swap (verified v0.33.0)
 
@@ -299,11 +362,45 @@ pollutes captured error output and will break when the flag is removed.
 > that names the actual ID and, for a removable rule, prints the corrected
 > command verbatim, so read the error rather than guessing.
 
-RESOURCES is a comma-separated list of hostnames/domains/IPs. Supports exact
-domains (`example.com`), wildcard subdomains (`*.example.com`), optional port
-suffix (`example.com:443`), bare IPv4 (`10.0.0.5` — do NOT append `*.<ip>`),
-and `**` for all hosts. Re-adding a covered resource is idempotent (exit 0,
-`Already covered: …`).
+#### The RESOURCES grammar (widened and tightened at v0.45.0)
+
+RESOURCES is a comma-separated list of hostnames, domains, IP addresses **or
+CIDR prefixes**. Re-adding a covered resource is idempotent (exit 0,
+`Already covered: …`). Accepted forms:
+
+| Form | Example |
+|------|---------|
+| exact domain | `example.com` |
+| wildcard subdomain (one label) | `*.example.com` |
+| multi-label wildcard (v0.45.0) | `**.example.com` |
+| single-character glob (v0.45.0) | `api?.example.com` |
+| character class (v0.45.0) | `api[12].example.com`, `api[!1].example.com` |
+| port suffix | `example.com:443` |
+| bare IPv4 | `10.0.0.5` — do **NOT** append `*.<ip>` |
+| CIDR prefix (v0.45.0) | `10.0.0.0/24`, `2001:db8::1/128` |
+| IPv6 | only bracketed-with-port (`[2001:db8::1]:443`) or as CIDR — **a bare IPv6 address is refused** |
+| all hosts | `**` |
+
+> **Anything outside those forms is now REJECTED, not stored (v0.45.0).** A
+> bare `*`, an escaped glob character (`\*`) and any other malformed pattern
+> fail the command instead of being accepted as a rule that quietly matches
+> nothing. Strictly better — but it turns a former silent no-op into a hard
+> failure, and **ola aborts the whole sandbox prepare on a failed rule**
+> (`_ola_policy_allow` → `_ola_apply_policy` returns non-zero).
+> **Fixed in ola on the v0.45.0 pass:** `_ola_apply_policy` used to append
+> `*.$host` to every `allowlist.txt` entry unconditionally, so an IP literal in
+> that file produced `10.0.0.5,*.10.0.0.5` — ignored by older sbx, fatal from
+> v0.45.0. That loop now goes through `_ola_allow_host`, which passes an IP, a
+> CIDR prefix, an IPv6, a `host:port` or an already-written wildcard straight
+> through and expands only a plain domain. `docs/sandbox.md` still documents
+> that file as "one host per line", so an IP there remains out of contract —
+> the guard just stops an out-of-contract line from taking the sandbox with it.
+
+**Rules are TCP-only by default (v0.45.0 surfaces this explicitly).** `sbx
+policy allow network --protocol tcp|udp RESOURCES` selects the transport;
+repeat or comma-separate for both (`--protocol tcp,udp`). `policy ls` gained a
+matching `--protocol tcp|udp` filter. ola never passes `--protocol`, so every
+rule it writes is TCP.
 
 #### Non-HTTP TCP egress (databases: Mongo/Postgres/…) (verified 2026-07-23, v0.35.0)
 A sandbox is **not** structurally limited to HTTP. Docker's own doc: *"Non-HTTP
@@ -320,10 +417,23 @@ exactly the rule shape needed, no ola code change required.
   `IP:port`/`host:port` rule never applies and the connect is denied. Use the
   bare hostname instead. (`IP:port` is the right tool only for a non-SNI
   service, e.g. the Docker-doc SSH example.)
-- **UDP and ICMP can never be unblocked**, so a `mongodb+srv://` URI (which
-  needs SRV/TXT DNS over UDP) can never resolve in-sandbox. The application
-  must connect with a **seedlist** URI instead
-  (`mongodb://h1,h2,h3/?tls=true&authSource=admin…`).
+- **UDP: the flat "can never be unblocked" claim is retired as of v0.45.0 —
+  treat it as OPEN.** This skill said UDP and ICMP could never be allowed
+  (established against v0.35.0, when the CLI offered no way to ask). v0.45.0's
+  `policy allow network --help` states rules "apply to TCP by default; use
+  `--protocol` to select UDP or both transports", and offers
+  `--protocol tcp,udp "**"` as its own example. That is a CLI surface, **not a
+  verified behaviour** — nothing was run against a live sandbox (the daemon was
+  wedged for that pass), and a flag existing does not prove the proxy forwards
+  UDP end to end. ICMP has no flag and is still presumed blocked.
+- **So the seedlist rule stands, but for a weaker reason.** A `mongodb+srv://`
+  URI needs SRV/TXT DNS over UDP; whether `--protocol udp` now makes that
+  resolve in-sandbox is exactly the untested question. Keep connecting with a
+  **seedlist** URI (`mongodb://h1,h2,h3/?tls=true&authSource=admin…`) — it
+  works either way. Before claiming `+srv` is possible, test it: add the rule
+  with `--protocol udp` and resolve the SRV record from inside a sandbox. The
+  `mongo-vpn` skill still carries the old absolute wording and should be
+  corrected in the same pass if this is ever confirmed.
 - Sandbox egress still exits via the **host-side sbx proxy**, which follows
   the *host's* routing table — any host-level route requirement (e.g. a VPN
   bypass) still applies.
@@ -429,7 +539,7 @@ that captures stderr into its error text:
 - `sbx secret import [SERVICE] [--all] [--dry-run] [--force]` — import credentials detected in host env vars into the keychain. A service that already has an OAuth token is skipped (OAuth wins at runtime); `sbx secret rm <service>` first to switch to an api key.
 - **Dynamic secrets (verified v0.39.0)** — store a *source* instead of a value, resolved on the host when needed: `--ref` takes a 1Password `op://` reference or an AWS Secrets Manager ARN (the `op`/`aws` CLI must be installed and authenticated), `--command` uses a shell command's stdout (`sbx secret set github --command 'gh auth token'`). `--refresh` sets the cache policy (`on-demand`, or a duration; default 55m); `--no-verify` skips the store-time source check.
 - `sbx secret set-custom --host <pat> --env <VAR> --value <secret>` — (experimental) a secret for a service sbx doesn't know about. The sandbox only ever sees a generated **placeholder** in `<VAR>`; the proxy swaps in the real value on outbound requests to `--host` (repeatable; `*` matches one label, `**` any number). Remove with `sbx secret rm --placeholder <value>`.
-- v0.43.0 services (gained `copilot` and `devin` since v0.39.0): `anthropic, copilot, cursor, devin, droid, github, google, groq, mistral, nebius, openai, openrouter, xai` — re-check with `sbx secret set --help` after upgrades. Note this list is **not** the same as the placeholder keys sbx injects into a sandbox: `docker/placeholder-api-keys.txt` is derived from what was *observed* inside a live sandbox (it has no `GROQ_API_KEY`/`OPENROUTER_API_KEY` despite both being long-standing services), so a new service here is a prompt to re-check a live sandbox's `env`, not to edit that file blind. Not re-checked at v0.43.0 — the daemon was down.
+- Services (gained `copilot` and `devin` in v0.43.0; **unchanged at v0.45.0**): `anthropic, copilot, cursor, devin, droid, github, google, groq, mistral, nebius, openai, openrouter, xai` — re-check with `sbx secret set --help` after upgrades. Note this list is **not** the same as the placeholder keys sbx injects into a sandbox: `docker/placeholder-api-keys.txt` is derived from what was *observed* inside a live sandbox (it has no `GROQ_API_KEY`/`OPENROUTER_API_KEY` despite both being long-standing services), so a new service here is a prompt to re-check a live sandbox's `env`, not to edit that file blind. Not re-checked at v0.43.0 — the daemon was down.
 - `--registry-auth-endpoint URL` (v0.43.0) — trust an exact HTTPS URL for a registry whose Bearer auth endpoint lives on a different hostname than the registry itself.
 - **Registry secrets** (e.g. `ghcr.io`) authenticate private template/kit pulls:
   `gh auth token | sbx secret set --registry ghcr.io --password-stdin`. Host-only
@@ -561,8 +671,11 @@ error is legible, not as a recommendation to adopt them.
 - `sbx policy log [SANDBOX]` — check what the proxy is blocking
 - `sbx exec -it <name> bash` — inspect sandbox state interactively
 - Clock drift after sleep? `sbx stop <name>` then `sbx run --name <name>` (reconnect by sandbox name; positional re-attach deprecated in v0.33.0). Published ports are restored on restart as of v0.34.0.
-- Daemon issues? `sbx daemon status` / `sbx daemon start|stop` / `sbx daemon log-level` (v0.35.0 top-level command). A `database already in use` error from a policy/create call means another process (or a live sandbox) holds the daemon DB.
-- **After an sbx upgrade, the first command can wedge on the old daemon.** Observed going v0.39.0 → v0.43.0: every command (`sbx ls`, `sbx policy …`) fails with `ensure daemon: sandboxd (PID …) remained running but did not respond within 10s` while `sbx daemon status` reports `Status: stopped` — the new client cannot talk to the still-running old `sandboxd`, and does not kill it. Kill that PID (or restart Docker Desktop) and re-run; nothing is lost, but **an `ola-monitor` relaunch across an upgrade will fail at `_ola_sandbox_prepare`'s `sbx ls` authentication probe** and report sbx as unauthenticated, which is the wrong diagnosis. Read the stderr, not the summary.
+- Daemon issues? `sbx daemon status` / `sbx daemon start|stop` / **`sbx daemon restart` (new in v0.45.0)** / `sbx daemon log-level` (v0.35.0 top-level command). A `database already in use` error from a policy/create call means another process (or a live sandbox) holds the daemon DB.
+- **`ensure daemon: sandboxd (PID …) remained running but did not respond within 10s` has (at least) two causes, and they look identical.** In both, `sbx daemon status` reports `Status: stopped` and every command (`sbx ls`, `sbx policy …`, `sbx settings list`) fails the same way.
+  1. **A stale daemon after an sbx upgrade.** The new client cannot talk to the still-running old `sandboxd` and does not kill it. Observed v0.39.0 → v0.43.0 and again v0.43.0 → v0.45.0. **`sbx daemon restart` is the v0.45.0 fix** (kill the named PID or restart Docker Desktop on older clients). Nothing is lost, but the restart may drop running sandboxes, so stop an in-flight ola run first.
+  2. **The caller simply cannot reach the daemon socket** — e.g. an agent harness running commands inside its own OS-level sandbox (macOS Seatbelt) that denies the unix socket under `~/Library/Application Support/com.docker.sandboxes/`. **This was mistaken for cause 1 during the v0.45.0 pass**: a restart reported success, the daemon came up healthy, and `sbx ls` kept printing the same error with the *new* PID — while the identical command outside the restricted shell returned `No sandboxes found.` The tell is a **fresh** PID in the message: a just-restarted daemon cannot be stale. `sbx daemon restart` itself fails distinctly here (`force kill process N: operation not permitted; daemon left running, not restarted`), because SIGKILL to a foreign PID is what gets denied first.
+  Note **an `ola-monitor` relaunch across an upgrade hits this at `_ola_sandbox_prepare`'s `sbx ls` probe.** As of the v0.45.0 pass that probe no longer reports it as "not authenticated" — it matches the message and points at `sbx daemon restart` instead. Read the stderr, not the summary.
 - Corrupted state? `sbx reset` (add `--preserve-secrets` to keep stored secrets)
 - LLM calls fail with `Invalid port: ':1]'` (litellm/httpx)? sbx **v0.31.0** added a
   bracketed `[::1]` entry to the injected `NO_PROXY` ("Add bracketed [::1] to

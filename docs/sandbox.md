@@ -230,7 +230,10 @@ If you prefer not to use the helper:
 cd project
 # -m mirrors what ola-sandbox sets automatically (80% of the Docker VM here);
 # omit it and sbx falls back to its 50% default.
-sbx create shell --name my-sandbox --template ghcr.io/atineose/ola:$(ola --version | awk '{print $NF}') -m 12g .
+# --skills off also mirrors ola-sandbox: sbx otherwise mounts a host-side
+# shared skills store into the sandbox, which would be ambient context for
+# every task agent. Needs sbx >= v0.43.0.
+sbx create shell --name my-sandbox --template ghcr.io/atineose/ola:$(ola --version | awk '{print $NF}') --skills off -m 12g .
 sbx run --name my-sandbox   # re-attach by name (positional re-attach deprecated in sbx v0.33.0)
 ```
 
@@ -245,6 +248,8 @@ sbx policy log                        # view blocked requests
 ```
 
 Project-specific domains can be added to `agent/allowlist.txt` (one host per line; subdomains are included automatically). Blank lines, full-line `#` comments, and inline `# ...` comments after a host are ignored. The `ola-sandbox` helper applies these automatically on sandbox creation.
+
+The `*.<host>` subdomain companion is added only to a plain domain. An entry that is already an explicit pattern — an IP address, a CIDR prefix (`192.168.0.0/16`), an IPv6 address, a `host:port`, or a wildcard you wrote yourself — is passed to sbx untouched, because `*.10.0.0.5` is not a valid pattern and sbx v0.45.0 rejects a malformed rule rather than ignoring it (a rejected rule aborts sandbox creation).
 
 ## Laminar tracing (OpenHands only)
 

@@ -207,6 +207,30 @@ EOF
   [ ! -s "$SBX_LOG" ]
 }
 
+# sbx v0.45.0 rejects a malformed pattern instead of storing a rule that
+# matches nothing, and a rejected rule aborts the sandbox prepare — so an
+# entry that is already an explicit pattern must pass through untouched.
+
+@test "allow_host: CIDR prefix allowed bare (no *.cidr)" {
+  _ola_allow_host "10.0.0.0/24"
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 10.0.0.0/24" ]
+}
+
+@test "allow_host: IPv6 passed through untouched" {
+  _ola_allow_host "2001:db8::1/128"
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network 2001:db8::1/128" ]
+}
+
+@test "allow_host: explicit host:port passed through untouched" {
+  _ola_allow_host "example.com:443"
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network example.com:443" ]
+}
+
+@test "allow_host: caller-written wildcard is not double-globbed" {
+  _ola_allow_host "*.example.com"
+  [ "$(cat "$SBX_LOG")" = "sbx policy allow network *.example.com" ]
+}
+
 # ===== _ola_blob_val =====
 
 @test "blob_val: extracts a quoted value" {
@@ -253,6 +277,27 @@ LLM_BASE_URL="https://10.0.0.5/v1"'
   [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network docker.io,*.docker.io" ]
   [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
   [ "$(sed -n '4p' "$SBX_LOG")" = "sbx policy allow network 216.243.220.30" ]
+}
+
+@test "apply_policy: allowlist IP/CIDR entries are not wildcarded (regression)" {
+  # The allowlist loop used to append `,*.$host` unconditionally, so an IP
+  # literal here produced `*.10.0.0.5`. sbx ignored that until v0.45.0, which
+  # rejects a malformed pattern outright — and a rejected rule aborts the
+  # whole sandbox prepare, so one stray IP took the sandbox down with it.
+  mkdir -p "$TMPDIR_TEST/ap_literal"
+  cat > "$TMPDIR_TEST/ap_literal/allowlist.txt" <<'EOF'
+10.0.0.5
+192.168.0.0/16
+db.example.com:27017
+EOF
+  run _ola_apply_policy "$TMPDIR_TEST/ap_literal" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "Synced 4 domain(s) to sbx policy." ]
+  [ "$(sed -n '1p' "$SBX_LOG")" = "sbx policy allow network 10.0.0.5" ]
+  [ "$(sed -n '2p' "$SBX_LOG")" = "sbx policy allow network 192.168.0.0/16" ]
+  [ "$(sed -n '3p' "$SBX_LOG")" = "sbx policy allow network db.example.com:27017" ]
+  [ "$(sed -n '4p' "$SBX_LOG")" = "sbx policy allow network github.com,*.github.com" ]
+  ! grep -q '\*\.10\.0\.0\.5' "$SBX_LOG"
 }
 
 @test "apply_policy: strips inline comments from allowlist (regression)" {
@@ -747,6 +792,45 @@ _mock_sbx_new_sandbox() {
   "
 }
 
+@test "sandbox: unreachable daemon is not misdiagnosed as a login problem" {
+  # A stale sandboxd (the usual aftermath of an sbx upgrade) fails the same
+  # `sbx ls` probe as a missing login, but `sbx login` cannot fix it. The
+  # remedy has to be keyed off the message, or ola-monitor relaunching across
+  # an upgrade reports the wrong cause.
+  mkdir -p "$TMPDIR_TEST/sbx_daemon/agent" "$TMPDIR_TEST/sbx_daemon/code"
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  sbx() {
+    echo "error: ensure daemon: sandboxd (PID 8282) remained running but did not respond within 10s" >&2
+    return 1
+  }
+  export -f sbx
+
+  cd "$TMPDIR_TEST/sbx_daemon/code"
+  run ola-sandbox wedged-sandbox
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"sandboxd"*"not reachable"* ]]
+  [[ "$output" == *"sbx daemon restart"* ]]
+  [[ "$output" != *"sbx login"* ]]
+}
+
+@test "sandbox: a genuine auth failure still points at sbx login" {
+  mkdir -p "$TMPDIR_TEST/sbx_auth/agent" "$TMPDIR_TEST/sbx_auth/code"
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  sbx() { echo "error: not logged in" >&2; return 1; }
+  export -f sbx
+
+  cd "$TMPDIR_TEST/sbx_auth/code"
+  run ola-sandbox unauthed-sandbox
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not authenticated"* ]]
+  [[ "$output" == *"sbx login"* ]]
+  [[ "$output" != *"daemon restart"* ]]
+}
+
 @test "sandbox: create new sandbox" {
   mkdir -p "$TMPDIR_TEST/sbx_new/agent" "$TMPDIR_TEST/sbx_new/code"
   echo "docs.docker.com" > "$TMPDIR_TEST/sbx_new/agent/allowlist.txt"
@@ -759,7 +843,7 @@ _mock_sbx_new_sandbox() {
   grep -q 'sbx ls' "$SBX_LOG"
   grep -q "sbx policy allow network docs.docker.com" "$SBX_LOG"
   grep -q "sbx policy allow network github.com,\*.github.com" "$SBX_LOG"
-  grep -q "sbx create shell --name new-sandbox --template ghcr.io/atineose/ola:latest -m 12777m -q" "$SBX_LOG"
+  grep -q "sbx create shell --name new-sandbox --template ghcr.io/atineose/ola:latest --skills off -m 12777m -q" "$SBX_LOG"
   grep -q "sbx_new$" "$SBX_LOG"
   ! grep -q 'agent:ro' "$SBX_LOG"
   grep -q "sbx exec new-sandbox bash" "$SBX_LOG"
@@ -789,7 +873,7 @@ _mock_sbx_new_sandbox() {
   OLA_SBX_MEMORY="24g" ola-sandbox mem-sandbox
 
   # Override wins over the computed 80% (12777m), passed through verbatim.
-  grep -q "sbx create shell --name mem-sandbox --template ghcr.io/atineose/ola:latest -m 24g -q" "$SBX_LOG"
+  grep -q "sbx create shell --name mem-sandbox --template ghcr.io/atineose/ola:latest --skills off -m 24g -q" "$SBX_LOG"
 }
 
 @test "sandbox: omits -m when Docker VM size is unreadable (sbx default applies)" {
@@ -810,7 +894,7 @@ _mock_sbx_new_sandbox() {
   cd "$TMPDIR_TEST/sbx_nomem/code"
   ola-sandbox nomem-sandbox
 
-  grep -q "sbx create shell --name nomem-sandbox --template ghcr.io/atineose/ola:latest -q" "$SBX_LOG"
+  grep -q "sbx create shell --name nomem-sandbox --template ghcr.io/atineose/ola:latest --skills off -q" "$SBX_LOG"
   ! grep -qE 'sbx create .* -m ' "$SBX_LOG"
 }
 

@@ -350,6 +350,23 @@ non-zero exit like `_ola_apply_policy` does. The script is injected as base64
 through `sbx exec` rather than executed by path, so it works even for an agent
 folder outside the bind-mounted project dir.
 
+The same principle is why `sbx create shell` passes **`--skills off`**. sbx
+mounts a host-side shared skills store into every new sandbox by default
+(readonly, at the agent's skills dir); a skill sitting there would be ambient
+context for every task agent — undeclared in the agent folder, absent from the
+plan and the project repo, and different on the next machine. Sandbox tooling
+arrives through `provision.sh`/`allowlist.txt`/`run-init.sh` or not at all.
+Inert while the store is empty; the flag keeps it inert afterwards. Requires
+sbx >= v0.43.0.
+
+Network-policy rules are built by `_ola_allow_host`, which appends the
+`,*.<host>` subdomain companion **only to a plain domain** — an IP, a CIDR
+prefix, an IPv6, a `host:port` or an already-written wildcard passes through
+untouched. Not cosmetic: sbx v0.45.0 rejects a malformed pattern instead of
+storing a rule that matches nothing, and a rejected rule aborts the whole
+prepare, so one IP literal in `allowlist.txt` used to be invisible and would
+now take the sandbox down.
+
 No "already provisioned" marker is kept, deliberately: the script must be
 idempotent, and a marker keyed to it would mask a broken internal fast-path
 guard behind a cheap no-op. Two gotchas the contract calls out — sbx runs its
@@ -477,7 +494,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-release` | 1.1.0 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.12.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`, and the fact that v0.43.0's `--allow-network` is cloud-only), secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), the shared **skills store** sbx mounts read-only into every new sandbox by default (`--skills`), `--cloud` mode and the cloud-only flags on `create`/`run` that read as local, host `gh` auth and git commit identity injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control and both flavours of background agent hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, the post-upgrade stale-daemon wedge, and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.43.0; re-verify on sbx upgrade. |
+| `sbx` | 2.13.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. the v0.45.0 RESOURCES grammar and its new reject-malformed-patterns strictness, the `--protocol tcp\|udp` flag that reopens the UDP question, non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`, and the fact that v0.43.0's `--allow-network` is cloud-only), the shared skills store ola opts out of with `--skills off`, why `--pull` defaulting to `always` needs no ola change, secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), the shared **skills store** sbx mounts read-only into every new sandbox by default (`--skills`), `--cloud` mode and the cloud-only flags on `create`/`run` that read as local, host `gh` auth and git commit identity injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control and both flavours of background agent hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, the post-upgrade stale-daemon wedge (recurring, now fixable with `sbx daemon restart`), and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook). Contract pinned to sbx v0.45.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 
