@@ -1,19 +1,88 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.13.0
+version: 2.14.0
 ---
 
 # sbx — Docker Sandbox CLI
 
-> **Contract re-verified against sbx CLI `v0.45.0`** (`2f44e0511c4fa02d9a137d2702f90ce8284c7c14`,
-> client; previously verified at v0.43.0). All of ola's actual invocations
-> (`create shell --name --template -m -q <path>`, `run --name`, `exec [-w]`,
-> `ls`, `policy allow network` / `policy ls --type network`, `template ls`) are
-> byte-for-byte unchanged from v0.35.0 through v0.45.0 — no ola-side fix was
-> needed for this bump either.
+> **Contract re-verified against sbx CLI `v0.46.0`** (`991967dc90ce0d9a440cd1df1bdf3e395c5a2693`,
+> client; previously verified at v0.45.0). All of ola's actual invocations
+> (`create shell --name --template --skills off -m -q <path>`, `run --name`,
+> `exec [-w]`, `ls`, `policy allow network` / `policy ls --type network`,
+> `template ls`) are byte-for-byte unchanged from v0.35.0 through v0.46.0 — no
+> ola-side fix was needed for this bump.
 >
-> **v0.45.0 pass — read this before the v0.43.0 notes below.** Read off
+> **v0.46.0 pass — read this before the v0.45.0 notes below.** Read off every
+> `--help` surface, then confirmed against a live daemon with a throwaway
+> sandbox created with ola's exact `create shell` flags on the `ola:0.8.0`
+> image (create exit 0 in ~4s, `exec -w` exit 0, sandbox-scoped allow rules
+> for a domain, its `*.` companion and a bare IPv4 all accepted, `rm --force`
+> also dropped those rules). No stale-daemon wedge on this upgrade: the old
+> daemon was not running, and the first command printed `Starting sandboxd
+> daemon...` and carried on.
+>
+> - **Blocked requests now queue a pending approval — `sbx policy approval
+>   ls|inspect|respond`.** Tested: a request with no matching allow rule is
+>   still **denied at once** (curl got `403` in 0s, no wait), so an unattended
+>   ola run is not held up. But each denial also leaves an entry in `sbx policy
+>   approval ls` (title `host:port`, detail `no matching allow rule (default
+>   deny)`, options `allow` / `dismiss`) that stays there until someone answers
+>   it. `respond <ID> --option allow` writes a **persistent** rule, which `policy
+>   ls --created-via approval` lists. ola does not answer approvals and must
+>   not: a task's egress belongs in `allowlist.txt`, where it is declared and
+>   reviewed, not in a rule someone clicked. The queue is a good list of what a
+>   run tried to reach and was refused, next to `sbx policy log`.
+> - **HTTP rules: `policy allow|deny|rm network --method M[,M] [--path GLOB]`**
+>   (`--method ANY` matches all; `--path` defaults to `/**`), with `policy ls
+>   --type http`. Unused by ola — its rules stay host-level.
+> - **`policy check network --protocol tcp|udp`**, and `policy rm network -f`.
+> - **`exec -d` is now explicitly not supported** ("detached exec (-d/--detach)
+>   is not supported"); the flag is still listed, marked "(not supported)". ola
+>   never passes it. An in-sandbox process that must outlive its `exec` must
+>   daemonize itself (see *Stopping a process inside a sandbox*).
+> - **`run -d`/`--detached` is now documented** ("start the sandbox and print
+>   its ID without opening an agent session"). Before this it parsed but was not
+>   in the flag list. ola uses `create` for this.
+> - **The nested `dockerd`'s `/var/lib/docker` is its own volume, 10 GiB by
+>   default** — setting `sandbox.disk.dockerVolume` (min 512 MiB; read at
+>   create time only, existing volumes are never resized;
+>   `DOCKER_SANDBOXES_DOCKER_SIZE` overrides it for one sandbox). Observed
+>   inside the probe sandbox: `/dev/vdd 9.8G … /var/lib/docker`. See *Docker
+>   inside a sandbox*: images and containers there now have a disk cap as well
+>   as the `-m` memory cap.
+> - **The injected `NO_PROXY` no longer has the bracketed `[::1]`** — observed
+>   `localhost,127.0.0.1,::1,gateway.docker.internal`. ola's
+>   `sanitize_proxy_env` scrub is now a no-op here, not a fix; keep it, since an
+>   older sbx still produces the form httpx rejects.
+> - `--cpus` help now says auto is "all host CPUs, at most 16 on Linux arm64";
+>   a `:ro` extra workspace may now name **a single file**, so one path can be
+>   kept read-only inside a writable workspace; `--name` help now states the rules
+>   (two or more characters, starting with a letter or digit, only letters,
+>   digits, hyphens and periods; `default` is reserved). `ola-monitor` defaults
+>   the name to the project dir's basename; a name with `_` gets `Warning:
+>   sandbox names cannot contain underscores` from `create` (whether it then
+>   rewrites or rejects the name was not tested), so pass `--monitor-sandbox`
+>   for such a project.
+> - New settings (`sbx settings list`), none set by ola: `claude.remoteControl`
+>   (default `false` — lets Claude Code's `/remote-control` authenticate with
+>   its own session token; this is sbx's side, and ola's `settings.json` keeps
+>   `disableRemoteControl: true` on the Claude Code side whatever it says),
+>   `clipboard.imagePaste`, `model.providers` (inference endpoints for a `sbx
+>   run --model … --provider …` that does not appear in `run --help`),
+>   `platform.images.useDHI`, `platform.images.registryMirror`, and
+>   `proxy`/`no_proxy` with `.sandbox`/`.daemon` variants.
+> - `template save --help` no longer tells you to pass `--pull never`; the
+>   `template load` example (`sbx run --pull never -t myimage:v1.0 claude`) does
+>   now. The v0.45.0 finding below still holds — a locally loaded template does
+>   not need it.
+> - Re-checked and **unchanged** at v0.46.0: the `secret` service list, the
+>   `-m` range text, `--skills` defaulting to `readonly`, the RESOURCES grammar,
+>   `prune`/`rm`/`cp`/`ports`/`reset`/`diagnose` flags, and the agent list.
+>   `rm`/`prune` `-f` now say it also deletes a sandbox "in use (e.g. an open
+>   SSH connection)".
+>
+> **v0.45.0 pass.** Read off
 > `--help` surfaces, then the two load-bearing items were confirmed against a
 > live daemon with throwaway sandboxes.
 >
@@ -127,14 +196,14 @@ version: 2.13.0
 - `sbx ls [--json] [-q]` — list sandboxes (status, ports, workspace)
 - `sbx stop <name> [<name>...]` — pause sandbox(es), keep state
 - `sbx rm [--force] [--all] <name>...` — delete sandbox(es) + all state (`--force` required to delete an **active/running** session, and for non-TTY)
-- `sbx exec [-it] [-d] [-u root] [-w DIR] [-e K=V] [--env-file F] <name> CMD [ARG...]` — run a command inside (docker-exec flags; `-e`/`--env-file` added since v0.39.0)
+- `sbx exec [-it] [-u root] [-w DIR] [-e K=V] [--env-file F] <name> CMD [ARG...]` — run a command inside (docker-exec flags; `-e`/`--env-file` added since v0.39.0). Starts a stopped sandbox first. **`-d` is not supported** (v0.46.0 says so explicitly).
 - `sbx cp [-L] SRC DST` — copy files host⇄sandbox; sandbox side is `SANDBOX:PATH` (one side must be a sandbox). `-L`/`--follow-link` follows symlinks in the source.
 - `sbx diagnose [--json|-o github-issue] [--upload]` — diagnose common installation/connectivity issues
 - `sbx prune [--dry-run [--json]] [--force] [--filter until=TIMESTAMP]` — remove **stopped** sandboxes only; a running one is never touched, so it is safe to run habitually. Confirms unless `--force` (which also removes an in-use sandbox). `--filter until=` takes an RFC 3339 timestamp, a Unix timestamp, or a Go duration relative to now (`until=168h` keeps anything stopped within the last week) — **not** the `since=` this skill claimed at v0.39.0. A sandbox whose stop time the daemon can't report is left alone. Secrets scoped to a pruned sandbox are deleted with it. Use `sbx rm` to remove a specific sandbox regardless of state.
 - `sbx reset [--force] [--preserve-secrets]` — nuclear: stop all, clear ALL state/secrets/policies (and, since v0.39.0, the managed SSH config and Gordon's sessions)
 
 Resource flags on `create`/`run`: `-m`/`--memory` (e.g. `8g`; min 512 MiB, default 50% of host clamped to 512 MiB–32 GiB, hard ceiling 75% of host — above it `create` fails),
-`--cpus` (0 = auto: **all** host CPUs — was N-1 before v0.35.0), `--profile <governance-profile>`, `--kit <ref>` (experimental; repeatable — see *Custom Templates*), `--kit-arg name=value` / `--kit-args-file FILE` (experimental).
+`--cpus` (0 = auto: **all** host CPUs, at most 16 on Linux arm64 — was N-1 before v0.35.0), `--profile <governance-profile>`, `--kit <ref>` (experimental; repeatable — see *Custom Templates*), `--kit-arg name=value` / `--kit-args-file FILE` (experimental).
 
 Image flags on `create`/`run`: `-t`/`--template <image>`, and **`--pull
 always|missing|never`, which defaults to `always`**. `sbx template save --help`
@@ -302,6 +371,15 @@ Observed inside a live ola sandbox: `/usr/bin/docker`, client **and** server
 `29.7.2`, storage driver `overlayfs`, cgroup v2, `Docker Root Dir:
 /var/lib/docker`, socket `/var/run/docker.sock` (`root:docker`, `srw-rw----`).
 
+- **The image store has a disk cap (seen at v0.46.0).** `/var/lib/docker` is
+  its own block-device volume, **10 GiB by default** (`/dev/vdd 9.8G`), sized
+  by the `sandbox.disk.dockerVolume` setting at create time only. An existing
+  sandbox is never resized, so to raise it: change the setting, then `sbx rm`
+  and re-create. `DOCKER_SANDBOXES_DOCKER_SIZE` overrides it for one sandbox.
+  A task that builds or pulls large images fills this before it fills `-m`,
+  and the image store only grows across runs (below) — a further reason for
+  `docker image prune` in `run-init.sh`.
+
 - **It is a nested daemon, not the host socket mounted in.** `docker ps` inside
   lists none of the host's containers — including the sandboxes themselves,
   which is the tell — and the image store holds only what was pulled or built
@@ -351,7 +429,9 @@ pollutes captured error output and will break when the flag is removed.
 - `sbx policy log [SANDBOX] [--type network] [--limit N] [--json] [-q]` — view allowed/blocked requests
 - `sbx policy reset` — reset policies to defaults
 - `sbx policy profile ...` — manage reusable policy profiles
-- `sbx policy check network <host>` / `sbx policy inspect <policy-or-rule>` — (v0.35.0) test whether a request is allowed / show full detail on a policy or rule
+- `sbx policy check network <host>` / `sbx policy inspect <policy-or-rule>` — (v0.35.0) test whether a request is allowed / show full detail on a policy or rule. `check` evaluates a bare host at port 443, accepts a pasted URL, and takes `--protocol tcp|udp` (v0.46.0).
+- `sbx policy approval ls` / `inspect <ID>` / `respond <ID> --option allow|dismiss` — (v0.46.0) the queue of refused requests. A request with no matching rule is **still denied at once** (tested: `403` in 0s); the approval is only a record that waits for an answer, and `allow` writes a persistent rule (`policy ls --created-via approval`). ola never answers these — task egress is declared in `allowlist.txt`.
+- `--method GET,HEAD [--path '/v1/**']` on `policy allow|deny|rm network` — (v0.46.0) HTTP-level rules; `policy ls --type http` lists them. Unused by ola.
 
 > **Removal changed (v0.31.x):** `policy rm network` no longer accepts a
 > positional RESOURCES argument. You MUST identify the rule with `--resource
@@ -683,7 +763,10 @@ error is legible, not as a recommendation to adopt them.
   rejects the bracketed form, killing every LLM call before egress. Not a policy
   problem — the proxy env is sbx-injected, not in ola's sidecar `agent.env`. ola
   scrubs it at startup (`ola.sandbox.sanitize_proxy_env`, called in `cli.main`);
-  check `env | grep -i proxy` inside the sandbox to see the raw value.
+  check `env | grep -i proxy` inside the sandbox to see the raw value. At
+  v0.46.0 the injected value is unbracketed again (`localhost,127.0.0.1,::1,
+  gateway.docker.internal`), so the scrub does nothing there — keep it for
+  older sbx.
 
 ## Key Differences from `docker sandbox`
 - No manual proxy config needed (auto-configured)
