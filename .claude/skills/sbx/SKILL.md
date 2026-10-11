@@ -1,17 +1,66 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.14.0
+version: 2.15.0
 ---
 
 # sbx — Docker Sandbox CLI
 
-> **Contract re-verified against sbx CLI `v0.46.0`** (`991967dc90ce0d9a440cd1df1bdf3e395c5a2693`,
-> client; previously verified at v0.45.0). All of ola's actual invocations
+> **Contract re-verified against sbx CLI `v0.47.0`** (`0411f50ee4700fe7bd37e6e7e3aced563e850ca9`,
+> client; previously verified at v0.46.0). All of ola's actual invocations
 > (`create shell --name --template --skills off -m -q <path>`, `run --name`,
 > `exec [-w]`, `ls`, `policy allow network` / `policy ls --type network`,
-> `template ls`) are byte-for-byte unchanged from v0.35.0 through v0.46.0 — no
+> `template ls`) are byte-for-byte unchanged from v0.35.0 through v0.47.0 — no
 > ola-side fix was needed for this bump.
+>
+> **v0.47.0 pass — read this before the v0.46.0 notes below.** Source: the
+> [v0.47.0 release](https://github.com/docker/sbx-releases/releases/tag/v0.47.0)
+> (same text in Docker's sandboxes release notes), every `--help` surface ola
+> uses, and a live throwaway sandbox on `ola:0.8.0` created with ola's exact
+> flags: create exit 0 in ~4s, `exec -w` exit 0, sandbox-scoped allow rules for
+> a domain + `*.` companion and a bare IPv4 accepted, `stop` then `exec`
+> restarts it, `rm -f` removes it. `ls` columns unchanged (`SANDBOX AGENT
+> STATUS PORTS WORKSPACE`), so `_ola_sandbox_prepare`'s anchored name match
+> holds. No stale-daemon wedge: the first command printed `Starting sandboxd
+> daemon...`.
+>
+> - **`sbx run --rm`** removes the sandbox when the session ends (cannot be
+>   combined with `-d`; a dropped *cloud* session keeps its sandbox). Do not
+>   adopt it in ola — ola's sandboxes persist across runs on purpose.
+> - **`sbx run -d` on an existing local sandbox keeps it running after
+>   sessions disconnect**, until stopped or removed; kits gain a local-only
+>   `com.docker.sandbox/long-running@1` capability. Read together they hint
+>   that a local sandbox may otherwise stop when its last session disconnects.
+>   **Not verified.** Observed: a sandbox driven only by `sbx exec` stayed
+>   `running` after every exec returned. If an `ola-sandbox` detach ever stops
+>   the sandbox under a running ola, this is the first suspect.
+> - **The proxy rejects OAuth token grants it does not recognise**, and their
+>   responses can no longer replace host-managed credentials. ola holds no
+>   `anthropic` sbx secret, so there is nothing host-managed to protect, and
+>   Claude Code's in-sandbox headless run on `CLAUDE_CODE_OAUTH_TOKEN` worked on
+>   v0.47.0. Whether an in-sandbox *refresh* of the injected
+>   `.credentials.json` still passes is **not verified** — if `cc`/`ct` fail
+>   with 401 right after a token refresh, suspect this.
+> - The proxy now errors rather than pass through an Anthropic API-key
+>   creation response it cannot mask, and catches provider OAuth tokens on a
+>   hostname that differs only in case or a trailing dot. ola uses neither path.
+> - Network: UDP to multicast, link-local, unspecified and broadcast addresses
+>   is **always** rejected, whatever the policy (`host.docker.internal` is
+>   exempt) — see *Non-HTTP TCP egress*. Since v0.46.0 (missed on that pass), an
+>   IP allow rule no longer lets raw TCP reach a *denied* hostname that
+>   resolves to that IP. TLS handshakes that fill the inspection buffer are
+>   rejected; incomplete ones time out after 2 minutes.
+> - Missed on the v0.46.0 pass, **breaking there**: commands given to `secret
+>   set --command` / `set-custom --command` run from a **fresh temporary
+>   directory**, so a relative helper path breaks. `gh auth token` is
+>   unaffected. ola never calls `sbx secret`.
+> - Also: `ports --publish` collision message and retry, `settings set`
+>   validates proxy values, cloud `ttl` reports stopped sandboxes, kit pull
+>   limits and GHCR/Hub signing, MCP `offline_access`. None touch ola.
+> - Known older bug surfaced by this pass, **not** a v0.47.0 change:
+>   `ola-policy-review` greps `sbx policy ls --type network`, which has printed
+>   only a per-policy summary since v0.35.0, so it reports every host
+>   `[MISSING]`. Needs `--wide`/`--json`.
 >
 > **v0.46.0 pass — read this before the v0.45.0 notes below.** Read off every
 > `--help` surface, then confirmed against a live daemon with a throwaway
@@ -192,6 +241,7 @@ version: 2.14.0
 ### Lifecycle
 - `sbx run claude [path]` — start/reconnect Claude Code sandbox (creates if absent)
 - `sbx run --name <SANDBOX>` — reconnect to an existing sandbox by name (agent read from its spec). **The positional `sbx run <SANDBOX>` re-attach form was deprecated in v0.33.0** — the positional is now the *agent*, so a bare name re-attach is unreliable; use `--name`.
+- `sbx run --rm ...` (v0.47.0) — remove the sandbox when the session ends; not with `-d`. Unused by ola, whose sandboxes persist.
 - `sbx create shell --name <n> --template <img> [-q] <path> [<extra>:ro]` — create without attaching
 - `sbx ls [--json] [-q]` — list sandboxes (status, ports, workspace)
 - `sbx stop <name> [<name>...]` — pause sandbox(es), keep state
@@ -496,7 +546,9 @@ exactly the rule shape needed, no ola code change required.
   sends SNI** — the proxy matches on the SNI *hostname* when present, so an
   `IP:port`/`host:port` rule never applies and the connect is denied. Use the
   bare hostname instead. (`IP:port` is the right tool only for a non-SNI
-  service, e.g. the Docker-doc SSH example.)
+  service, e.g. the Docker-doc SSH example.) Since v0.46.0 an IP or
+  `IP:port` allow rule no longer opens a *denied* hostname that resolves to
+  that IP (TCP), so an IP rule cannot be used to route around a hostname deny.
 - **UDP: the flat "can never be unblocked" claim is retired as of v0.45.0 —
   treat it as OPEN.** This skill said UDP and ICMP could never be allowed
   (established against v0.35.0, when the CLI offered no way to ask). v0.45.0's
@@ -505,7 +557,11 @@ exactly the rule shape needed, no ola code change required.
   `--protocol tcp,udp "**"` as its own example. That is a CLI surface, **not a
   verified behaviour** — nothing was run against a live sandbox (the daemon was
   wedged for that pass), and a flag existing does not prove the proxy forwards
-  UDP end to end. ICMP has no flag and is still presumed blocked.
+  UDP end to end. ICMP has no flag and is still presumed blocked. As of
+  v0.47.0, UDP to multicast, link-local, unspecified and broadcast
+  addresses is rejected regardless of policy (`host.docker.internal` is
+  exempt); ordinary unicast UDP, and so SRV lookups, is still the open
+  question.
 - **So the seedlist rule stands, but for a weaker reason.** A `mongodb+srv://`
   URI needs SRV/TXT DNS over UDP; whether `--protocol udp` now makes that
   resolve in-sandbox is exactly the untested question. Keep connecting with a
@@ -568,6 +624,19 @@ the host, not looped back inside the sandbox.
   survive its own tool call is the long-lived-process case that must daemonize
   explicitly and be reclaimed by `run-init.sh`.
   Never copy the host `settings.json` in: it drags in personal hooks/MCP.
+- **The sandbox's Claude Code is updated on every create, reconnect and
+  `ola-monitor` relaunch** (`_ola_update_claude`: `claude update` inside, under
+  a 180s timeout, never fatal — a failure warns and keeps the installed CLI).
+  The image only carries whatever was current at build time and nothing in the
+  sandbox updates it afterwards: a sandbox from `ola:0.8.0` was still on its
+  build's 2.1.272 a month later. Staleness has a concrete cost — 2.1.272's
+  interactive TUI ignores `CLAUDE_CODE_OAUTH_TOKEN` and stops at the login
+  screen, where 2.1.296 accepts it (verified 2026-10-11). Each call site is a
+  moment with no ola run in flight in that sandbox. The update persists in the
+  sandbox's state across `stop`/start; the default policy already reaches the
+  update host. A release still matters for a *new* sandbox's starting point:
+  `make release-image` builds `--no-cache`, so every release bakes the current
+  CLI.
 - **macOS Keychain shadows the file — host runs only.** Claude Code caches OAuth
   credentials *per `CLAUDE_CONFIG_DIR`* in the macOS Keychain under
   `Claude Code-credentials-<sha256(dir)[:8]>`, and that entry **outranks** the
@@ -617,7 +686,7 @@ that captures stderr into its error text:
 - `sbx secret ls [-g] [--sandbox <name>] [--service <name>]` — list stored secrets. Here `-g`/`--global` is a **filter, not scoping**, and is *not* deprecated: it narrows the listing to global secrets.
 - `sbx secret rm <service> [--sandbox <name>] [-f]` — remove a secret (global by default)
 - `sbx secret import [SERVICE] [--all] [--dry-run] [--force]` — import credentials detected in host env vars into the keychain. A service that already has an OAuth token is skipped (OAuth wins at runtime); `sbx secret rm <service>` first to switch to an api key.
-- **Dynamic secrets (verified v0.39.0)** — store a *source* instead of a value, resolved on the host when needed: `--ref` takes a 1Password `op://` reference or an AWS Secrets Manager ARN (the `op`/`aws` CLI must be installed and authenticated), `--command` uses a shell command's stdout (`sbx secret set github --command 'gh auth token'`). `--refresh` sets the cache policy (`on-demand`, or a duration; default 55m); `--no-verify` skips the store-time source check.
+- **Dynamic secrets (verified v0.39.0)** — store a *source* instead of a value, resolved on the host when needed: `--ref` takes a 1Password `op://` reference or an AWS Secrets Manager ARN (the `op`/`aws` CLI must be installed and authenticated), `--command` uses a shell command's stdout (`sbx secret set github --command 'gh auth token'`; since v0.46.0 the command runs from a fresh temporary directory, so use absolute paths for any helper script). `--refresh` sets the cache policy (`on-demand`, or a duration; default 55m); `--no-verify` skips the store-time source check.
 - `sbx secret set-custom --host <pat> --env <VAR> --value <secret>` — (experimental) a secret for a service sbx doesn't know about. The sandbox only ever sees a generated **placeholder** in `<VAR>`; the proxy swaps in the real value on outbound requests to `--host` (repeatable; `*` matches one label, `**` any number). Remove with `sbx secret rm --placeholder <value>`.
 - Services (gained `copilot` and `devin` in v0.43.0; **unchanged at v0.45.0**): `anthropic, copilot, cursor, devin, droid, github, google, groq, mistral, nebius, openai, openrouter, xai` — re-check with `sbx secret set --help` after upgrades. Note this list is **not** the same as the placeholder keys sbx injects into a sandbox: `docker/placeholder-api-keys.txt` is derived from what was *observed* inside a live sandbox (it has no `GROQ_API_KEY`/`OPENROUTER_API_KEY` despite both being long-standing services), so a new service here is a prompt to re-check a live sandbox's `env`, not to edit that file blind. Not re-checked at v0.43.0 — the daemon was down.
 - `--registry-auth-endpoint URL` (v0.43.0) — trust an exact HTTPS URL for a registry whose Bearer auth endpoint lives on a different hostname than the registry itself.

@@ -306,6 +306,29 @@ _ola_inject_gh() {
   sbx exec "$name" bash -c "export GH_TOKEN=\$(echo '$tok_b64' | base64 -d); gh auth setup-git" 2>/dev/null
 }
 
+# Bring the sandbox's Claude Code up to date before ola (re)launches into it.
+# The image pins whatever was current when it was built, and nothing in the
+# sandbox updates it afterwards: a sandbox created from ola:0.8.0 was still on
+# that build's 2.1.272 a month later. A stale CLI is not just old — 2.1.272's
+# interactive TUI ignores CLAUDE_CODE_OAUTH_TOKEN and stops at the login
+# screen, where 2.1.296 accepts it (verified 2026-10-11), so `ct` depends on
+# keeping up. Run on every create, reconnect and ola-monitor relaunch: each is
+# a point where no ola run is in flight in this sandbox. Never fatal — a
+# failed update (no network, update host refused) leaves the current CLI,
+# which is what ran before this existed.
+_ola_update_claude() {
+  local name="$1" out
+  if ! out="$(sbx exec "$name" bash -c 'timeout 180 claude update' 2>&1)"; then
+    echo "Warning: could not update Claude Code in '$name' — keeping the installed version: $(printf '%s\n' "$out" | tail -n1)" >&2
+    return 0
+  fi
+  case "$out" in
+    *"Successfully updated"*)
+      echo "ola-sandbox: $(printf '%s\n' "$out" | grep 'Successfully updated')" >&2 ;;
+  esac
+  return 0
+}
+
 # Commit as the host's git identity rather than the image's ola@localhost
 # placeholder: the first user.name/user.email in the host's *global* config
 # (`--get-all | head -1` — plain `--get` would return the last one;
@@ -762,6 +785,7 @@ _ola_sandbox_prepare() {
     # sidecar. The shell rc persists in container state, so it is not
     # rewritten here (it sources the refreshed sidecar by path).
     _ola_inject_credentials "$name"
+    _ola_update_claude "$name"
     _ola_inject_sidecar "$name" "$_env_blob"
     _ola_inject_gh "$name"
     _ola_inject_git_identity "$name"
@@ -815,6 +839,7 @@ _ola_sandbox_prepare() {
   }
 
   _ola_inject_credentials "$name"
+  _ola_update_claude "$name"
   _ola_inject_sidecar "$name" "$_env_blob"
   _ola_inject_gh "$name"
   _ola_inject_git_identity "$name"
@@ -1105,6 +1130,7 @@ ola-monitor() {
         return 1
       fi
       _ola_inject_credentials "$name"
+      _ola_update_claude "$name"
       continue
     fi
 
@@ -1144,6 +1170,7 @@ ola-monitor() {
     fi
 
     _ola_inject_credentials "$name"
+    _ola_update_claude "$name"
     heal_epochs+=("$now")
     rm -f "$marker"
   done

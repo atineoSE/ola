@@ -476,6 +476,27 @@ LMNR_HTTP_PORT="8000"'
   grep -q 'git config --global user.name' "$SBX_LOG"
 }
 
+# ===== _ola_update_claude =====
+
+@test "update_claude: runs claude update inside the sandbox" {
+  _ola_update_claude box
+  grep -q 'sbx exec box bash -c timeout 180 claude update' "$SBX_LOG"
+}
+
+@test "update_claude: reports a version change" {
+  sbx() { echo "Successfully updated from 2.1.272 to version 2.1.296"; }
+  run _ola_update_claude box
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Successfully updated from 2.1.272 to version 2.1.296"* ]]
+}
+
+@test "update_claude: a failed update warns but is never fatal" {
+  sbx() { echo "network refused"; return 1; }
+  run _ola_update_claude box
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not update Claude Code"*"network refused"* ]]
+}
+
 # ===== _ola_inject_oh_settings / _ola_setup_shell_rc =====
 
 # Minimal but schema-faithful agent_settings.json (llm + nested
