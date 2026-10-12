@@ -275,12 +275,22 @@ _ola_apply_policy() {
 # Write the host-resolved env snapshot into the sandbox so the in-sandbox
 # `ola` loads concrete values (no ${VAR} interpolation needed there).
 # Path mirrors python: ola.sandbox.SIDECAR_ENV = ~/.ola/agent.env
+#
+# Written even when the blob is empty (an agent folder with no .env): the
+# injectors after it (_ola_inject_gh, _ola_inject_oauth_token) *append* to
+# this file, and an early return here used to leave ~/.ola missing, so every
+# append failed silently — GH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN never reached
+# such a sandbox. Truncating on every create/reconnect also keeps those
+# appends from piling up.
 _ola_inject_sidecar() {
   local name="$1" blob="$2"
-  [ -z "$blob" ] && return 0
+  sbx exec "$name" bash -c 'mkdir -p "$HOME/.ola"' 2>/dev/null
+  if [ -z "$blob" ]; then
+    sbx exec "$name" bash -c ': > "$HOME/.ola/agent.env"' 2>/dev/null
+    return 0
+  fi
   local data
   data="$(printf '%s\n' "$blob" | base64)"
-  sbx exec "$name" bash -c 'mkdir -p "$HOME/.ola"' 2>/dev/null
   sbx exec "$name" bash -c "echo '$data' | base64 -d > \$HOME/.ola/agent.env" 2>/dev/null
 }
 

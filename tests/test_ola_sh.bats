@@ -424,9 +424,12 @@ LMNR_HTTP_PORT="8000"'
   grep -q '\.ola/agent.env' "$SBX_LOG"
 }
 
-@test "inject_sidecar: empty blob is a no-op" {
+@test "inject_sidecar: empty blob still creates an empty agent.env" {
+  # The gh/token injectors append to it; without the dir and file their
+  # appends fail silently.
   _ola_inject_sidecar box ""
-  [ ! -s "$SBX_LOG" ]
+  grep -q 'sbx exec box bash -c mkdir -p "$HOME/.ola"' "$SBX_LOG"
+  grep -q ': > "$HOME/.ola/agent.env"' "$SBX_LOG"
 }
 
 # ===== _ola_inject_gh =====
