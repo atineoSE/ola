@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.15.1
+version: 2.16.0
 ---
 
 # sbx — Docker Sandbox CLI
@@ -597,6 +597,18 @@ the host, not looped back inside the sandbox.
   rule since no port/IP suffix is used).
 
 ### Credentials
+- **Preferred Claude credential: `CLAUDE_CODE_OAUTH_TOKEN`** from `claude setup-token`
+  — a one-year token billed to the Claude subscription (not the API) that can
+  only make model requests (no Remote Control, no claude.ai connectors; ola uses
+  neither). Claude Code ranks it above any saved login. `_ola_inject_oauth_token`
+  appends it to the sandbox's `~/.ola/agent.env` on every create and reconnect,
+  **after** the sidecar write (which overwrites that file); unset or empty on the
+  host, it is a silent no-op, never fatal and never echoed. Without it the
+  `.credentials.json` copy below is the credential, as before. The token only
+  helps the interactive TUI (`ct`) on a current Claude Code: 2.1.272 ignored it
+  and stopped at the login screen, 2.1.296 accepts it (verified 2026-10-11) —
+  the reason `_ola_update_claude` runs `claude update` on every create,
+  reconnect and `ola-monitor` relaunch.
 - **Claude subscription (OAuth)**: `ola-sandbox` copies `~/.claude/.credentials.json` from host into the sandbox at creation/reconnection time (via `sbx exec` + base64). No API key needed.
 - **Claude Code `settings.json` is ola-owned, not copied from the host.**
   `_ola_inject_cc_settings` writes a generated file into the sandbox on every
@@ -721,13 +733,25 @@ the sandbox, each signalled by its own host-visible marker under
   re-inject them into the sandbox, relaunch. Thrash-guarded: repeated re-heals in
   a short window mean cc-credentials isn't fixing it (most often a concurrent
   rotator, but not always), so it stops and notifies. A dead Keychain token
-  notifies rather than loops.
+  notifies rather than loops. **With `CLAUDE_CODE_OAUTH_TOKEN` set this path is
+  not taken:** the token outranks every saved login, so re-copying Keychain
+  credentials cannot help. The watcher deletes the marker and stops (exit 1)
+  with instructions instead — run `claude setup-token`, put the new token in
+  `CLAUDE_CODE_OAUTH_TOKEN`, open a new shell, re-run `ola-monitor`.
 - **`rate-limit.json`** (ola exits 41) — nothing is broken; the subscription
   window just has to run out. Sleep to the marker's `resets_at` (floored at 60s,
   so a stale or missing epoch can't hot-spin), re-pull credentials — a five-hour
   window outlives the OAuth token, so skipping this would bounce straight into an
   auth escalation — then relaunch. Deliberately *not* thrash-guarded: a plan
   outliving several windows is the case this exists for.
+
+Claude Code gives no notice as an env-var token nears expiry, so
+`_ola_check_token_age` (called at the top of `_ola_sandbox_prepare`, i.e. at
+every launch) remembers when each token was first seen and warns from 335 days
+after that (and again, louder, from 365). The record is
+`${XDG_CONFIG_HOME:-~/.config}/ola/oauth-tokens`, one line per token:
+fingerprint (a truncated SHA-256), first-seen epoch and date — never the token
+itself. Never fatal.
 
 Both markers are cleared before the launch loop starts, so only one written by
 *this* invocation is ever trusted. Because `sbx exec` never sources

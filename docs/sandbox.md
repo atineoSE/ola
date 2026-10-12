@@ -92,6 +92,22 @@ This will:
 > to the worktree cwd and silently blocks cross-worktree writes such as the
 > `ola-blocked` marker (which lands in the agent folder, above the worktree).
 
+### Long-lived Claude token (recommended)
+
+By default the sandbox gets a copy of your Keychain login, which expires and
+rotates. For unattended runs, use Claude Code's one-year token instead — billed
+to your Claude subscription, and limited to model requests:
+
+1. Run `claude setup-token` once and copy the token it prints.
+2. Export it in your host shell profile, e.g. `export CLAUDE_CODE_OAUTH_TOKEN=...` in `~/.zshrc`.
+3. Open a new shell. `ola-sandbox`/`ola-monitor` pass it into the sandbox on every create and reconnect.
+
+Claude Code prefers the token over any saved login. ola records when it first saw
+the token and warns at launch once it is about 335 days old: repeat the steps
+above to renew. If the token is rejected, `ola-monitor` stops with the same
+instructions rather than re-copying Keychain credentials (which the token
+outranks). Without the variable set, nothing changes — the Keychain copy is used.
+
 Running `ola-sandbox my-sandbox` again reconnects to the existing sandbox and re-runs steps 2–3, the snapshot refresh (picking up changed host values), and step 6.
 
 ## Per-project provisioning
@@ -197,7 +213,9 @@ below — all three are stripped from argv before the rest is forwarded to
 `ola`). If the same credential breaks repeatedly in a short window (a concurrent
 `claude` session sharing the account, which a mechanical re-pull can't win) or
 the Keychain has no valid token at all (you've logged out), `ola-monitor` stops
-and tells you rather than looping forever. See CLAUDE.md for the full contract.
+and tells you rather than looping forever. With `CLAUDE_CODE_OAUTH_TOKEN` set
+(see above) it does not self-heal auth at all: a rejected token needs a new one,
+so it stops and tells you to run `claude setup-token`. See CLAUDE.md for the full contract.
 
 ## Sandbox memory
 
