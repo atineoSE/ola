@@ -1705,6 +1705,71 @@ EOF
   [[ "$output" == *"in sandbox 'custom-name'"* ]]
 }
 
+@test "monitor: with CLAUDE_CODE_OAUTH_TOKEN set, an auth escalation stops with a clear message" {
+  mkdir -p "$TMPDIR_TEST/mon_tok/agent" "$TMPDIR_TEST/mon_tok/code"
+  export MON_AGENT_DIR="$TMPDIR_TEST/mon_tok/agent"
+  export CALLS_LOG="$TMPDIR_TEST/mon_tok/calls"; : > "$CALLS_LOG"
+  export CC_CALLS_LOG="$TMPDIR_TEST/mon_tok/cc_calls"; : > "$CC_CALLS_LOG"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo x >> "$CALLS_LOG"
+    _mock_write_auth_marker "$MON_AGENT_DIR"
+    return 40
+  }
+  export -f ola
+
+  cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 0; }
+  export -f cc-credentials
+
+  cd "$TMPDIR_TEST/mon_tok/code"
+  CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-secret" \
+    run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"login failed while using CLAUDE_CODE_OAUTH_TOKEN"* ]]
+  [[ "$output" == *"claude setup-token"* ]]
+  [[ "$output" == *"authentication_error: invalid_grant"* ]]
+  [[ "$output" != *"sk-ant-oat01-secret"* ]]
+  # ola launched once, never relaunched.
+  [ "$(wc -l < "$CALLS_LOG")" -eq 1 ]
+  # Only the initial _ola_sandbox_prepare pull; no heal.
+  [ "$(wc -l < "$CC_CALLS_LOG")" -eq 1 ]
+  [ ! -f "$MON_AGENT_DIR/monitor/auth-escalation.json" ]
+}
+
+@test "monitor: with CLAUDE_CODE_OAUTH_TOKEN unset, an auth escalation still re-heals" {
+  mkdir -p "$TMPDIR_TEST/mon_notok/agent" "$TMPDIR_TEST/mon_notok/code"
+  export MON_AGENT_DIR="$TMPDIR_TEST/mon_notok/agent"
+  export CALLS_LOG="$TMPDIR_TEST/mon_notok/calls"; : > "$CALLS_LOG"
+  export CC_CALLS_LOG="$TMPDIR_TEST/mon_notok/cc_calls"; : > "$CC_CALLS_LOG"
+  _mock_sbx_for_monitor
+
+  ola() {
+    [ "$1" = "env" ] && return 0
+    echo x >> "$CALLS_LOG"
+    if [ "$(wc -l < "$CALLS_LOG")" -eq 1 ]; then
+      _mock_write_auth_marker "$MON_AGENT_DIR"
+      return 40
+    fi
+    return 0
+  }
+  export -f ola
+
+  cc-credentials() { echo x >> "$CC_CALLS_LOG"; return 0; }
+  export -f cc-credentials
+
+  unset CLAUDE_CODE_OAUTH_TOKEN
+  cd "$TMPDIR_TEST/mon_notok/code"
+  run ola-monitor --monitor-sandbox mon-sbx -a cc -f ../agent
+
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$CALLS_LOG")" -eq 2 ]
+  [ "$(wc -l < "$CC_CALLS_LOG")" -eq 2 ]
+  [[ "$output" != *"CLAUDE_CODE_OAUTH_TOKEN"* ]]
+}
+
 # ===== _ola_check_token_age =====
 
 _seed_token_record() {  # <token> <age_days>

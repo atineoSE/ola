@@ -1227,6 +1227,21 @@ ola-monitor() {
 
     local msg ts now
     msg="$(_ola_monitor_marker_field "$marker" message)"
+
+    # A login failure while the long-lived token is set can only mean it
+    # expired or was revoked: it outranks every saved login, so re-copying
+    # Keychain credentials cannot help and only a person can mint a new one.
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+      rm -f "$marker"
+      echo "ola-monitor: login failed while using CLAUDE_CODE_OAUTH_TOKEN —" \
+        "the token has expired or been revoked. Run 'claude setup-token' on" \
+        "the host, put the new token in CLAUDE_CODE_OAUTH_TOKEN (e.g. in" \
+        "~/.zshrc), open a new shell and re-run ola-monitor to resume. If a" \
+        "fresh token fails the same way, run ola alone to see the underlying" \
+        "error.${msg:+ ($msg)}" >&2
+      return 1
+    fi
+
     ts="$(_ola_monitor_marker_field "$marker" ts)"
     now="$(_ola_monitor_epoch "$ts")"
     [ -n "$now" ] || now="$(date -u +%s)"
