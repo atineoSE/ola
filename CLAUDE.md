@@ -157,8 +157,26 @@ finished-but-unticked and the scheduler drops `output` on that path.
 
 ### Claude Code credentials (`cc`/`ct`)
 
-`cc`/`ct` authenticate with the host's Claude subscription. Credential handling
-goes through the **`cc-credentials`** shell function (in `ola.sh`): it extracts
+`cc`/`ct` authenticate with the host's Claude subscription. **The preferred
+credential is now `CLAUDE_CODE_OAUTH_TOKEN`**: the one-year token from
+`claude setup-token`, billed to the subscription (not the API), which Claude
+Code ranks above any saved login. Set it in the host shell and
+`ola-sandbox`/`ola-monitor` pass it into the sandbox on every create and
+reconnect (`_ola_inject_oauth_token`), appending it to `~/.ola/agent.env` —
+the file ola loads into its environment, so every backend inherits it — after
+the sidecar step that rewrites that file. It is a silent no-op when the host
+variable is unset or empty, and the token is never echoed; the Keychain
+`cc-credentials` copy below remains the fallback for a host without it. The
+token is opaque and Claude Code gives no notice as an env-var token ages, so
+`_ola_check_token_age` (run from `_ola_sandbox_prepare`) records when each token
+was first seen in `${XDG_CONFIG_HOME:-~/.config}/ola/oauth-tokens`, keyed by a
+SHA-256 fingerprint rather than the token, and warns from 335 days on (a
+"has likely expired" warning from 365); it is never fatal. Caveat for `ct`:
+only Claude Code builds whose interactive TUI honours the token work — older
+ones stop at the login screen — which is why the sandbox CLI is updated on
+every prepare (`_ola_update_claude`).
+
+Credential handling for the saved-login fallback goes through the **`cc-credentials`** shell function (in `ola.sh`): it extracts
 the live OAuth token from the macOS Keychain (`security find-generic-password -s
 "Claude Code-credentials"`) into `~/.claude/.credentials.json`. `ola-sandbox`
 runs `cc-credentials` on every sandbox create/reconnect, then injects the result;
@@ -443,7 +461,12 @@ straight into an auth escalation. The wait is floored at 60s
 never turn the relaunch into a hot spin. **(4) Self-heals auth**
 (`auth-escalation.json`): re-pulls Keychain credentials (`cc-credentials`) and
 re-injects them (`_ola_inject_credentials`), deletes the marker, and relaunches
-`ola <args>`. **(5) Thrash guards** the *auth* path only: if the same account
+`ola <args>`. With `CLAUDE_CODE_OAUTH_TOKEN` set it does **not** re-heal: the
+token outranks every saved login, so re-copying Keychain credentials cannot
+fix a login failure — it can only mean the token expired or was revoked. The
+watcher deletes the marker and stops (exit 1) with instructions to mint a new
+token (`claude setup-token`, update the variable, open a new shell, re-run
+`ola-monitor`). **(5) Thrash guards** the *auth* path only: if the same account
 re-heals `--monitor-thrash-max` times (default 3) within
 `--monitor-thrash-window` seconds (default 300) — the signature of a concurrent
 rotator, e.g. a live `claude` session sharing the account, which a mechanical
@@ -510,7 +533,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-release` | 1.1.0 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.15.1 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. the v0.46.0 `policy approval` queue that records — but does not hold — every refused request, the v0.45.0 RESOURCES grammar and its new reject-malformed-patterns strictness, the `--protocol tcp\|udp` flag that reopens the UDP question, non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`, and the fact that v0.43.0's `--allow-network` is cloud-only), the shared skills store ola opts out of with `--skills off`, why `--pull` defaulting to `always` needs no ola change, secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store on a 10 GiB `/var/lib/docker` volume by default, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), the shared **skills store** sbx mounts read-only into every new sandbox by default (`--skills`), `--cloud` mode and the cloud-only flags on `create`/`run` that read as local, host `gh` auth and git commit identity injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control and both flavours of background agent hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, the post-upgrade stale-daemon wedge (recurring, now fixable with `sbx daemon restart`), and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook), plus the sandbox's Claude Code kept current (`claude update` on every create/reconnect/relaunch). Contract pinned to sbx v0.47.0; re-verify on sbx upgrade. |
+| `sbx` | 2.16.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. the v0.46.0 `policy approval` queue that records — but does not hold — every refused request, the v0.45.0 RESOURCES grammar and its new reject-malformed-patterns strictness, the `--protocol tcp\|udp` flag that reopens the UDP question, non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`, and the fact that v0.43.0's `--allow-network` is cloud-only), the shared skills store ola opts out of with `--skills off`, why `--pull` defaulting to `always` needs no ola change, secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store on a 10 GiB `/var/lib/docker` volume by default, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), the shared **skills store** sbx mounts read-only into every new sandbox by default (`--skills`), `--cloud` mode and the cloud-only flags on `create`/`run` that read as local, host `gh` auth and git commit identity injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control and both flavours of background agent hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, the post-upgrade stale-daemon wedge (recurring, now fixable with `sbx daemon restart`), and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook), plus the sandbox's Claude Code kept current (`claude update` on every create/reconnect/relaunch), and the long-lived `CLAUDE_CODE_OAUTH_TOKEN` (preferred credential, injection, expiry warning, ola-monitor stop). Contract pinned to sbx v0.47.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 
