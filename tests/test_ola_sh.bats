@@ -35,6 +35,15 @@ setup() {
   local ola_sh="$(cd "$BATS_TEST_DIRNAME/.." && pwd)/ola.sh"
   eval "$(grep -v '%x' "$ola_sh")"
 
+  # GNU base64 (Linux, incl. the sandbox) wraps encoded output at 76 columns;
+  # macOS's does not. ola.sh is fine either way — the sandbox decodes wrapped
+  # input — but the helpers below read one payload per log line, so pin the
+  # unwrapped form the tests were written against.
+  if base64 --help 2>&1 | grep -q -- '--wrap'; then
+    base64() { command base64 -w0 "$@"; }
+    export -f base64
+  fi
+
   # Default sbx mock — logs every call.
   sbx() { echo "sbx $*" >> "$SBX_LOG"; }
   export -f sbx
@@ -420,7 +429,9 @@ LMNR_HTTP_PORT="8000"'
 # ===== _ola_inject_gh =====
 
 @test "inject_gh: gh absent on host — warns and no-ops" {
-  PATH="/usr/bin:/bin" run _ola_inject_gh box
+  # An empty PATH dir, not /usr/bin:/bin — the sandbox image installs gh there.
+  mkdir -p "$TMPDIR_TEST/emptybin"
+  PATH="$TMPDIR_TEST/emptybin" run _ola_inject_gh box
   [ "$status" -eq 0 ]
   [[ "$output" == *"gh not found on host"* ]]
   [ ! -s "$SBX_LOG" ]
