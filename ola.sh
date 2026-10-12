@@ -144,13 +144,20 @@ _ola_policy_allow() {
 _ola_allow_host() {
   local h="$1"
   [ -z "$h" ] && return 0
+  _ola_policy_allow "$(_ola_host_resources "$h")"
+}
+
+# The RESOURCES string _ola_allow_host writes for one host — split out so
+# ola-policy-review suggests exactly the rule the prepare path would add.
+_ola_host_resources() {
+  local h="$1"
   case "$h" in
-    \*.*|\*\*.*|*/*|*:*) _ola_policy_allow "$h" ;;
+    \*.*|\*\*.*|*/*|*:*) printf '%s' "$h" ;;
     *)
       if printf '%s' "$h" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
-        _ola_policy_allow "$h"
+        printf '%s' "$h"
       else
-        _ola_policy_allow "$h,*.$h"
+        printf '%s' "$h,*.$h"
       fi
       ;;
   esac
@@ -372,10 +379,16 @@ ola-policy-sync() {
 }
 
 # Review sbx network policy against project allowlist.
-# Lists current balanced policy rules and checks for:
-#   - Allowlist domains NOT yet covered by any policy rule
+# Prints the policy summary, then checks for:
+#   - Allowlist hosts NOT yet covered by any allow rule
 #   - Overly broad wildcards in the policy (for manual review)
 # Usage: ola-policy-review [agent_dir]
+#
+# Reads the rule-level `policy ls --wide` listing. The plain `policy ls` has
+# printed only a one-line summary per policy since sbx v0.35.0 ("network: 347
+# allow"), so grepping it — as this did until 2026-10 — reported every host
+# MISSING. RESOURCES is the last column, one resource per line (continuation
+# lines carry only it), each written `host:port`.
 ola-policy-review() {
   local agent_dir="${1:-$(cd ../agent 2>/dev/null && pwd)}"
 
@@ -384,43 +397,59 @@ ola-policy-review() {
     return 1
   fi
 
-  # Capture current network policy rules
-  local policy_output
-  policy_output="$(sbx policy ls --type network 2>/dev/null)" || {
+  local summary wide
+  summary="$(sbx policy ls --type network 2>/dev/null)" &&
+    wide="$(sbx policy ls --type network --decision allow --wide 2>/dev/null)" || {
     echo "Error: failed to list sbx policies. Is sbx installed and running?" >&2
     return 1
   }
 
   echo "=== Current sbx network policy ==="
-  echo "$policy_output"
+  echo "$summary"
   echo ""
 
-  # Flag overly broad wildcards for manual review
+  # One allowed resource per line, header dropped, `:port` stripped.
+  local resources
+  resources="$(printf '%s\n' "$wide" | awk 'NR > 1 && NF { print $NF }' | sed -E 's/:[0-9]+$//' | sort -u)"
+
+  # Flag overly broad wildcards (`*.` / `**.` over a bare registrable domain).
   local broad_rules
-  broad_rules="$(echo "$policy_output" | grep -E '\*\.[a-z]+\.[a-z]+$' || true)"
+  broad_rules="$(printf '%s\n' "$resources" | grep -E '^\*{1,2}\.[a-z0-9-]+\.[a-z]+$' || true)"
   if [ -n "$broad_rules" ]; then
     echo "=== Broad wildcards (review if needed) ==="
     echo "$broad_rules"
     echo ""
   fi
 
-  # Check allowlist.txt domains against policy
   local allowlist="$agent_dir/allowlist.txt"
   if [ ! -f "$allowlist" ]; then
     echo "No allowlist.txt found at $allowlist"
     return 0
   fi
 
-  local missing=0
-  local covered=0
+  local missing=0 covered=0 line host r ok
   echo "=== Allowlist domain coverage ==="
-  while IFS= read -r host || [ -n "$host" ]; do
-    [[ -z "$host" || "$host" == \#* ]] && continue
-    if echo "$policy_output" | grep -qF "$host"; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Same parsing as _ola_apply_policy: drop inline comments, first token.
+    line="${line%%#*}"
+    read -r host _ <<< "$line"
+    [ -z "$host" ] && continue
+    # Covered by the exact resource, or by a wildcard whose suffix it ends in.
+    ok=0
+    while IFS= read -r r; do
+      [ -z "$r" ] && continue
+      case "$r" in
+        "$host") ok=1 ;;
+        \*\*.*) case "$host" in *."${r#\*\*.}") ok=1 ;; esac ;;
+        \*.*) case "$host" in *."${r#\*.}") ok=1 ;; esac ;;
+      esac
+      [ "$ok" -eq 1 ] && break
+    done <<< "$resources"
+    if [ "$ok" -eq 1 ]; then
       echo "  [covered] $host"
       covered=$((covered + 1))
     else
-      echo "  [MISSING] $host — run: sbx policy allow network \"$host,*.$host\""
+      echo "  [MISSING] $host — run: sbx policy allow network \"$(_ola_host_resources "$host")\""
       missing=$((missing + 1))
     fi
   done < "$allowlist"

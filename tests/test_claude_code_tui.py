@@ -332,6 +332,15 @@ def test_seed_claude_json_minimal_when_no_real_config(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_build_env_drops_parent_session_marker(tmp_path, monkeypatch):
+    # The marker turns the TUI's transcript off, and ct reads its metrics and
+    # limit records from that transcript.
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    env = ClaudeCodeTUIAgent(model="opus")._build_env(str(tmp_path), None)
+    assert "CLAUDE_CODE_CHILD_SESSION" not in env
+
+
 def test_build_env_bootstraps_and_seeds(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)

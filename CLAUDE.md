@@ -41,7 +41,11 @@ reads the per-task transcript at
 only *read* after `/exit`) and recovers token counts, turns,
 models, and peak context (cost/cache-hit) — but **not** the streaming-only
 timings (TTFT, decode-isolated tok/sec), which are never written to disk, and
-nothing for a session too short to flush. Use `cc` when you need live timing;
+nothing for a session too short to flush. The transcript only exists if the TUI
+believes it is a top-level session: an inherited `CLAUDE_CODE_CHILD_SESSION`
+(ola launched from inside a Claude Code session) turns transcript saving off,
+so both Claude Code backends drop it from the task's environment
+(`_PARENT_SESSION_MARKERS` in `claude_code.py`). Use `cc` when you need live timing;
 use `ct` to drive the interactive UI with post-hoc token economics.
 
 `ct` runs on the same subscription as `cc`, so the two global stops below apply
@@ -218,7 +222,13 @@ builds the same task-id-derived config dirs, so it inherits the same trap).
 Both are
 no-ops without a `security` binary, so **the sandbox path is unaffected**: there
 is no Keychain in the container and the injected file is already the sole
-credential source. This only ever bit `ola --skip-sandbox`.
+credential source. This only ever bit `ola --skip-sandbox`. And it only bites
+the **saved-login fallback**: when `CLAUDE_CODE_OAUTH_TOKEN` (the one-year
+subscription token from `claude setup-token`) is in ola's environment, Claude
+Code authenticates with it ahead of any saved login — Keychain entry and
+`.credentials.json` alike — so a dead per-dir entry is never consulted and
+both guards are no-ops in effect. They stay for hosts that run without the
+token.
 
 Gotcha: the subscription OAuth **refresh token rotates** on every refresh, so a
 copied credential snapshot is invalidated the moment any *other* client sharing
@@ -500,7 +510,7 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-release` | 1.1.0 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.15.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. the v0.46.0 `policy approval` queue that records — but does not hold — every refused request, the v0.45.0 RESOURCES grammar and its new reject-malformed-patterns strictness, the `--protocol tcp\|udp` flag that reopens the UDP question, non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`, and the fact that v0.43.0's `--allow-network` is cloud-only), the shared skills store ola opts out of with `--skills off`, why `--pull` defaulting to `always` needs no ola change, secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store on a 10 GiB `/var/lib/docker` volume by default, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), the shared **skills store** sbx mounts read-only into every new sandbox by default (`--skills`), `--cloud` mode and the cloud-only flags on `create`/`run` that read as local, host `gh` auth and git commit identity injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control and both flavours of background agent hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, the post-upgrade stale-daemon wedge (recurring, now fixable with `sbx daemon restart`), and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook), plus the sandbox's Claude Code kept current (`claude update` on every create/reconnect/relaunch). Contract pinned to sbx v0.47.0; re-verify on sbx upgrade. |
+| `sbx` | 2.15.1 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. the v0.46.0 `policy approval` queue that records — but does not hold — every refused request, the v0.45.0 RESOURCES grammar and its new reject-malformed-patterns strictness, the `--protocol tcp\|udp` flag that reopens the UDP question, non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`, and the fact that v0.43.0's `--allow-network` is cloud-only), the shared skills store ola opts out of with `--skills off`, why `--pull` defaulting to `always` needs no ola change, secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store on a 10 GiB `/var/lib/docker` volume by default, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), the shared **skills store** sbx mounts read-only into every new sandbox by default (`--skills`), `--cloud` mode and the cloud-only flags on `create`/`run` that read as local, host `gh` auth and git commit identity injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control and both flavours of background agent hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, the post-upgrade stale-daemon wedge (recurring, now fixable with `sbx daemon restart`), and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook), plus the sandbox's Claude Code kept current (`claude update` on every create/reconnect/relaunch). Contract pinned to sbx v0.47.0; re-verify on sbx upgrade. |
 
 ## Treat skills as code
 

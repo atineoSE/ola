@@ -1488,6 +1488,25 @@ def test_bootstrap_copy_against_per_task_state_dir(monkeypatch, tmp_path):
     assert captured["env"]["CLAUDE_CONFIG_DIR"] == str(sd)
 
 
+def test_run_once_drops_parent_session_marker(monkeypatch, tmp_path):
+    """ola started from inside a Claude Code session must not pass that
+    session's child marker on to a task's ``claude``."""
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("OLA_KEEP_ME", "yes")
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    captured: dict = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _make_proc([_result()])
+
+    monkeypatch.setattr("ola.agents.claude_code.subprocess.Popen", fake_popen)
+    ClaudeCodeAgent()._run_once("hi", str(tmp_path))
+
+    assert "CLAUDE_CODE_CHILD_SESSION" not in captured["env"]
+    assert captured["env"]["OLA_KEEP_ME"] == "yes"
+
+
 def test_bootstrap_refreshes_settings_but_not_claude_json(monkeypatch, tmp_path):
     """A stale per-task settings.json is overwritten; .claude.json is kept.
 

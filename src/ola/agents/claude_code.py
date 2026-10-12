@@ -24,6 +24,28 @@ _BOOTSTRAP_FILES = (".credentials.json", ".claude.json", "settings.json")
 # cache of a single source, never state worth preserving. The credentials are
 # here for the orthogonal reason that the OAuth token expires.
 _ALWAYS_REFRESH = {".credentials.json", "settings.json"}
+# Markers a parent Claude Code session sets for its children. When ola itself
+# is launched from inside a Claude Code session (an agent driving `ola`, or a
+# developer running it through a session's shell tool), inheriting them makes
+# every task's `claude` believe it is that session's child.
+# CLAUDE_CODE_CHILD_SESSION turns the interactive TUI's transcript saving off
+# ("Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker"),
+# and `ct` reads its metrics *and* its rate-limit/auth records from that
+# transcript — so a limited `ct` turn would go undetected. Verified on CC
+# 2.1.296: with the marker no transcript is written, without it one is;
+# headless `-p` writes one either way. A task agent is never a child of the
+# session that happened to start ola.
+_PARENT_SESSION_MARKERS = ("CLAUDE_CODE_CHILD_SESSION",)
+
+
+def _task_env() -> dict[str, str]:
+    """ola's environment minus the parent-session markers, for a task's ``claude``."""
+    env = {**os.environ}
+    for key in _PARENT_SESSION_MARKERS:
+        env.pop(key, None)
+    return env
+
+
 _STATUS_LINES = 3
 _MAX_LINE_LEN = 72
 
@@ -209,7 +231,7 @@ class ClaudeCodeAgent(Agent):
 
         self_hosted = _is_self_hosted()
 
-        env: dict[str, str] | None = None
+        env = _task_env()
         if state_dir:
             sd = Path(state_dir)
             if not self_hosted:
@@ -223,12 +245,10 @@ class ClaudeCodeAgent(Agent):
                 # The copy above is only authoritative once the Keychain entry
                 # keyed to this dir is gone — see _clear_shadowing_keychain_entry.
                 _clear_shadowing_keychain_entry(sd)
-            env = {**os.environ, "CLAUDE_CONFIG_DIR": str(sd)}
+            env["CLAUDE_CONFIG_DIR"] = str(sd)
             logger.debug("CLAUDE_CONFIG_DIR=%s", sd)
 
         if self_hosted:
-            if env is None:
-                env = {**os.environ}
             env.update(_self_hosted_env_overlay(self.model))
             logger.debug(
                 "Self-hosted endpoint: ANTHROPIC_BASE_URL=%s",

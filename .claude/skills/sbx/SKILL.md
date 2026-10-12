@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.15.0
+version: 2.15.1
 ---
 
 # sbx — Docker Sandbox CLI
@@ -59,8 +59,10 @@ version: 2.15.0
 >   limits and GHCR/Hub signing, MCP `offline_access`. None touch ola.
 > - Known older bug surfaced by this pass, **not** a v0.47.0 change:
 >   `ola-policy-review` greps `sbx policy ls --type network`, which has printed
->   only a per-policy summary since v0.35.0, so it reports every host
->   `[MISSING]`. Needs `--wide`/`--json`.
+>   only a per-policy summary since v0.35.0, so it reported every host
+>   `[MISSING]`. Fixed: it now reads `policy ls --type network --decision allow
+>   --wide` (RESOURCES is the last column, one per line) and matches hosts
+>   exactly or by wildcard suffix rather than by substring.
 >
 > **v0.46.0 pass — read this before the v0.45.0 notes below.** Read off every
 > `--help` surface, then confirmed against a live daemon with a throwaway
@@ -653,7 +655,11 @@ the host, not looped back inside the sandbox.
   the same task-id-derived dirs, so it inherits the same trap). **This is
   host-only** — inside
   the sandbox there is no Keychain, so the injected file is already the sole
-  credential source and the failure cannot occur. It bites `ola --skip-sandbox`.
+  credential source and the failure cannot occur. It bites `ola --skip-sandbox`,
+  and only on the saved-login fallback: with `CLAUDE_CODE_OAUTH_TOKEN` (the
+  one-year `claude setup-token` subscription token) in ola's environment,
+  Claude Code uses the token ahead of any saved login, so the per-dir entry is
+  never read and the guards have nothing to guard.
 - **GitHub CLI (`gh`) auth**: on every create **and** reconnect, `ola-sandbox` also
   reads the host's `gh auth token` and injects it as `GH_TOKEN` into the sandbox
   sidecar (`~/.ola/agent.env`), then runs `gh auth setup-git` inside the sandbox

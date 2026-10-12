@@ -101,6 +101,7 @@ from ola.agents.claude_code import (
     _clear_shadowing_keychain_entry,
     _is_self_hosted,
     _self_hosted_env_overlay,
+    _task_env,
 )
 from ola.stats import IterationStats
 
@@ -708,7 +709,7 @@ class ClaudeCodeTUIAgent(ClaudeCodeAgent):
 
     def _build_env(self, workdir: str, state_dir: str | None) -> dict[str, str]:
         self_hosted = _is_self_hosted()
-        env = {**os.environ}
+        env = _task_env()
         if state_dir:
             sd = Path(state_dir)
             sd.mkdir(parents=True, exist_ok=True)

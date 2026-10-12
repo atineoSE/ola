@@ -590,19 +590,24 @@ LLM_API_KEY="k"'
   echo "$out" | grep -qF '${LLM_SKIP_TLS_VERIFY:-}'
 }
 
-# ===== ola-policy-review (unchanged behaviour) =====
+# ===== ola-policy-review =====
 
+# Mirrors real sbx v0.47.0 output: the plain listing is a summary only; the
+# rules live in --wide, RESOURCES last, continuation lines carrying only it.
 _mock_sbx_policy_ls() {
   sbx() {
     if [ "$1" = "policy" ] && [ "$2" = "ls" ]; then
-      cat <<'POLICY'
-RULE   TYPE     ACTION  RESOURCE
-1      network  allow   *.docker.io
-2      network  allow   *.npmjs.org
-3      network  allow   *.github.com
-4      network  allow   *.googleapis.com
-5      network  allow   docs.docker.com
+      case " $* " in
+        *" --wide "*) cat <<'POLICY'
+SOURCE   CREATED VIA   APPLIES TO   POLICY   POLICY_ID      RULE   RULE_ID    TYPE      METHOD   PATH   DECISION   PROTOCOLS   RESOURCES
+local    added         all          -        local-policy   -      r1         network   -        -      allow      tcp         **.docker.io:443
+                                                                                         -        -                             *.npmjs.org
+local    added         all          -        local-policy   -      r2         network   -        -      allow      tcp         docs.docker.com:443
+                                                                                         -        -                             203.0.113.7
 POLICY
+        ;;
+        *) printf 'POLICY         SOURCE   APPLIES TO   SUMMARY\nlocal-policy   local    all          network: 4 allow\n' ;;
+      esac
       return 0
     fi
     echo "sbx $*" >> "$SBX_LOG"
@@ -616,11 +621,12 @@ POLICY
   mkdir -p "$review_agent"
   cat > "$review_agent/allowlist.txt" <<'EOF'
 docs.docker.com
-docker.io
+registry-1.docker.io   # covered by the ** wildcard
+203.0.113.7
 EOF
   run ola-policy-review "$review_agent"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Summary: 2 covered, 0 missing"* ]]
+  [[ "$output" == *"Summary: 3 covered, 0 missing"* ]]
   [[ "$output" != *"[MISSING]"* ]]
 }
 
@@ -636,6 +642,27 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"[MISSING] custom-api.example.com"* ]]
   [[ "$output" == *"Summary: 1 covered, 1 missing"* ]]
+}
+
+@test "policy-review: a wildcard does not cover its bare apex, nor a lookalike" {
+  _mock_sbx_policy_ls
+  local review_agent="$TMPDIR_TEST/review_apex"
+  mkdir -p "$review_agent"
+  printf 'npmjs.org\nevilnpmjs.org\n' > "$review_agent/allowlist.txt"
+  run ola-policy-review "$review_agent"
+  [[ "$output" == *"[MISSING] npmjs.org"* ]]
+  [[ "$output" == *"[MISSING] evilnpmjs.org"* ]]
+}
+
+@test "policy-review: suggested fix matches what the prepare path would add" {
+  _mock_sbx_policy_ls
+  local review_agent="$TMPDIR_TEST/review_suggest"
+  mkdir -p "$review_agent"
+  printf 'new.example.com\n198.51.100.9\n' > "$review_agent/allowlist.txt"
+  run ola-policy-review "$review_agent"
+  [[ "$output" == *'allow network "new.example.com,*.new.example.com"'* ]]
+  [[ "$output" == *'allow network "198.51.100.9"'* ]]
+  [[ "$output" != *'*.198.51.100.9'* ]]
 }
 
 @test "policy-review: broad wildcards flagged" {
