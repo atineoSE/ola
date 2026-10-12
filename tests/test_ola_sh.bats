@@ -1654,3 +1654,70 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"in sandbox 'custom-name'"* ]]
 }
+
+# ===== _ola_check_token_age =====
+
+_seed_token_record() {  # <token> <age_days>
+  local fp
+  fp="$(printf '%s' "$1" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-16)"
+  mkdir -p "$XDG_CONFIG_HOME/ola"
+  printf '%s %s %s\n' "$fp" "$(( $(date +%s) - $2 * 86400 ))" "2000-01-01" \
+    >> "$XDG_CONFIG_HOME/ola/oauth-tokens"
+}
+
+@test "token age: unset token creates no file and prints nothing" {
+  export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg"
+  run _ola_check_token_age
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$XDG_CONFIG_HOME/ola/oauth-tokens" ]
+}
+
+@test "token age: new token appends one fingerprint line, never the token" {
+  export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg"
+  export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-secretvalue"
+  run _ola_check_token_age
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  local f="$XDG_CONFIG_HOME/ola/oauth-tokens"
+  [ "$(wc -l < "$f")" -eq 1 ]
+  local fp
+  fp="$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-16)"
+  [ "$(cut -d' ' -f1 "$f")" = "$fp" ]
+  ! grep -q "secretvalue" "$f"
+}
+
+@test "token age: second call does not duplicate the line" {
+  export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg"
+  export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-twice"
+  _ola_check_token_age
+  _ola_check_token_age
+  [ "$(wc -l < "$XDG_CONFIG_HOME/ola/oauth-tokens")" -eq 1 ]
+}
+
+@test "token age: 340 days old warns it expires in about 25 days" {
+  export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg"
+  export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-old340"
+  _seed_token_record "$CLAUDE_CODE_OAUTH_TOKEN" 340
+  run _ola_check_token_age
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"first seen 2000-01-01 and expires in about 25 days"* ]]
+}
+
+@test "token age: 400 days old warns it has likely expired" {
+  export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg"
+  export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-old400"
+  _seed_token_record "$CLAUDE_CODE_OAUTH_TOKEN" 400
+  run _ola_check_token_age
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"has likely expired"* ]]
+}
+
+@test "token age: 10 days old is silent" {
+  export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg"
+  export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-young"
+  _seed_token_record "$CLAUDE_CODE_OAUTH_TOKEN" 10
+  run _ola_check_token_age
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

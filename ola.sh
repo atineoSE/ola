@@ -715,6 +715,45 @@ _ola_provision() {
   fi
 }
 
+# Warn as the long-lived CLAUDE_CODE_OAUTH_TOKEN (a one-year `claude setup-token`
+# token) nears expiry. Claude Code gives no notice for an env-var token and the
+# token is opaque, so remember when each was first seen — keyed by a SHA-256
+# fingerprint, never the token — in ${XDG_CONFIG_HOME:-~/.config}/ola/oauth-tokens
+# (`<fingerprint> <first-seen-epoch> <YYYY-MM-DD>`). Epoch arithmetic only, so it
+# works with BSD and GNU `date`. Never fatal: always returns 0.
+_ola_check_token_age() {
+  [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || return 0
+  local fp
+  if command -v shasum >/dev/null 2>&1; then
+    fp="$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | shasum -a 256 2>/dev/null)"
+  else
+    fp="$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | sha256sum 2>/dev/null)"
+  fi
+  fp="${fp:0:16}"
+  [ -n "$fp" ] || return 0
+
+  local dir="${XDG_CONFIG_HOME:-$HOME/.config}/ola"
+  local file="$dir/oauth-tokens"
+  local now first date_str
+  now="$(date +%s)"
+  read -r _ first date_str < <(awk -v fp="$fp" '$1 == fp { print "x", $2, $3; exit }' "$file" 2>/dev/null) || true
+  if [ -z "${first:-}" ]; then
+    first="$now"
+    date_str="$(date -u +%Y-%m-%d)"
+    { mkdir -p "$dir" && printf '%s %s %s\n' "$fp" "$first" "$date_str" >> "$file"; } 2>/dev/null \
+      || echo "Warning: could not record CLAUDE_CODE_OAUTH_TOKEN first-seen date in $file" >&2
+  fi
+  case "$first" in *[!0-9]*) return 0 ;; esac
+
+  local age_days=$(( (now - first) / 86400 ))
+  if [ "$age_days" -ge 365 ]; then
+    echo "Warning: CLAUDE_CODE_OAUTH_TOKEN was first seen $date_str and has likely expired — run 'claude setup-token' and update CLAUDE_CODE_OAUTH_TOKEN." >&2
+  elif [ "$age_days" -ge 335 ]; then
+    echo "Warning: CLAUDE_CODE_OAUTH_TOKEN was first seen $date_str and expires in about $((365 - age_days)) days — run 'claude setup-token' and update CLAUDE_CODE_OAUTH_TOKEN before then." >&2
+  fi
+  return 0
+}
+
 # Ensure a sandbox is ready to run ola in: authenticated sbx, agent/.env
 # resolved + network policy synced, sandbox created (fresh) or reconnected,
 # credentials/sidecar/oh-settings injected. Everything `ola-sandbox` does up
@@ -724,6 +763,7 @@ _ola_provision() {
 # success.
 _ola_sandbox_prepare() {
   local name="${1:?Usage: _ola_sandbox_prepare <sandbox_name> [agent_dir]}"
+  _ola_check_token_age
   # Agent folder, defaulting to ../agent (mirrors cli.py's own -f default).
   # Not hard-coded: a project can hold several agent folders side by side
   # (one per epic), and ola itself already takes -f — a sandbox helper that
