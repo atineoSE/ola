@@ -30,6 +30,9 @@ teardown_file() {
 setup() {
   export HOME="$TMPDIR_TEST/fake_home"
   unset OLA_SBX_IMAGE
+  # The developer's real long-lived Claude token must not steer tests that
+  # don't set it themselves (credential injection, ola-monitor's auth path).
+  unset CLAUDE_CODE_OAUTH_TOKEN XDG_CONFIG_HOME
 
   # Re-source ola.sh (functions don't survive subshells in bats)
   local ola_sh="$(cd "$BATS_TEST_DIRNAME/.." && pwd)/ola.sh"
