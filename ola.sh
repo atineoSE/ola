@@ -358,6 +358,22 @@ _ola_inject_git_identity() {
   sbx exec "$name" bash -c "git config --global user.name \"\$(echo '$name_b64' | base64 -d)\" && git config --global user.email \"\$(echo '$email_b64' | base64 -d)\"" 2>/dev/null
 }
 
+# Pass the host's long-lived Claude token (`claude setup-token`, one year)
+# into the sandbox the way GH_TOKEN travels: appended to ~/.ola/agent.env,
+# which ola loads into its environment so every backend inherits it. Claude
+# Code ranks CLAUDE_CODE_OAUTH_TOKEN above any saved login, so when set it
+# supersedes the Keychain .credentials.json copy. Unset/empty host variable:
+# silent no-op, the Keychain copy stays the credential. Must run AFTER
+# _ola_inject_sidecar, which overwrites agent.env. Never fatal, never echoed.
+_ola_inject_oauth_token() {
+  local name="$1"
+  [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && return 0
+  local data
+  data="$(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" | base64)"
+  sbx exec "$name" bash -c "echo '$data' | base64 -d >> \$HOME/.ola/agent.env" 2>/dev/null
+  return 0
+}
+
 # Sync the sbx network policy from the two project config files:
 #   - agent/allowlist.txt : static domains
 #   - agent/.env          : LLM + Laminar endpoints (resolved by `ola env`,
@@ -857,6 +873,7 @@ _ola_sandbox_prepare() {
     _ola_update_claude "$name"
     _ola_inject_sidecar "$name" "$_env_blob"
     _ola_inject_gh "$name"
+    _ola_inject_oauth_token "$name"
     _ola_inject_git_identity "$name"
     _ola_inject_oh_settings "$name" "$_env_blob"
     _ola_provision "$name" "$agent_dir" || return 1
@@ -911,6 +928,7 @@ _ola_sandbox_prepare() {
   _ola_update_claude "$name"
   _ola_inject_sidecar "$name" "$_env_blob"
   _ola_inject_gh "$name"
+  _ola_inject_oauth_token "$name"
   _ola_inject_git_identity "$name"
   _ola_inject_oh_settings "$name" "$_env_blob"
   _ola_provision "$name" "$agent_dir" || return 1

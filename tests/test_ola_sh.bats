@@ -490,6 +490,56 @@ LMNR_HTTP_PORT="8000"'
   grep -q 'git config --global user.name' "$SBX_LOG"
 }
 
+# ===== _ola_inject_oauth_token =====
+
+@test "inject_oauth_token: unset — no sbx call, no output" {
+  run _ola_inject_oauth_token box
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "inject_oauth_token: empty — no sbx call" {
+  CLAUDE_CODE_OAUTH_TOKEN="" run _ola_inject_oauth_token box
+  [ "$status" -eq 0 ]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "inject_oauth_token: set — appends base64 line, raw token never logged" {
+  export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-faketoken"
+  _ola_inject_oauth_token box
+  grep -qF "$(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" | base64)" "$SBX_LOG"
+  grep -q '>> \$HOME/\.ola/agent\.env' "$SBX_LOG"
+  ! grep -qF "sk-ant-oat01-faketoken" "$SBX_LOG"
+}
+
+@test "inject_oauth_token: reconnect writes the token after the sidecar" {
+  mkdir -p "$TMPDIR_TEST/sbx_oauth/agent" "$TMPDIR_TEST/sbx_oauth/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_oauth/agent/allowlist.txt"
+  security() { echo '{"oauth_token":"fake"}'; }
+  export -f security
+  gh() { [ "$1 $2" = "auth token" ] && echo "fake-token"; }
+  export -f gh
+  sbx() {
+    echo "sbx $*" >> "$SBX_LOG"
+    if [ "$1" = "ls" ]; then echo "my-sandbox  running  2h"; return 0; fi
+  }
+  export -f sbx
+  export OLA_ENV_BLOB='LLM_API_KEY="tok"'
+  export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-faketoken"
+
+  cd "$TMPDIR_TEST/sbx_oauth/code"
+  ola-sandbox my-sandbox
+
+  local tok_b64 sidecar_line tok_line
+  tok_b64="$(printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN" | base64)"
+  sidecar_line="$(grep -n '> \$HOME/\.ola/agent\.env' "$SBX_LOG" | head -1 | cut -d: -f1)"
+  tok_line="$(grep -nF "$tok_b64" "$SBX_LOG" | head -1 | cut -d: -f1)"
+  [ -n "$tok_line" ]
+  [ "$tok_line" -gt "$sidecar_line" ]
+  ! grep -qF "sk-ant-oat01-faketoken" "$SBX_LOG"
+}
+
 # ===== _ola_update_claude =====
 
 @test "update_claude: runs claude update inside the sandbox" {
