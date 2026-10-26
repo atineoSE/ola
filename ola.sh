@@ -1111,6 +1111,28 @@ _ola_monitor_decide() {
   fi
 }
 
+# Usage for ola-monitor's own flags. Printed (and nothing else done) on
+# -h/--help, so asking for help never creates or reconnects a sandbox.
+_ola_monitor_usage() {
+  cat <<'EOF'
+Usage: ola-monitor [monitor options] [ola arguments...]
+
+Launch `ola` inside the project's sandbox and keep it running unattended:
+re-heals credentials on an auth escalation and waits out rate limits.
+Every argument not listed below is forwarded to `ola` unchanged
+(see `ola --help`).
+
+Monitor options:
+  --monitor-sandbox NAME        sandbox to target (default: basename of cwd)
+  --monitor-thrash-max N        auth re-heals before giving up (default: 3)
+  --monitor-thrash-window SEC   thrash-detection window (default: 300)
+  -h, --help                    show this help and exit
+
+ola-monitor always runs ola inside a sandbox, so --skip-sandbox is
+rejected; run `ola --skip-sandbox ...` directly instead.
+EOF
+}
+
 # Launch `ola <args>` into a sandbox and keep it authenticated unsupervised.
 # Takes the SAME arguments as `ola` (see design-notes.md — "Decided —
 # ola-monitor, reborn as the host-side auth launcher-watcher"), plus three
@@ -1118,6 +1140,9 @@ _ola_monitor_decide() {
 #   --monitor-sandbox NAME          sandbox to target (default: basename of cwd)
 #   --monitor-thrash-max N          re-heals before giving up (default: 3)
 #   --monitor-thrash-window SEC     thrash-detection window (default: 300)
+#   -h, --help                      usage (_ola_monitor_usage); no sandbox touched
+# --skip-sandbox is rejected rather than forwarded: the watcher's whole job is
+# the sandbox, so forwarding it would prepare one and then lie to ola about it.
 #   (1) Launch  — ensure/create the sandbox + inject fresh credentials, then
 #                 exec `ola <args>` inside it.
 #   (2) Watch   — for the host-visible markers ola drops under
@@ -1144,35 +1169,65 @@ ola-monitor() {
   local thrash_window=300
   local -a ola_args=()
 
+  # Parsed and validated before anything touches the sandbox: a bad flag must
+  # fail fast, not after a create/credential-inject round trip.
+  local opt val
   while [ $# -gt 0 ]; do
     case "$1" in
-      --monitor-sandbox)
-        name="$2"
+      -h | --help)
+        _ola_monitor_usage
+        return 0
+        ;;
+      --skip-sandbox)
+        # Forwarding it would still prepare a sandbox and then run ola inside
+        # it while telling ola it is not in one — never what was meant.
+        echo "ola-monitor: --skip-sandbox is not supported — ola-monitor" \
+          "always runs ola inside a sandbox. Run 'ola --skip-sandbox ...'" \
+          "directly instead." >&2
+        return 2
+        ;;
+      --monitor-sandbox | --monitor-thrash-max | --monitor-thrash-window)
+        opt="$1"
+        if [ $# -lt 2 ] || [ -z "$2" ] || [ "${2#-}" != "$2" ]; then
+          echo "ola-monitor: $opt requires a value (see ola-monitor --help)." >&2
+          return 2
+        fi
+        val="$2"
         shift 2
         ;;
-      --monitor-sandbox=*)
-        name="${1#--monitor-sandbox=}"
+      --monitor-sandbox=* | --monitor-thrash-max=* | --monitor-thrash-window=*)
+        opt="${1%%=*}"
+        val="${1#*=}"
         shift
+        if [ -z "$val" ]; then
+          echo "ola-monitor: $opt requires a value (see ola-monitor --help)." >&2
+          return 2
+        fi
         ;;
-      --monitor-thrash-max)
-        thrash_max="$2"
-        shift 2
-        ;;
-      --monitor-thrash-max=*)
-        thrash_max="${1#--monitor-thrash-max=}"
-        shift
-        ;;
-      --monitor-thrash-window)
-        thrash_window="$2"
-        shift 2
-        ;;
-      --monitor-thrash-window=*)
-        thrash_window="${1#--monitor-thrash-window=}"
-        shift
+      --monitor-*)
+        echo "ola-monitor: unknown option '$1' (see ola-monitor --help)." >&2
+        return 2
         ;;
       *)
         ola_args+=("$1")
         shift
+        continue
+        ;;
+    esac
+    case "$opt" in
+      --monitor-sandbox) name="$val" ;;
+      *)
+        case "$val" in
+          *[!0-9]*)
+            echo "ola-monitor: $opt expects a non-negative integer, got '$val'." >&2
+            return 2
+            ;;
+        esac
+        if [ "$opt" = --monitor-thrash-max ]; then
+          thrash_max="$val"
+        else
+          thrash_window="$val"
+        fi
         ;;
     esac
   done

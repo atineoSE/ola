@@ -1,7 +1,7 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.17.0
+version: 2.17.1
 ---
 
 # sbx — Docker Sandbox CLI
@@ -826,6 +826,13 @@ after that (and again, louder, from 365). The record is
 `${XDG_CONFIG_HOME:-~/.config}/ola/oauth-tokens`, one line per token:
 fingerprint (a truncated SHA-256), first-seen epoch and date — never the token
 itself. Never fatal.
+
+Its own flags (`--monitor-sandbox`, `--monitor-thrash-max`,
+`--monitor-thrash-window`, `-h/--help`) are parsed and validated before
+`_ola_sandbox_prepare` runs, so a bad invocation never creates a sandbox.
+`--skip-sandbox` is rejected (exit 2) rather than forwarded: forwarding it
+would still prepare a sandbox and then run ola inside it while telling ola it
+is not in one.
 
 Both markers are cleared before the launch loop starts, so only one written by
 *this* invocation is ever trusted. Because `sbx exec` never sources

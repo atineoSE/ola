@@ -1461,6 +1461,56 @@ EOF
   [[ "$output" == *"agent folder not found"* ]]
 }
 
+@test "monitor: --help prints usage and never touches the sandbox" {
+  mkdir -p "$TMPDIR_TEST/mon_help/code"
+  _mock_sbx_for_monitor
+  cd "$TMPDIR_TEST/mon_help/code"
+  run ola-monitor -a cc --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Usage: ola-monitor"* ]]
+  [[ "$output" == *"--monitor-sandbox NAME"* ]]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "monitor: rejects --skip-sandbox before touching the sandbox" {
+  mkdir -p "$TMPDIR_TEST/mon_skip/agent" "$TMPDIR_TEST/mon_skip/code"
+  _mock_sbx_for_monitor
+  cd "$TMPDIR_TEST/mon_skip/code"
+  run ola-monitor --skip-sandbox -a cc -f ../agent
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--skip-sandbox is not supported"* ]]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "monitor: rejects a monitor flag with a missing value" {
+  mkdir -p "$TMPDIR_TEST/mon_noval/agent" "$TMPDIR_TEST/mon_noval/code"
+  _mock_sbx_for_monitor
+  cd "$TMPDIR_TEST/mon_noval/code"
+  run ola-monitor --monitor-sandbox -a cc -f ../agent
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--monitor-sandbox requires a value"* ]]
+  run ola-monitor -a cc --monitor-thrash-max
+  [ "$status" -eq 2 ]
+  run ola-monitor -a cc --monitor-sandbox=
+  [ "$status" -eq 2 ]
+  [ ! -s "$SBX_LOG" ]
+}
+
+@test "monitor: rejects non-integer thrash settings and unknown monitor flags" {
+  mkdir -p "$TMPDIR_TEST/mon_badval/code"
+  _mock_sbx_for_monitor
+  cd "$TMPDIR_TEST/mon_badval/code"
+  run ola-monitor --monitor-thrash-max three -a cc
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"expects a non-negative integer"* ]]
+  run ola-monitor --monitor-thrash-window=5m -a cc
+  [ "$status" -eq 2 ]
+  run ola-monitor --monitor-sanbox foo -a cc
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unknown option '--monitor-sanbox'"* ]]
+  [ ! -s "$SBX_LOG" ]
+}
+
 @test "monitor: self-heals once on auth escalation, then resumes and exits clean" {
   mkdir -p "$TMPDIR_TEST/mon_heal/agent" "$TMPDIR_TEST/mon_heal/code"
   export MON_AGENT_DIR="$TMPDIR_TEST/mon_heal/agent"

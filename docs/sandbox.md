@@ -210,7 +210,10 @@ from the project checkout directory's name; pass `--monitor-sandbox NAME` if the
 sandbox you want it to use was created under a different name (also
 `--monitor-thrash-max` / `--monitor-thrash-window` to tune the thrash guard
 below — all three are stripped from argv before the rest is forwarded to
-`ola`). If the same credential breaks repeatedly in a short window (a concurrent
+`ola`; `ola-monitor --help` lists them). These flags are checked before the
+sandbox is touched: a missing or non-integer value, an unknown `--monitor-*`
+flag, or `--skip-sandbox` stops with exit 2 — the monitor always runs `ola`
+inside the sandbox, so for a host run use `ola --skip-sandbox` directly. If the same credential breaks repeatedly in a short window (a concurrent
 `claude` session sharing the account, which a mechanical re-pull can't win) or
 the Keychain has no valid token at all (you've logged out), `ola-monitor` stops
 and tells you rather than looping forever. With `CLAUDE_CODE_OAUTH_TOKEN` set
