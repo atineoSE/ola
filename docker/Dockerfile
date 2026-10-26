@@ -33,8 +33,24 @@ RUN mkdir -p ~/.claude && \
     echo '{"hasCompletedOnboarding": true}' > ~/.claude.json && \
     echo '{"hasCompletedOnboarding": true}' > ~/.claude/.claude.json
 
-# Install Codex CLI (npm package — Node 20 is already in the base image,
-# with NPM_CONFIG_PREFIX=/usr/local/share/npm-global owned by the agent user)
+# Node.js 24 LTS from NodeSource. The base image ships Ubuntu's own nodejs
+# (22.x) and npm (9.2) packages; the pin makes NodeSource's nodejs win, and
+# Ubuntu's npm is purged because NodeSource's nodejs bundles a current npm.
+# NPM_CONFIG_PREFIX=/usr/local/share/npm-global (agent-owned, from the base
+# image) is untouched, so `npm install -g` below still needs no sudo.
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
+        sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" | \
+        sudo tee /etc/apt/sources.list.d/nodesource.list > /dev/null && \
+    printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 1001\n' | \
+        sudo tee /etc/apt/preferences.d/nodesource > /dev/null && \
+    sudo apt-get update && \
+    sudo apt-get purge -y npm && \
+    sudo apt-get install -y --no-install-recommends nodejs && \
+    sudo apt-get autoremove -y && \
+    sudo rm -rf /var/lib/apt/lists/*
+
+# Install Codex CLI (npm package)
 RUN npm install -g @openai/codex
 
 # Install uv (Python package manager)
@@ -100,6 +116,7 @@ RUN set -e && \
     uv --version && \
     claude --version && \
     openhands --version && \
+    node --version | grep -q '^v24\.' && \
     codex --version && \
     docker --version && \
     jq --version && \
