@@ -897,7 +897,9 @@ _ola_sandbox_prepare() {
   # pulled on demand.
   local image="$OLA_SBX_IMAGE"
   if [ -z "$image" ]; then
-    if sbx template ls 2>/dev/null | grep -qE '^ola[[:space:]]+dev[[:space:]]'; then
+    # sbx >= v0.48.0 lists a locally loaded image fully qualified
+    # (docker.io/library/ola); older releases print the bare name.
+    if sbx template ls 2>/dev/null | grep -qE '^(docker\.io/library/)?ola[[:space:]]+dev[[:space:]]'; then
       image="ola:dev"
     else
       image="$(_ola_image_repo):$(_ola_image_tag)"
@@ -923,12 +925,14 @@ _ola_sandbox_prepare() {
   # sandbox tooling arrives through those seams or not at all. Inert while the
   # host store is empty; this keeps it inert once it isn't.
   # Requires sbx >= v0.43.0 (the flag does not exist before it).
+  # --no-progress replaced -q/--quiet in sbx v0.48.0, which rejects -q
+  # outright ("unknown shorthand flag"), so this needs sbx >= v0.48.0.
   sbx create shell \
     --name "$name" \
     --template "$image" \
     --skills off \
     "${mem_arg[@]}" \
-    -q \
+    --no-progress \
     "$project_dir" || {
     echo "Error: failed to create sandbox '$name'" >&2
     return 1

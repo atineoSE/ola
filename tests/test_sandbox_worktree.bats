@@ -50,7 +50,7 @@ setup_file() {
     --name "$SBX_NAME" \
     "${template_flag[@]}" \
     -m 4g \
-    -q \
+    --no-progress \
     "$TMPDIR_TEST" 2>&1)" || {
     rm -rf "$TMPDIR_TEST"
     echo "$create_err" >&2

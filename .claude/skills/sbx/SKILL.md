@@ -1,19 +1,93 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 2.16.0
+version: 2.17.0
 ---
 
 # sbx — Docker Sandbox CLI
 
-> **Contract re-verified against sbx CLI `v0.47.0`** (`0411f50ee4700fe7bd37e6e7e3aced563e850ca9`,
-> client; previously verified at v0.46.0). All of ola's actual invocations
-> (`create shell --name --template --skills off -m -q <path>`, `run --name`,
-> `exec [-w]`, `ls`, `policy allow network` / `policy ls --type network`,
-> `template ls`) are byte-for-byte unchanged from v0.35.0 through v0.47.0 — no
-> ola-side fix was needed for this bump.
+> **Contract re-verified against sbx CLI `v0.49.2`** (`5d40fd43027b33ed1f1a39c14fb07e2503d6998f`,
+> client; previously verified at v0.47.0). **This bump broke ola twice and
+> needed an ola-side fix — ola now requires sbx >= v0.48.0.** ola's
+> invocations are now `create shell --name --template --skills off -m
+> --no-progress <path>`, `run --name`, `exec [-w]`, `ls`, `policy allow
+> network` / `policy ls --type network [--decision allow --wide]`, `template
+> ls`.
 >
-> **v0.47.0 pass — read this before the v0.46.0 notes below.** Source: the
+> **v0.48.0 / v0.49.x pass — read this before the v0.47.0 notes below.**
+> v0.48.0 reworked flags and output across the whole CLI; v0.49.0 was
+> skipped; v0.49.1 is fixes; v0.49.2 is a security rebuild. Source: the
+> [v0.48.0](https://github.com/docker/sbx-releases/releases/tag/v0.48.0),
+> [v0.49.1](https://github.com/docker/sbx-releases/releases/tag/v0.49.1) and
+> [v0.49.2](https://github.com/docker/sbx-releases/releases/tag/v0.49.2)
+> release notes, the `--help` surfaces ola uses, and a live throwaway sandbox
+> on `ola:dev` created with ola's fixed flags: create exit 0 (~66s, prints `✓
+> Created sandbox <name>` even with `--no-progress`), `exec -w` exit 0,
+> sandbox-scoped allow rules for a domain + `*.` companion and a bare IPv4
+> accepted, `stop` then `exec` restarts it, `rm -f` removes it.
+>
+> - **Breaking for ola: `create -q`/`--quiet` is gone** — `Error: unknown
+>   shorthand flag: 'q' in -q`, exit 1. Replacement is `--no-progress`
+>   (suppresses progress, still prints the creation summary). Every
+>   `ola-sandbox`/`ola-monitor` *create* failed on this; a reconnect to an
+>   existing sandbox did not. Fixed in `_ola_sandbox_prepare` and both
+>   integration bats files. `--no-progress` does not exist before v0.48.0.
+> - **Breaking for ola, silently: `template ls` prints a locally loaded image
+>   fully qualified** — `docker.io/library/ola   dev …`, not `ola   dev …`. The
+>   `ola:dev` rung grepped `^ola[[:space:]]+dev`, never matched, and fell
+>   through to the registry image with no error. The grep now accepts an
+>   optional `docker.io/library/` prefix; `--template ola:dev` itself still
+>   resolves.
+> - Other renamed flags, none used by ola: `run --detached` → `--detach`/`-d`
+>   (`--detached` is rejected); `logout -y` → `-f`; `env plan|create|run -y` →
+>   `-f`; `template save -d` → `--description`; `diagnose -o` → `--format
+>   table|json|yaml|github-issue`; `secret ls|rm --env` → `--env-name`; `policy
+>   log -q` removed. `settings ls` is the primary spelling (`list` is an alias).
+> - **Output.** `--format table|json|yaml` everywhere; `--json` is an alias, and
+>   `--format`/`--json`/`-q` are mutually exclusive. JSON is reshaped and
+>   `snake_case`: `ls --json` is a bare array (`.[].name`, not
+>   `.sandboxes[].name`), `template ls` likewise, `policy log` is `{updated_at,
+>   allowed, blocked}`. Human output got state marks and a `CREATED` column —
+>   `ls` is now `SANDBOX AGENT STATUS PORTS WORKSPACE CREATED`, with `●
+>   running`. The anchored `^<name>[[:space:]]` match still holds (tested).
+>   `policy ls --wide` still ends in RESOURCES, one per continuation line, so
+>   `ola-policy-review`'s `$NF` parse holds. Results go to stdout; errors,
+>   warnings, hints, daemon-start progress and image pulls go to **stderr**.
+> - **Non-interactive.** A piped `y` no longer confirms anything; prompts
+>   need a TTY or `--force`, and fail with exit 1 without one (ola already
+>   passes `--force` to `rm`). Declining exits non-zero. Without a TTY,
+>   `create`/`run` fail if the workspace directory does not exist (ola's
+>   project dir always does). Read-only and `--force` runs never start an
+>   interactive sign-in.
+> - **Lifecycle.** An unresponsive guest makes `exec`/`run`/`cp` fail with
+>   stop-and-start guidance instead of hanging, and `ls` marks it not
+>   responding. Guest setup now runs once per container start, not per `exec`.
+>   `--pull` default is now **never** for saved local snapshots, **missing**
+>   for v3 kit compositions, otherwise **always**. Sandbox startup waits for
+>   the nested Docker instead of launching competing daemons (v0.49.1).
+> - **Git ignore (v0.49.1)**: in newly created sandboxes Git keeps the host's
+>   ignore decisions for paths already in a primary workspace mounted at a repo
+>   root. ola mounts the project dir, so ignored host files stay ignored.
+> - **Policy (v0.49.1)**: an explicit CIDR deny now beats a matching domain
+>   allow; `policy refresh` applies a governance change at once; `policy ls`,
+>   `settings ls` and `policy approval ls` take `-q` (IDs/keys only). New
+>   settings `daemon.log.maxSizeMB|maxBackups|maxAgeDays`, `browser.enabled`,
+>   `proxy.sshDirect`. Full templates now ship a C/C++ toolchain.
+> - **v0.49.2 is a CA-trust rebuild** after the eMudhra CA compromise (Go
+>   1.27.3; built-in template images rebuilt with updated CA certificates on
+>   2026-10-21). **Updating sbx does not update an existing sandbox or an
+>   image built `FROM` the old template.** ola's image is `FROM
+>   docker/sandbox-templates:shell-docker`, so any `ola` release built before
+>   2026-10-21 (v0.9.0 was built 2026-10-12) still carries the old CA bundle
+>   until it is rebuilt and released, and its sandboxes recreated (see
+>   [the advisory](https://docs.docker.com/security/security-announcements/#docker-sandboxes-response-to-emudhra-ca-compromise)).
+> - Also, none touching ola: kits v3 (capability groups, startup commands on
+>   `kit add`, `SBX_AGENT` env), `setup ssh --auto-create` for Codex/Claude
+>   Desktop, sandbox-scoped custom secrets overriding global ones, `mcp
+>   unload`, `run --variant`, `cp` symlink-escape block, cloud `--ttl`/
+>   `--on-timeout restart` on `move`/`env create`.
+>
+> **v0.47.0 pass.** Source: the
 > [v0.47.0 release](https://github.com/docker/sbx-releases/releases/tag/v0.47.0)
 > (same text in Docker's sandboxes release notes), every `--help` surface ola
 > uses, and a live throwaway sandbox on `ola:0.8.0` created with ola's exact
@@ -244,13 +318,13 @@ version: 2.16.0
 - `sbx run claude [path]` — start/reconnect Claude Code sandbox (creates if absent)
 - `sbx run --name <SANDBOX>` — reconnect to an existing sandbox by name (agent read from its spec). **The positional `sbx run <SANDBOX>` re-attach form was deprecated in v0.33.0** — the positional is now the *agent*, so a bare name re-attach is unreliable; use `--name`.
 - `sbx run --rm ...` (v0.47.0) — remove the sandbox when the session ends; not with `-d`. Unused by ola, whose sandboxes persist.
-- `sbx create shell --name <n> --template <img> [-q] <path> [<extra>:ro]` — create without attaching
-- `sbx ls [--json] [-q]` — list sandboxes (status, ports, workspace)
+- `sbx create shell --name <n> --template <img> [--no-progress] <path> [<extra>:ro]` — create without attaching (`-q` was removed in v0.48.0 and is rejected)
+- `sbx ls [--format table|json|yaml] [-q]` — list sandboxes (status, ports, workspace, created). `--json` is a bare array since v0.48.0.
 - `sbx stop <name> [<name>...]` — pause sandbox(es), keep state
 - `sbx rm [--force] [--all] <name>...` — delete sandbox(es) + all state (`--force` required to delete an **active/running** session, and for non-TTY)
 - `sbx exec [-it] [-u root] [-w DIR] [-e K=V] [--env-file F] <name> CMD [ARG...]` — run a command inside (docker-exec flags; `-e`/`--env-file` added since v0.39.0). Starts a stopped sandbox first. **`-d` is not supported** (v0.46.0 says so explicitly).
 - `sbx cp [-L] SRC DST` — copy files host⇄sandbox; sandbox side is `SANDBOX:PATH` (one side must be a sandbox). `-L`/`--follow-link` follows symlinks in the source.
-- `sbx diagnose [--json|-o github-issue] [--upload]` — diagnose common installation/connectivity issues
+- `sbx diagnose [--format table|json|yaml|github-issue] [--upload]` (`-o` removed in v0.48.0; without a TTY `--upload` saves but skips the upload and still exits 0) — diagnose common installation/connectivity issues
 - `sbx prune [--dry-run [--json]] [--force] [--filter until=TIMESTAMP]` — remove **stopped** sandboxes only; a running one is never touched, so it is safe to run habitually. Confirms unless `--force` (which also removes an in-use sandbox). `--filter until=` takes an RFC 3339 timestamp, a Unix timestamp, or a Go duration relative to now (`until=168h` keeps anything stopped within the last week) — **not** the `since=` this skill claimed at v0.39.0. A sandbox whose stop time the daemon can't report is left alone. Secrets scoped to a pruned sandbox are deleted with it. Use `sbx rm` to remove a specific sandbox regardless of state.
 - `sbx reset [--force] [--preserve-secrets]` — nuclear: stop all, clear ALL state/secrets/policies (and, since v0.39.0, the managed SSH config and Gordon's sessions)
 
