@@ -658,6 +658,18 @@ EOF
 # "12777m"), or nothing (non-zero) if the VM size can't be read, in which case
 # the caller lets sbx apply its own default. Override with OLA_SBX_MEMORY (any
 # sbx -m value, e.g. "24g"); the override bypasses the 32 GiB cap.
+#
+# Also clamped to 75% of *host* memory: sbx rejects any -m above that
+# ("exceeds the maximum of 12GiB (75% of host memory)"), and a Docker VM sized
+# near the host's RAM (15.6 GiB VM on a 16 GiB Mac) puts 80% of the VM over it,
+# failing every create. Skipped when host memory can't be read.
+_ola_host_mem_bytes() {
+  case "$(uname -s)" in
+    Darwin) sysctl -n hw.memsize 2>/dev/null ;;
+    *) awk '/^MemTotal:/ { printf "%d", $2 * 1024 }' /proc/meminfo 2>/dev/null ;;
+  esac
+}
+
 _ola_sbx_memory() {
   if [ -n "$OLA_SBX_MEMORY" ]; then
     printf '%s' "$OLA_SBX_MEMORY"
@@ -671,6 +683,15 @@ _ola_sbx_memory() {
   local mb=$(( total_bytes * 8 / 10 / 1048576 ))  # 80%, in MiB
   local cap=$(( 32 * 1024 ))                        # sbx's documented 32 GiB ceiling
   [ "$mb" -gt "$cap" ] && mb=$cap
+  local host_bytes
+  host_bytes="$(_ola_host_mem_bytes)"
+  case "$host_bytes" in
+    ''|*[!0-9]*) ;;
+    *)
+      local host_cap=$(( host_bytes * 3 / 4 / 1048576 ))  # sbx's 75%-of-host max
+      [ "$mb" -gt "$host_cap" ] && mb=$host_cap
+      ;;
+  esac
   [ "$mb" -lt 1 ] && return 1
   printf '%dm' "$mb"
 }
@@ -913,7 +934,7 @@ _ola_sandbox_prepare() {
   local _mem
   if _mem="$(_ola_sbx_memory)"; then
     mem_arg=(-m "$_mem")
-    echo "ola-sandbox: memory -m $_mem (80% of Docker VM; override with OLA_SBX_MEMORY)" >&2
+    echo "ola-sandbox: memory -m $_mem (80% of Docker VM, at most 75% of host; override with OLA_SBX_MEMORY)" >&2
   fi
 
   # --skills off: sbx mounts a host-side shared skills store into every new

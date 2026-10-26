@@ -224,7 +224,10 @@ so it stops and tells you to run `claude setup-token`. See CLAUDE.md for the ful
 runs are memory-hungry and the 50% default leaves the box half-idle. The 80% is
 computed off `docker info`'s `MemTotal` (the Docker VM size set by the Docker
 Desktop *Resources* slider — **not** the Mac's physical RAM) and capped at sbx's
-32 GiB ceiling.
+32 GiB ceiling. It is also clamped to **75% of the host's physical memory**,
+the most sbx accepts: with the Docker VM sized close to the host's RAM (a
+15.6 GiB VM on a 16 GiB Mac), 80% of the VM would exceed it and `create` would
+fail with `exceeds the maximum`.
 
 This only takes effect on **create**; the limit is fixed for the life of the
 sandbox, so to resize, `sbx rm` it and re-create. To set an exact value, export

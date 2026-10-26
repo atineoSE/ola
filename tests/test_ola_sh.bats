@@ -898,6 +898,9 @@ _mock_sbx_new_sandbox() {
   # 16748113920 bytes (15.6 GiB) → 80% = 12777 MiB → `-m 12777m`.
   docker() { [ "$1" = "info" ] && echo "16748113920"; }
   export -f docker
+  # 32 GiB host, so sbx's 75%-of-host cap (24 GiB) does not bind.
+  _ola_host_mem_bytes() { echo "34359738368"; }
+  export -f _ola_host_mem_bytes
   eval "
   sbx() {
     echo \"sbx \$*\" >> \"$SBX_LOG\"
@@ -976,6 +979,36 @@ _mock_sbx_new_sandbox() {
 
   grep -q '\--template myregistry.io/custom:v2' "$SBX_LOG"
   grep -q 'sbx create shell' "$SBX_LOG"
+}
+
+@test "sandbox: -m is clamped to 75% of host memory (sbx's maximum)" {
+  mkdir -p "$TMPDIR_TEST/sbx_hostcap/agent" "$TMPDIR_TEST/sbx_hostcap/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_hostcap/agent/allowlist.txt"
+
+  _mock_sbx_new_sandbox
+  # 16 GiB host with a 15.6 GiB Docker VM: 80% of the VM (12777m) exceeds
+  # sbx's 75%-of-host maximum (12 GiB), so -m is clamped to 12288m.
+  _ola_host_mem_bytes() { echo "17179869184"; }
+  export -f _ola_host_mem_bytes
+
+  cd "$TMPDIR_TEST/sbx_hostcap/code"
+  ola-sandbox hostcap-sandbox
+
+  grep -q "sbx create shell --name hostcap-sandbox --template ghcr.io/atineose/ola:latest --skills off -m 12288m --no-progress" "$SBX_LOG"
+}
+
+@test "sandbox: unreadable host memory leaves the 80% value unclamped" {
+  mkdir -p "$TMPDIR_TEST/sbx_nohost/agent" "$TMPDIR_TEST/sbx_nohost/code"
+  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_nohost/agent/allowlist.txt"
+
+  _mock_sbx_new_sandbox
+  _ola_host_mem_bytes() { return 1; }
+  export -f _ola_host_mem_bytes
+
+  cd "$TMPDIR_TEST/sbx_nohost/code"
+  ola-sandbox nohost-sandbox
+
+  grep -q "sbx create shell --name nohost-sandbox --template ghcr.io/atineose/ola:latest --skills off -m 12777m --no-progress" "$SBX_LOG"
 }
 
 @test "sandbox: OLA_SBX_MEMORY override sets -m verbatim (bypasses cap)" {
