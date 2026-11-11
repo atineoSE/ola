@@ -41,6 +41,11 @@ RUN mkdir -p ~/.claude && \
 # Ubuntu's npm is purged because NodeSource's nodejs bundles a current npm.
 # NPM_CONFIG_PREFIX=/usr/local/share/npm-global (agent-owned, from the base
 # image) is untouched, so `npm install -g` below still needs no sudo.
+# The NodeSource apt source is removed again once nodejs is installed: sbx's
+# default policy blocks deb.nodesource.com, so a source left behind makes
+# every in-sandbox `apt-get update` fail (403), and with it any provision.sh
+# that installs packages. The image is rebuilt per release, which is what
+# updates Node; the installed 24.x outranks Ubuntu's 22.x without the pin.
 RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
         sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" | \
@@ -51,6 +56,8 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
     sudo apt-get purge -y npm && \
     sudo apt-get install -y --no-install-recommends nodejs && \
     sudo apt-get autoremove -y && \
+    sudo rm -f /etc/apt/sources.list.d/nodesource.list /etc/apt/preferences.d/nodesource \
+        /etc/apt/keyrings/nodesource.gpg && \
     sudo rm -rf /var/lib/apt/lists/*
 
 # Install Codex CLI (npm package)
