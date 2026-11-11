@@ -257,23 +257,6 @@ artifact, not a `cc` bug; the fix is to re-run `cc-credentials` (reconnect the
 sandbox) and/or run ola outside a live `claude` session — not to bypass the
 isolated config dir.
 
-Gotcha: `sbx` injects placeholder provider API keys (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, etc. — the full list is `docker/placeholder-api-keys.txt`)
-into every sandbox for generic downstream-tool support. Claude Code prefers
-`ANTHROPIC_API_KEY` over its own OAuth `.credentials.json` whenever both are
-present, so a live placeholder breaks the `cc` backend with `Invalid API key ·
-Fix external API key` — a sub-second failure that looks identical to a dead
-OAuth token but has nothing to do with credential freshness; re-running
-`cc-credentials` does not touch it, because Claude Code never reads the file.
-The sandbox image's `~/.bashrc` unsets these on every interactive login (see
-the Dockerfile), which is why an interactive `ola-sandbox` attach followed by
-`ola` at the prompt works even when the exact same run through `ola-monitor`
-fails: `ola-monitor` launches `ola` via a non-interactive `sbx exec`, which
-never sources `~/.bashrc`, so it strips the same keys itself with `env -u`
-(reading the same tracked file, so the list is declared once — see
-`_ola_placeholder_keys` in `ola.sh`). If you ever see `Invalid API key` instead
-of an OAuth-shaped auth error, suspect this before suspecting the token.
-
 Per-task config dirs live *inside the agent folder*
 (`<numbered-folder>/.claude/<task-id>/`), which ola commits wholesale on every
 tick and janitor pass — so the folder's `.git/info/exclude` carries every
@@ -384,16 +367,14 @@ mounts a host-side shared skills store into every new sandbox by default
 context for every task agent — undeclared in the agent folder, absent from the
 plan and the project repo, and different on the next machine. Sandbox tooling
 arrives through `provision.sh`/`allowlist.txt`/`run-init.sh` or not at all.
-Inert while the store is empty; the flag keeps it inert afterwards. Requires
-sbx >= v0.43.0.
+Inert while the store is empty; the flag keeps it inert afterwards.
 
 Network-policy rules are built by `_ola_allow_host`, which appends the
 `,*.<host>` subdomain companion **only to a plain domain** — an IP, a CIDR
 prefix, an IPv6, a `host:port` or an already-written wildcard passes through
-untouched. Not cosmetic: sbx v0.45.0 rejects a malformed pattern instead of
-storing a rule that matches nothing, and a rejected rule aborts the whole
-prepare, so one IP literal in `allowlist.txt` used to be invisible and would
-now take the sandbox down.
+untouched. Not cosmetic: sbx rejects a malformed pattern instead of storing a
+rule that matches nothing, and a rejected rule aborts the whole prepare, so one
+IP literal in `allowlist.txt` would take the sandbox down.
 
 No "already provisioned" marker is kept, deliberately: the script must be
 idempotent, and a marker keyed to it would mask a broken internal fast-path
@@ -496,6 +477,17 @@ shells out to `ola --version` and resolves the sandbox template to
 same release *by construction* — bumping `pyproject.toml` re-points both. Never
 add a second place that spells out the version.
 
+**Each ola release supports exactly one sbx release**: `[tool.ola]
+sbx-version` in the same `pyproject.toml` (the only place it is written).
+`_ola_check_sbx_version` runs first in `_ola_sandbox_prepare`, so it covers
+`ola-sandbox` and `ola-monitor`: an older sbx fails with the required version,
+a newer one warns and continues (sbx ships often; blocking every run after an
+sbx self-update would be worse), and an unreadable version warns. ola keeps
+no compatibility code or notes for older sbx releases — the `sbx` skill
+documents the supported release only. Bump `sbx-version` only after
+re-verifying the skill's contract live on the new release, and state it in
+the release notes (`ola-release` skill).
+
 Image precedence in `_ola_sandbox_prepare`: `$OLA_SBX_IMAGE` → local `ola:dev`
 (from `make sandbox-dev`) → `$OLA_IMAGE_REPO:$(ola --version)` → `:latest`
 (fallback only, for a host with no `ola` on `PATH`). The `ola:dev` rung
@@ -533,10 +525,10 @@ its frontmatter (semver, starting at `1.0.0`).
 | `ola-top` | 1.2.0 | Design philosophy and scope guardrails for ola-top, the zero-dependency terminal monitor. |
 | `ola-dashboard` | 1.7.1 | Design philosophy and scope guardrails for ola-dashboard, the richer browser monitor. |
 | `ola-plan` | 2.4.0 | Turn a settled plan into an ola agent-folder tree (numbered folders, parallel-safe tasks); **concurrency** — write `.ola/concurrency` for every folder and default it to that folder's task count (run each stage as wide as its own task list), lowering only for a named reason; **task sizing** — an unticked attempt is discarded whole, so the task is the unit of loss: shrink along the parallel axis freely, grow the sequential axis only for real dependencies (more, smaller tasks and more folders are the expected result); the agent-folder `provision.sh`/`run-init.sh` seams and the long-lived-process rules, with example scripts; **settling the environment before the first agent starts** — an environment that is *wrong* rather than missing (a venv on the host-shared mount that cannot hardlink, a host-built `.venv`) fails once per task and each fresh context invents a conflicting workaround, so fix it in `provision.sh`, publish it through `/etc/sandbox-persistent.sh` (the image's `BASH_ENV`, sourced by every non-interactive bash, bash-only, rewritten whole on each reconnect), and *verify by running the stage's own test command in the sandbox before writing the plan*; the fact that the sandbox runs its **own nested `dockerd`** (containers need no provisioning, but cost sandbox memory, pull into an image store the host cannot see, and outlive their task); and the instructions-vs-data split — a task cannot open the agent folder, so the design is **inlined per stage into `TASK-PROMPT.md`** and never pointed at or committed to the project repo, while paths the *running code* opens must be in `HEAD` (`git cat-file -e HEAD:<path>`, not `git check-ignore`). |
-| `ola-release` | 1.1.0 | Cut a release: bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo. Load whenever releasing or changing how versions/images resolve. |
+| `ola-release` | 1.2.0 | Cut a release: check the sbx pin, bump `pyproject.toml`, publish the multi-arch sandbox image to GHCR, tag the repo, and open the release notes with "Requires sbx vX.Y.Z". Load whenever releasing or changing how versions/images resolve. |
 | `codex` | 1.0.0 | Drive the Codex CLI headlessly against a replaceable model provider; parse its JSONL stream. |
 | `openhands-cli` | 2.0.0 | Drive the OpenHands CLI headlessly as the `oh` backend: subprocess invocation, the `agent_settings.json` it loads, the `--JSON Event-` stream format, post-hoc metrics, and why not the (in-process-lock) SDK. |
-| `sbx` | 2.17.1 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in: lifecycle (incl. killing in-sandbox processes, `prune`), network policy (incl. the v0.46.0 `policy approval` queue that records — but does not hold — every refused request, the v0.45.0 RESOURCES grammar and its new reject-malformed-patterns strictness, the `--protocol tcp\|udp` flag that reopens the UDP question, non-HTTP TCP / database egress via a bare-hostname allow rule, `--deny-network`, and the fact that v0.43.0's `--allow-network` is cloud-only), the shared skills store ola opts out of with `--skills off`, why `--pull` defaulting to `always` needs no ola change, secrets (global-by-default scoping as of v0.39.0, dynamic/custom secrets), templates, resource limits (memory default + 75%-of-host hard cap + no-swap hard wall), the nested `dockerd` every sandbox ships (own image store on a 10 GiB `/var/lib/docker` volume by default, registry egress under the same policy, containers charged to the sandbox's `-m` and outliving their task), the shared **skills store** sbx mounts read-only into every new sandbox by default (`--skills`), `--cloud` mode and the cloud-only flags on `create`/`run` that read as local, host `gh` auth and git commit identity injection, the ola-owned Claude Code `settings.json` (no CC command sandbox, Remote Control and both flavours of background agent hard-disabled, refreshed into every per-task config dir), the macOS per-config-dir Keychain shadowing gotcha (host-only), the background `apt-get update` sbx runs at every sandbox start, the post-upgrade stale-daemon wedge (recurring, now fixable with `sbx daemon restart`), and `ola-monitor` (host-side launcher-watcher: auth healing *and* rate-limit waiting, incl. the agent-dir argument and `provision.sh` hook), plus the sandbox's Claude Code kept current (`claude update` on every create/reconnect/relaunch), and the long-lived `CLAUDE_CODE_OAUTH_TOKEN` (preferred credential, injection, expiry warning, ola-monitor stop), the v0.48.0 CLI rework that broke `create -q` and the `ola:dev` `template ls` match (ola now needs sbx >= v0.48.0), and the v0.49.2 CA-trust rebuild that leaves images built before 2026-10-21 on the old CA bundle. Contract pinned to sbx v0.49.2; re-verify on sbx upgrade. |
+| `sbx` | 3.0.0 | Manage the Docker sandbox (`sbx` CLI) ola runs agents in, documented for the **one supported sbx release only** (v0.51.0; no history or compatibility notes): version pinning (`[tool.ola] sbx-version`, `_ola_check_sbx_version` — older sbx fails, newer warns) and the procedure for moving to a new sbx release; lifecycle (incl. `exec` exit codes 125/127, killing in-sandbox processes, `prune`), the `shell` kit that composes ola's template into a cached `sandbox-kit-assembled` image, network policy (global default scope, the `policy approval` queue ola never answers, the strict RESOURCES grammar that makes a malformed rule abort the prepare, TCP-only default and the open UDP question, non-HTTP TCP via a bare-hostname rule, `localhost` for host services), the shared skills store ola opts out of with `--skills off`, `--cloud`'s local-looking flags, credentials (no provider keys injected; `CLAUDE_CODE_OAUTH_TOKEN`, `.credentials.json` fallback, the ola-owned Claude Code `settings.json`, `claude update` on every prepare, `gh` and git identity injection, the host-only Keychain shadowing gotcha), resource limits (`-m` default/warn line, no-swap hard wall), the nested `dockerd` (own image store and disk cap, containers on the sandbox's `-m`, outliving their task), the base image `docker.io/sbx/shell-docker-image`, `ola-monitor` (auth healing and rate-limit waiting, agent-dir argument, `provision.sh`), the boot-time `apt-get update`, and debugging (the stale-daemon wedge and `sbx daemon restart`, the erofs storage failure on a full host disk). |
 
 ## Treat skills as code
 

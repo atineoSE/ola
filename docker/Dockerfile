@@ -1,4 +1,7 @@
-FROM docker/sandbox-templates:shell-docker
+# Base: sbx's published shell workload image with Docker Engine (Ubuntu, user
+# `agent` with sudo, nested dockerd, NPM_CONFIG_PREFIX,
+# BASH_ENV=/etc/sandbox-persistent.sh).
+FROM docker.io/sbx/shell-docker-image:latest
 
 # jq: ola.sh's _ola_inject_oh_settings patches the rotating LLM endpoint into
 # ~/.openhands/agent_settings.json with jq before each parallel `oh` run; absent
@@ -87,20 +90,7 @@ RUN git config --global user.name "ola" && \
     git config --global user.email "ola@localhost" && \
     git config --global --add safe.directory '*'
 
-# Unset proxy-managed API keys injected by sbx — they are placeholders that
-# confuse downstream tools; Claude prefers ANTHROPIC_API_KEY over its own OAuth
-# credentials.json whenever both are present, so a placeholder left in scope
-# silently breaks the `cc` backend with "Invalid API key" regardless of how
-# fresh the OAuth token is. OpenHands gets its key from the agent .env via ola.
-#
-# docker/placeholder-api-keys.txt is the single source of truth for this list
-# — ola.sh's ola-monitor reads the same file to strip these vars from its
-# non-interactive `sbx exec` launch, which (unlike an interactive attach)
-# never sources ~/.bashrc and so would otherwise miss this unset entirely.
-COPY --chown=1000:1000 docker/placeholder-api-keys.txt /tmp/placeholder-api-keys.txt
 RUN echo 'export SANDBOX=1' >> ~/.bashrc && \
-    echo "unset $(tr '\n' ' ' < /tmp/placeholder-api-keys.txt)" >> ~/.bashrc && \
-    rm /tmp/placeholder-api-keys.txt && \
     echo "alias claude-yolo='claude --dangerously-skip-permissions'" >> ~/.bashrc && \
     echo "alias cx='codex exec --json --ephemeral'" >> ~/.bashrc
 

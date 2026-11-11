@@ -103,13 +103,10 @@ _ola_port_from_url() {
   esac
 }
 
-# Add a global sbx network allow rule. As of sbx v0.33.0 global is the
-# DEFAULT scope: pass RESOURCES bare for a global rule (`--sandbox <name>`
-# scopes to one sandbox). The old `-g`/`--global` flag is deprecated — it
-# still works but prints "Flag --global has been deprecated" to stderr,
-# which pollutes the captured error output and will break outright once the
-# flag is removed. (Earlier, v0.29.0–v0.31.x, scope was MANDATORY and the
-# bare form exited non-zero; that requirement was reversed.)
+# Add a global sbx network allow rule. Global is the default scope: pass
+# RESOURCES bare (`--sandbox <name>` would scope it to one sandbox). Don't
+# pass the deprecated `-g`/`--global`: it prints a deprecation notice to
+# stderr, which would pollute the captured error output.
 # Failures are surfaced rather than swallowed: a discarded error here
 # once let a breaking CLI change disable policy sync for every run with no
 # signal (sync still printed "Synced N" while adding nothing).
@@ -128,10 +125,10 @@ _ola_policy_allow() {
 #
 # A bare IPv4 literal must NOT get a `*.<ip>` wildcard appended — that is not a
 # valid host pattern and sbx rejects the whole rule, which is exactly what
-# silently blocked the LLM endpoint before. sbx v0.45.0 widened the RESOURCES
-# grammar (CIDR prefixes, `**.`/`?`/`[…]` globs, bracketed IPv6) and made it
-# STRICT at the same time: a malformed pattern is now rejected outright rather
-# than stored as a rule that quietly matches nothing. Since a rejected rule
+# silently blocked the LLM endpoint before. The RESOURCES grammar (CIDR
+# prefixes, `**.`/`?`/`[…]` globs, bracketed IPv6) is strict: a malformed
+# pattern is rejected outright rather than stored as a rule that quietly
+# matches nothing. Since a rejected rule
 # aborts the whole sandbox prepare (_ola_apply_policy returns non-zero), that
 # turns every such mistake from invisible into fatal — so anything already
 # explicit is passed through untouched and only a plain domain is expanded:
@@ -201,7 +198,7 @@ _ola_apply_policy() {
       [ -z "$host" ] && continue
       # Through _ola_allow_host, not _ola_policy_allow directly: an IP, CIDR
       # or already-wildcarded entry here must not get a second `*.` glued on.
-      # sbx v0.45.0 rejects the result instead of ignoring it, and a rejected
+      # sbx rejects the result instead of ignoring it, and a rejected
       # rule aborts the prepare — so one stray IP in allowlist.txt would take
       # the whole sandbox down.
       if _ola_allow_host "$host"; then
@@ -410,10 +407,9 @@ ola-policy-sync() {
 #   - Overly broad wildcards in the policy (for manual review)
 # Usage: ola-policy-review [agent_dir]
 #
-# Reads the rule-level `policy ls --wide` listing. The plain `policy ls` has
-# printed only a one-line summary per policy since sbx v0.35.0 ("network: 347
-# allow"), so grepping it — as this did until 2026-10 — reported every host
-# MISSING. RESOURCES is the last column, one resource per line (continuation
+# Reads the rule-level `policy ls --wide` listing. The plain `policy ls`
+# prints only a one-line summary per policy ("network: 347 allow"), so
+# grepping it reports every host MISSING. RESOURCES is the last column, one resource per line (continuation
 # lines carry only it), each written `host:port`.
 ola-policy-review() {
   local agent_dir="${1:-$(cd ../agent 2>/dev/null && pwd)}"
@@ -659,10 +655,10 @@ EOF
 # the caller lets sbx apply its own default. Override with OLA_SBX_MEMORY (any
 # sbx -m value, e.g. "24g"); the override bypasses the 32 GiB cap.
 #
-# Also clamped to 75% of *host* memory: sbx rejects any -m above that
-# ("exceeds the maximum of 12GiB (75% of host memory)"), and a Docker VM sized
-# near the host's RAM (15.6 GiB VM on a 16 GiB Mac) puts 80% of the VM over it,
-# failing every create. Skipped when host memory can't be read.
+# Also clamped to 75% of *host* memory, the point above which sbx warns. A Docker VM
+# sized near the host's RAM (15.6 GiB VM on a 16 GiB Mac) would otherwise put
+# 80% of the VM past the point where the host itself has headroom, and the
+# sandbox has no swap. Skipped when host memory can't be read.
 _ola_host_mem_bytes() {
   case "$(uname -s)" in
     Darwin) sysctl -n hw.memsize 2>/dev/null ;;
@@ -688,7 +684,7 @@ _ola_sbx_memory() {
   case "$host_bytes" in
     ''|*[!0-9]*) ;;
     *)
-      local host_cap=$(( host_bytes * 3 / 4 / 1048576 ))  # sbx's 75%-of-host max
+      local host_cap=$(( host_bytes * 3 / 4 / 1048576 ))  # 75% of host (sbx's warn line)
       [ "$mb" -gt "$host_cap" ] && mb=$host_cap
       ;;
   esac
@@ -808,8 +804,70 @@ _ola_check_token_age() {
 # reconnect + inject path non-interactively (`sbx exec` instead of `sbx
 # run`) without duplicating it. Callers attach (or exec into) "$name" on
 # success.
+# The sbx release this ola checkout supports: `[tool.ola] sbx-version` in the
+# pyproject.toml next to this file (the same sed idiom the Makefile uses for
+# `version`). Read from the checkout rather than the installed package because
+# the sbx invocations it vouches for live in this file.
+_ola_sbx_required() {
+  sed -n 's/^sbx-version = "\(.*\)"/\1/p' "$_OLA_DIR/pyproject.toml" 2>/dev/null | head -1
+}
+
+# The installed sbx release, e.g. "0.51.0" from
+# "sbx version v0.51.0 <sha>". A pre-release suffix (-rc2) is dropped.
+# `sbx --version` does not start the daemon.
+_ola_sbx_installed() {
+  sbx --version 2>/dev/null | awk '{
+    for (i = 1; i <= NF; i++) if ($i ~ /^v[0-9]+\.[0-9]+\.[0-9]+/) {
+      v = substr($i, 2); sub(/-.*/, "", v); print v; exit
+    }
+  }'
+}
+
+# Prints -1, 0 or 1 as dotted version $1 is older than, equal to or newer
+# than $2.
+_ola_version_cmp() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if (x[i] + 0 < y[i] + 0) { print -1; exit }
+      if (x[i] + 0 > y[i] + 0) { print 1; exit }
+    }
+    print 0
+  }'
+}
+
+# Each ola release supports exactly one sbx release. Older sbx fails: ola's
+# invocations and the image assume that release's flags and behaviour. Newer
+# sbx warns and carries on: sbx ships often, and blocking every run after an
+# sbx self-update would be worse than an untested-but-likely-fine run. If
+# either version cannot be read, warn and carry on — there is nothing to
+# compare.
+_ola_check_sbx_version() {
+  local want have
+  want="$(_ola_sbx_required)"
+  have="$(_ola_sbx_installed)"
+  if [ -z "$want" ] || [ -z "$have" ]; then
+    echo "Warning: could not compare sbx versions (installed: ${have:-unknown}," \
+      "required: ${want:-unknown}); continuing." >&2
+    return 0
+  fi
+  case "$(_ola_version_cmp "$have" "$want")" in
+    -1)
+      echo "Error: sbx v$have is installed, but this ola release requires sbx v$want." >&2
+      echo "Upgrade sbx to v$want, then retry." >&2
+      return 1
+      ;;
+    1)
+      echo "Warning: sbx v$have is newer than v$want, the release this ola was" \
+        "verified against; continuing." >&2
+      ;;
+  esac
+  return 0
+}
+
 _ola_sandbox_prepare() {
   local name="${1:?Usage: _ola_sandbox_prepare <sandbox_name> [agent_dir]}"
+  _ola_check_sbx_version || return 1
   _ola_check_token_age
   # Agent folder, defaulting to ../agent (mirrors cli.py's own -f default).
   # Not hard-coded: a project can hold several agent folders side by side
@@ -825,8 +883,7 @@ _ola_sandbox_prepare() {
   # rather than printing the login advice for both. An unreachable daemon
   # reports `ensure daemon: sandboxd (PID N) remained running but did not
   # respond within 10s` while `sbx daemon status` still says "stopped" — most
-  # often a stale sandboxd left behind by an sbx upgrade (seen on both
-  # v0.39.0 -> v0.43.0 and v0.43.0 -> v0.45.0), though the same message
+  # often a stale sandboxd left behind by an sbx upgrade, though the same message
   # appears any time the client cannot reach the daemon socket. Diagnosing
   # that as "not authenticated" sends the user to `sbx login`, which cannot
   # fix it — and ola-monitor relaunching across an upgrade lands here first.
@@ -838,7 +895,7 @@ _ola_sandbox_prepare() {
         echo "Error: the sbx daemon (sandboxd) is not reachable." >&2
         echo "$_sbx_out" >&2
         echo "Usually a stale daemon after an sbx upgrade. Run 'sbx daemon restart'" >&2
-        echo "(sbx >= v0.45.0), or kill the PID named above / restart Docker Desktop." >&2
+        echo "or kill the PID named above / restart Docker Desktop." >&2
         ;;
       *)
         echo "Error: sbx is not authenticated or unavailable." >&2
@@ -918,9 +975,9 @@ _ola_sandbox_prepare() {
   # pulled on demand.
   local image="$OLA_SBX_IMAGE"
   if [ -z "$image" ]; then
-    # sbx >= v0.48.0 lists a locally loaded image fully qualified
-    # (docker.io/library/ola); older releases print the bare name.
-    if sbx template ls 2>/dev/null | grep -qE '^(docker\.io/library/)?ola[[:space:]]+dev[[:space:]]'; then
+    # `template ls` lists a locally loaded image fully qualified
+    # (docker.io/library/ola).
+    if sbx template ls 2>/dev/null | grep -qE '^docker\.io/library/ola[[:space:]]+dev[[:space:]]'; then
       image="ola:dev"
     else
       image="$(_ola_image_repo):$(_ola_image_tag)"
@@ -945,9 +1002,7 @@ _ola_sandbox_prepare() {
   # for how the work runs (allowlist.txt, provision.sh, run-init.sh), so
   # sandbox tooling arrives through those seams or not at all. Inert while the
   # host store is empty; this keeps it inert once it isn't.
-  # Requires sbx >= v0.43.0 (the flag does not exist before it).
-  # --no-progress replaced -q/--quiet in sbx v0.48.0, which rejects -q
-  # outright ("unknown shorthand flag"), so this needs sbx >= v0.48.0.
+  # --no-progress suppresses progress output (there is no -q).
   sbx create shell \
     --name "$name" \
     --template "$image" \
@@ -978,9 +1033,8 @@ ola-sandbox() {
   _ola_sandbox_prepare "$name" "$2" || return 1
 
   # Attach to the sandbox (foreground, interactive). Re-attach by --name:
-  # the positional `sbx run <name>` re-attach form was deprecated in sbx
-  # v0.33.0 (the positional is now the agent), so identify the sandbox with
-  # --name; the agent is read from the existing sandbox spec.
+  # the positional of `sbx run` is the agent, not the sandbox; the agent is
+  # read from the existing sandbox spec.
   sbx run --name "$name"
 }
 
@@ -990,23 +1044,6 @@ ola-sandbox() {
 # sole concern is auth recovery: only the host can run cc-credentials against
 # the Keychain and re-inject into the sandbox, so the watcher runs here and
 # launches ola *into* the sandbox, rather than living in-sandbox.
-
-# Placeholder provider API keys `sbx` injects into every sandbox (for generic
-# downstream-tool support) that Claude Code prefers over its own OAuth
-# credentials.json whenever present — see docker/Dockerfile, which unsets the
-# same list in ~/.bashrc for interactive shells. ola-monitor's `sbx exec`
-# launch is non-interactive and never sources ~/.bashrc, so it strips them
-# itself via `env -u`; docker/placeholder-api-keys.txt is the single tracked
-# list both paths read, so adding/removing a provider key never needs a
-# second edit.
-_ola_placeholder_keys() {
-  local f="$_OLA_DIR/docker/placeholder-api-keys.txt"
-  [ -f "$f" ] || return 0
-  local k
-  while IFS= read -r k; do
-    [ -n "$k" ] && printf '%s\n' "$k"
-  done < "$f"
-}
 
 # Extract the -f/--agent-folder value from an `ola` argv, defaulting to
 # ../agent (mirrors cli.py's own default) so the watcher polls the same
@@ -1263,23 +1300,13 @@ ola-monitor() {
   # sandbox is prepared and provisioned against the plan being run.
   _ola_sandbox_prepare "$name" "$agent_dir" || return 1
 
-  # SANDBOX=1 and the placeholder-key unsets are normally applied by
-  # ~/.bashrc on login, which `sbx exec` never sources (non-interactive, no
-  # shell) — so ola's is_sandbox() check would otherwise see SANDBOX unset
-  # and refuse to run, and Claude Code would see a live placeholder
-  # ANTHROPIC_API_KEY and use that instead of OAuth. Apply both explicitly via
-  # `env` (see _ola_placeholder_keys for why the key list itself isn't
-  # duplicated here).
-  local -a unset_flags=()
-  local _k
-  while IFS= read -r _k; do
-    unset_flags+=(-u "$_k")
-  done < <(_ola_placeholder_keys)
-
+  # SANDBOX=1 is normally exported by ~/.bashrc on login, which `sbx exec`
+  # never sources (non-interactive, no shell) — so ola's is_sandbox() check
+  # would otherwise see it unset and refuse to run. Set it explicitly.
   local -a heal_epochs=()
   local rc
   while true; do
-    sbx exec -w "$code_dir" "$name" env "${unset_flags[@]}" \
+    sbx exec -w "$code_dir" "$name" env \
       "OLA_SANDBOX_NAME=$name" SANDBOX=1 ola "${ola_args[@]}"
     rc=$?
 

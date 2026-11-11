@@ -1,7 +1,7 @@
 ---
 name: ola-release
 description: Cut a new ola release — bump the version, publish the multi-arch sandbox template image to GHCR, and tag the repo, so that a fresh install on any machine pulls a sandbox image matching its CLI. Use when the user says "release ola", "cut a release", "make a new version", "publish the image", or asks how ola versioning and the sandbox image line up.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # ola-release
@@ -21,11 +21,17 @@ They agree because of one rule, and the whole design exists to protect it:
 If you ever find yourself adding a second place that spells out the version, stop —
 that is the bug this design was built to prevent.
 
+A release also fixes **the one sbx release it supports**: `[tool.ola] sbx-version`
+in the same `pyproject.toml`, also the only place it is written. `ola-sandbox` and
+`ola-monitor` refuse an older sbx and warn on a newer one
+(`_ola_check_sbx_version`), and **every release's notes state it** (step 9).
+
 ## The contract
 
 | | |
 |---|---|
 | Version source | `pyproject.toml` → `[project] version` |
+| Supported sbx | `pyproject.toml` → `[tool.ola] sbx-version` |
 | Registry | GHCR: `ghcr.io/atineose/ola` (override with `OLA_IMAGE_REPO` / `IMAGE_REPO`) |
 | Tags pushed | `X.Y.Z` (immutable — what installs resolve) **and** `latest` (moving pointer, fallback only) |
 | Platforms | `linux/amd64,linux/arm64` |
@@ -44,7 +50,7 @@ with no registry at all.
 
 Building on Apple Silicon yields an **arm64-only** manifest. An x86 host then fails
 at `sbx create` with a hard "no matching manifest" error — not a slow fallback. The
-base image (`docker/sandbox-templates:shell-docker`) publishes both `linux/amd64`
+base image (`docker.io/sbx/shell-docker-image`) publishes both `linux/amd64`
 and `linux/arm64`, so both legs build. The amd64 leg emulates on an Apple Silicon
 host, which roughly doubles build time; that cost is the price of the release being
 installable anywhere.
@@ -78,7 +84,21 @@ A dirty tree is a hard stop, not a warning: `docker/Dockerfile` does `COPY . /tm
 so uncommitted edits would silently ship inside the image while the git tag claims
 otherwise. `make release-image` enforces this too.
 
-### 2. Choose the version
+### 2. Check the sbx pin
+
+```bash
+sbx --version                                              # the sbx on this host
+sed -n 's/^sbx-version = "\(.*\)"/\1/p' pyproject.toml     # the release ola supports
+```
+
+If the host runs a newer sbx than the pin, either release against the pin (the
+release then ships with the version it was verified on) or move the pin first,
+following *Moving to a new sbx release* in the `sbx` skill: a live check on the new
+sbx, a rewrite of that skill for the new release only, removal of anything kept for
+the old one, then `sbx-version` bumped. Never bump `sbx-version` without that
+check — it is the claim the release notes make.
+
+### 3. Choose the version
 
 Semver against the **user-visible surface**: the `ola`/`ola-top`/`ola-dashboard` CLI
 flags, the agent-folder contract (`PLAN.md` semantics, folder ordering), the
@@ -88,9 +108,12 @@ flags, the agent-folder contract (`PLAN.md` semantics, folder ordering), the
 - **minor** — new flags, a new agent backend, new tooling baked into the image
 - **major** — a changed folder contract or a removed/renamed CLI flag or helper
 
+A change of `sbx-version` is user-visible (users may have to upgrade sbx), so it is
+at least a **minor** bump.
+
 Pre-1.0, treat a breaking change as a **minor** bump and say so loudly in the notes.
 
-### 3. Bump
+### 4. Bump
 
 ```bash
 # edit pyproject.toml: version = "X.Y.Z"
@@ -103,7 +126,7 @@ Do **not** hand-edit `uv.lock`. Do **not** touch skill `version:` frontmatter he
 skill versions are independent semver, bumped by the change that edits the skill
 (see CLAUDE.md, *Treat skills as code*).
 
-### 4. Commit the bump
+### 5. Commit the bump
 
 ```bash
 git commit -am "release: vX.Y.Z"
@@ -112,7 +135,7 @@ git commit -am "release: vX.Y.Z"
 Commit **before** building. The image must be built from the exact tree the git tag
 will point at, or the tag is a lie about what shipped.
 
-### 5. Build + push the image
+### 6. Build + push the image
 
 Pushing needs the **`write:packages`** scope. The `gh` OAuth token does *not* carry
 it (`gh auth status` typically shows only `gist, read:org, repo`), so
@@ -175,7 +198,7 @@ hardcoded volume name. And cleanup never fails the release: the build's exit
 status is captured before teardown and re-raised after it, so a push that
 succeeded stays succeeded and a build that failed still fails.
 
-### 6. Verify the push
+### 7. Verify the push
 
 ```bash
 make release-verify         # asserts the manifest lists every target platform
@@ -226,7 +249,7 @@ a full `make sandbox-dev` rebuild afterwards. And drive `_ola_sandbox_prepare` +
 Together these catch the failure modes that matter: a private package, a missing
 arch, or a CLI/image version mismatch.
 
-### 7. Tag and push
+### 8. Tag and push
 
 ```bash
 git tag -a vX.Y.Z -m "ola vX.Y.Z"
@@ -237,11 +260,18 @@ git push origin vX.Y.Z
 Tag **last**. A tag whose image failed to publish is worse than no tag: it advertises
 a release that cannot be installed.
 
-### 8. Release notes
+### 9. Release notes
 
 ```bash
-gh release create vX.Y.Z --title "ola vX.Y.Z" --generate-notes
+SBX=$(sed -n 's/^sbx-version = "\(.*\)"/\1/p' pyproject.toml)
+gh release create vX.Y.Z --title "ola vX.Y.Z" --generate-notes \
+  --notes "**Requires sbx v$SBX.** Older sbx releases are refused; newer ones run with a warning."
 ```
+
+`--notes` is prepended to the generated notes, so the sbx line always heads them.
+**Every release states its sbx version** — it is how a user knows which sbx to
+install for the ola they checked out. If the pin moved, say so too (e.g. "sbx pin
+moved v0.51.0 → v0.52.0; upgrade sbx before updating ola").
 
 Beyond the generated commit list, call out by hand anything that changes how a user
 *runs* ola: new/changed CLI flags, agent-folder contract changes, new env knobs, new
@@ -276,13 +306,14 @@ something the release procedure can toggle.
 ## Checklist
 
 - [ ] Clean tree on `main`, `make test` and `make dashboard-test` green
+- [ ] `sbx-version` matches an sbx release verified live with the `sbx` skill
 - [ ] `pyproject.toml` version bumped; `uv lock` run; `ola --version` reports it
 - [ ] Bump committed **before** the build
 - [ ] `make release-image` pushed `X.Y.Z` **and** `latest`, and reported the builder torn down
 - [ ] `make release-verify` lists both platforms
 - [ ] Real sandbox created from the registry image reports the right `ola --version`
 - [ ] `vX.Y.Z` tag created and pushed **after** verification
-- [ ] Release notes call out user-visible changes
+- [ ] Release notes open with "Requires sbx vX.Y.Z" and call out user-visible changes
 - [ ] `README.md` / `docs/sandbox.md` updated if the install or sandbox flow changed
 
 ## Out of scope
@@ -295,7 +326,7 @@ something the release procedure can toggle.
   `make dashboard`; a released install does not ship a built SPA. Do not claim
   otherwise in release notes.
 - **Skill versions.** Independent semver, bumped alongside the change they describe.
-- **`sbx` itself.** Its contract is pinned in the `sbx` skill and versioned separately.
+- **Publishing `sbx` itself.** ola pins which sbx release it supports (`sbx-version`); the `sbx` skill documents that release's contract.
 
 ## Failure modes seen before
 
@@ -303,8 +334,9 @@ something the release procedure can toggle.
 |---|---|---|
 | `sbx create` → manifest not found for the host arch | Single-arch (arm64) push from a Mac | Re-run `make release-image`; confirm with `make release-verify` |
 | `sbx create` → unauthorized pulling from ghcr.io | GHCR package is private and no registry secret stored | Make the package public, or `gh auth token \| sbx secret set --registry ghcr.io --password-stdin` |
-| `imagetools inspect` → 403 on a package you know is public | Docker preferred a **stale** stored `ghcr.io` credential over anonymous access | Re-`docker login`; confirm the package is fine with the anonymous `curl` probe in step 6 |
-| `docker login` succeeds but `--push` is denied | Token lacks `write:packages` (the `gh` OAuth token does not have it) | Use a classic PAT scoped `write:packages`; run the push-scope probe in step 5 first |
+| `imagetools inspect` → 403 on a package you know is public | Docker preferred a **stale** stored `ghcr.io` credential over anonymous access | Re-`docker login`; confirm the package is fine with the anonymous `curl` probe in step 7 |
+| `docker login` succeeds but `--push` is denied | Token lacks `write:packages` (the `gh` OAuth token does not have it) | Use a classic PAT scoped `write:packages`; run the push-scope probe in step 6 first |
+| `ola-sandbox` → `requires sbx vX.Y.Z` | Host sbx older than the release's `sbx-version` | Upgrade sbx to that version |
 | Sandbox reports a different `ola --version` than the host | A stale `ola:dev` template outranks the registry image | `sbx template rm ola:dev`, recreate the sandbox |
 | Image contains uncommitted changes | Built from a dirty tree | `make release-image` refuses this; never bypass the guard |
 | `docker buildx build --platform` → "multiple platforms not supported" | Default `desktop-linux` driver | Use the `ola-release` container builder the make target creates |

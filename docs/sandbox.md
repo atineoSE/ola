@@ -8,12 +8,12 @@ Note the isolation provided by docker sandboxes is much more strict that the Cla
 
 ## Prerequisites
 
-* Install sbx, login, and set your default policy. The recommended policy is "balanced", which defaults to deny traffic except for approved service providers and package managers. See [here](https://docs.docker.com/ai/sandboxes/security/policy/#network-policies) for more information about policies.
+* Install the sbx release this ola release supports — `[tool.ola] sbx-version` in `pyproject.toml`, also stated in each release's notes. `ola-sandbox`/`ola-monitor` refuse an older sbx and warn on a newer one. Then login and set your default policy. The recommended policy is "balanced", which defaults to deny traffic except for approved service providers and package managers. See [here](https://docs.docker.com/ai/sandboxes/security/policy/#network-policies) for more information about policies.
 * Add an `allowlist.txt` file in the agent folder to allow traffic to specific domains. They apply globally to all local sandboxes and include all subdomains.
 
 ## The template image
 
-The template extends `docker/sandbox-templates:shell-docker` (the `-docker` variant bundles Docker Engine, so agents can run containers inside the sandbox) and must live in an OCI registry — sbx pulls templates from a registry directly and does not use the local Docker daemon's image store.
+The template extends `docker.io/sbx/shell-docker-image` (the `-docker` variant bundles Docker Engine, so agents can run containers inside the sandbox) and must live in an OCI registry — sbx pulls templates from a registry directly and does not use the local Docker daemon's image store.
 
 **You do not normally build this yourself.** Released images are published to `ghcr.io/atineose/ola`, and `ola-sandbox` resolves the tag from the installed CLI:
 
@@ -256,9 +256,9 @@ cd project
 # omit it and sbx falls back to its 50% default.
 # --skills off also mirrors ola-sandbox: sbx otherwise mounts a host-side
 # shared skills store into the sandbox, which would be ambient context for
-# every task agent. Needs sbx >= v0.43.0.
+# every task agent.
 sbx create shell --name my-sandbox --template ghcr.io/atineose/ola:$(ola --version | awk '{print $NF}') --skills off -m 12g .
-sbx run --name my-sandbox   # re-attach by name (positional re-attach deprecated in sbx v0.33.0)
+sbx run --name my-sandbox   # re-attach by name (the positional is the agent, not the sandbox)
 ```
 
 ## Network policy
@@ -273,7 +273,7 @@ sbx policy log                        # view blocked requests
 
 Project-specific domains can be added to `agent/allowlist.txt` (one host per line; subdomains are included automatically). Blank lines, full-line `#` comments, and inline `# ...` comments after a host are ignored. The `ola-sandbox` helper applies these automatically on sandbox creation.
 
-The `*.<host>` subdomain companion is added only to a plain domain. An entry that is already an explicit pattern — an IP address, a CIDR prefix (`192.168.0.0/16`), an IPv6 address, a `host:port`, or a wildcard you wrote yourself — is passed to sbx untouched, because `*.10.0.0.5` is not a valid pattern and sbx v0.45.0 rejects a malformed rule rather than ignoring it (a rejected rule aborts sandbox creation).
+The `*.<host>` subdomain companion is added only to a plain domain. An entry that is already an explicit pattern — an IP address, a CIDR prefix (`192.168.0.0/16`), an IPv6 address, a `host:port`, or a wildcard you wrote yourself — is passed to sbx untouched, because `*.10.0.0.5` is not a valid pattern and sbx rejects a malformed rule rather than ignoring it (a rejected rule aborts sandbox creation).
 
 ## Laminar tracing (OpenHands only)
 

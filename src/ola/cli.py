@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ola.agents import create_agent
 from ola.loop import run_outer_loop
-from ola.sandbox import is_sandbox, sanitize_proxy_env
+from ola.sandbox import is_sandbox
 from ola.scheduler import (
     AUTH_ESCALATION_EXIT_CODE,
     RATE_LIMIT_ESCALATION_EXIT_CODE,
@@ -202,10 +202,6 @@ def main() -> None:
             "Use --skip-sandbox to run outside a sandbox environment."
         )
         sys.exit(1)
-
-    # Repair the sbx-injected NO_PROXY before any agent backend builds an HTTP
-    # client (httpx chokes on the bracketed [::1] entry). See sanitize_proxy_env.
-    sanitize_proxy_env()
 
     plan_path = Path(args.agent_folder).resolve()
 

@@ -13,6 +13,13 @@ dependencies = [
     "rich>=13.0",
 ]
 
+# The one sbx release this ola release supports. ola.sh's
+# _ola_check_sbx_version refuses an older sbx and warns on a newer one; the
+# release notes for every ola version state it (see the ola-release skill).
+# Bump it only after re-verifying the sbx skill's contract on that release.
+[tool.ola]
+sbx-version = "0.51.0"
+
 [project.scripts]
 ola = "ola.cli:main"
 ola-top = "ola.monitor.cli:main"

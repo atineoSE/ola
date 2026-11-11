@@ -37,6 +37,9 @@ setup() {
   # Re-source ola.sh (functions don't survive subshells in bats)
   local ola_sh="$(cd "$BATS_TEST_DIRNAME/.." && pwd)/ola.sh"
   eval "$(grep -v '%x' "$ola_sh")"
+  _OLA_DIR="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  # The sbx mocks below don't answer --version; the check has its own tests.
+  _ola_check_sbx_version() { :; }
 
   # GNU base64 (Linux, incl. the sandbox) wraps encoded output at 76 columns;
   # macOS's does not. ola.sh is fine either way — the sandbox decodes wrapped
@@ -219,7 +222,7 @@ EOF
   [ ! -s "$SBX_LOG" ]
 }
 
-# sbx v0.45.0 rejects a malformed pattern instead of storing a rule that
+# sbx rejects a malformed pattern instead of storing a rule that
 # matches nothing, and a rejected rule aborts the sandbox prepare — so an
 # entry that is already an explicit pattern must pass through untouched.
 
@@ -293,9 +296,9 @@ LLM_BASE_URL="https://10.0.0.5/v1"'
 
 @test "apply_policy: allowlist IP/CIDR entries are not wildcarded (regression)" {
   # The allowlist loop used to append `,*.$host` unconditionally, so an IP
-  # literal here produced `*.10.0.0.5`. sbx ignored that until v0.45.0, which
-  # rejects a malformed pattern outright — and a rejected rule aborts the
-  # whole sandbox prepare, so one stray IP took the sandbox down with it.
+  # literal here produced `*.10.0.0.5`. sbx rejects a malformed pattern
+  # outright — and a rejected rule aborts the whole sandbox prepare, so one
+  # stray IP took the sandbox down with it.
   mkdir -p "$TMPDIR_TEST/ap_literal"
   cat > "$TMPDIR_TEST/ap_literal/allowlist.txt" <<'EOF'
 10.0.0.5
@@ -372,8 +375,8 @@ LMNR_HTTP_PORT="8000"'
 }
 
 @test "apply_policy: returns non-zero and reports when sbx policy allow fails" {
-  # Simulates the v0.29.0 breaking change where the bare command form
-  # exits non-zero — must surface, not print a bogus "Synced" success.
+  # Any failing `policy allow` must surface, not print a bogus "Synced"
+  # success.
   sbx() {
     [ "$1 $2 $3" = "policy allow network" ] && return 1
     echo "sbx $*" >> "$SBX_LOG"
@@ -659,7 +662,7 @@ LLM_API_KEY="k"'
 
 # ===== ola-policy-review =====
 
-# Mirrors real sbx v0.47.0 output: the plain listing is a summary only; the
+# Mirrors real sbx output: the plain listing is a summary only; the
 # rules live in --wide, RESOURCES last, continuation lines carrying only it.
 _mock_sbx_policy_ls() {
   sbx() {
@@ -1056,7 +1059,7 @@ _mock_sbx_new_sandbox() {
     echo "sbx $*" >> "$SBX_LOG"
     if [ "$1" = "ls" ]; then echo 'other-sandbox  running  1h'; return 0; fi
     if [ "$1" = "template" ] && [ "$2" = "ls" ]; then
-      echo 'ola                    dev      4715041c5671   shell-docker   About an hour ago'
+      echo 'docker.io/library/ola   dev      4715041c5671   shell-docker   1h'
       return 0
     fi
   }
@@ -1064,31 +1067,6 @@ _mock_sbx_new_sandbox() {
 
   cd "$TMPDIR_TEST/sbx_local/code"
   ola-sandbox local-sandbox
-
-  grep -q '\--template ola:dev' "$SBX_LOG"
-  ! grep -q 'ghcr.io' "$SBX_LOG"
-}
-
-# sbx >= v0.48.0 prints a locally loaded image fully qualified in `template ls`.
-@test "sandbox: finds local ola:dev under its qualified name (sbx >= v0.48.0)" {
-  mkdir -p "$TMPDIR_TEST/sbx_qual/agent" "$TMPDIR_TEST/sbx_qual/code"
-  echo "docs.docker.com" > "$TMPDIR_TEST/sbx_qual/agent/allowlist.txt"
-
-  security() { echo '{"oauth_token":"fake"}'; }
-  export -f security
-  sbx() {
-    echo "sbx $*" >> "$SBX_LOG"
-    if [ "$1" = "ls" ]; then echo 'other-sandbox  running  1h'; return 0; fi
-    if [ "$1" = "template" ] && [ "$2" = "ls" ]; then
-      echo 'REPOSITORY              TAG      IMAGE ID       FLAVOR         CREATED'
-      echo 'docker.io/library/ola   dev      9e9dea5e0e8b   shell-docker   3mo'
-      return 0
-    fi
-  }
-  export -f sbx
-
-  cd "$TMPDIR_TEST/sbx_qual/code"
-  ola-sandbox qual-sandbox
 
   grep -q '\--template ola:dev' "$SBX_LOG"
   ! grep -q 'ghcr.io' "$SBX_LOG"
@@ -1746,7 +1724,7 @@ EOF
   [[ "$output" == *"cc-credentials isn't fixing it"* ]]
 }
 
-@test "monitor: strips placeholder provider API keys from its sbx exec launch" {
+@test "monitor: sets SANDBOX=1 on its sbx exec launch" {
   mkdir -p "$TMPDIR_TEST/mon_keys/agent" "$TMPDIR_TEST/mon_keys/code"
   _mock_sbx_for_monitor
 
@@ -1762,9 +1740,6 @@ EOF
   [ "$status" -eq 0 ]
   local exec_line
   exec_line="$(grep 'sbx exec .* ola -a cc' "$SBX_LOG")"
-  while IFS= read -r k; do
-    [[ "$exec_line" == *"-u $k"* ]]
-  done < <(_ola_placeholder_keys)
   [[ "$exec_line" == *"SANDBOX=1"* ]]
 }
 
@@ -1946,4 +1921,74 @@ _seed_token_record() {  # <token> <age_days>
   run _ola_check_token_age
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+# ===== sbx version check =====
+
+_load_real_sbx_check() {
+  eval "$(grep -v '%x' "$_OLA_DIR/ola.sh" | sed -n '/^_ola_check_sbx_version() {/,/^}/p')"
+}
+
+@test "sbx version: required version is read from pyproject.toml" {
+  local want
+  want="$(sed -n 's/^sbx-version = "\(.*\)"/\1/p' "$_OLA_DIR/pyproject.toml")"
+  [ -n "$want" ]
+  [ "$(_ola_sbx_required)" = "$want" ]
+}
+
+@test "sbx version: parses the installed version, dropping a pre-release suffix" {
+  sbx() { echo "sbx version v0.53.0-rc2 7d55286de0c7"; }
+  [ "$(_ola_sbx_installed)" = "0.53.0" ]
+}
+
+@test "sbx version: compares numerically, not lexically" {
+  [ "$(_ola_version_cmp 0.9.0 0.10.0)" = "-1" ]
+  [ "$(_ola_version_cmp 0.51.0 0.51.0)" = "0" ]
+  [ "$(_ola_version_cmp 1.0.0 0.51.0)" = "1" ]
+}
+
+@test "sbx version: older sbx fails with the required version" {
+  _load_real_sbx_check
+  _ola_sbx_required() { echo "0.51.0"; }
+  sbx() { echo "sbx version v0.49.2 5d40fd43"; }
+  run _ola_check_sbx_version
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"requires sbx v0.51.0"* ]]
+}
+
+@test "sbx version: matching sbx passes silently" {
+  _load_real_sbx_check
+  _ola_sbx_required() { echo "0.51.0"; }
+  sbx() { echo "sbx version v0.51.0 7d55286d"; }
+  run _ola_check_sbx_version
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "sbx version: newer sbx warns and continues" {
+  _load_real_sbx_check
+  _ola_sbx_required() { echo "0.51.0"; }
+  sbx() { echo "sbx version v0.52.0 abcdef"; }
+  run _ola_check_sbx_version
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"newer than v0.51.0"* ]]
+}
+
+@test "sbx version: unreadable sbx version warns and continues" {
+  _load_real_sbx_check
+  _ola_sbx_required() { echo "0.51.0"; }
+  sbx() { return 1; }
+  run _ola_check_sbx_version
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not compare"* ]]
+}
+
+@test "sbx version: older sbx stops _ola_sandbox_prepare before any sandbox call" {
+  _load_real_sbx_check
+  _ola_sbx_required() { echo "0.51.0"; }
+  sbx() { echo "sbx $*" >> "$SBX_LOG"; [ "$1" = "--version" ] && echo "sbx version v0.49.2 x"; return 0; }
+  : > "$SBX_LOG"
+  run _ola_sandbox_prepare old-sbx
+  [ "$status" -eq 1 ]
+  [ "$(grep -vc -- '--version' "$SBX_LOG")" -eq 0 ]
 }
