@@ -1,24 +1,26 @@
 ---
 name: sbx
 description: Manage Docker sandbox environments using the sbx CLI
-version: 3.0.0
+version: 4.0.0
 ---
 
 # sbx — Docker Sandbox CLI
 
-> **Supported release: sbx `v0.51.0`** (`7d55286de0c775148b985ed349f760f1eba06203`).
+> **Supported release: sbx `v0.54.0`** (`4bec4a5ce093466e54b034146965b143d065dc09`).
 > This skill documents that release only. ola keeps no compatibility code or
 > notes for other sbx releases; git history has the old ones.
 >
-> Verified on 2026-11-10/11 from the v0.51.0 `--help` text, the
-> [v0.50.0](https://github.com/docker/sbx-releases/releases/tag/v0.50.0) and
-> [v0.51.0](https://github.com/docker/sbx-releases/releases/tag/v0.51.0)
+> Verified on 2026-11-24 from the v0.54.0 `--help` text, the
+> [v0.53.0](https://github.com/docker/sbx-releases/releases/tag/v0.53.0)
+> (v0.52.0 was skipped) and
+> [v0.54.0](https://github.com/docker/sbx-releases/releases/tag/v0.54.0)
 > release notes, and live throwaway sandboxes created with ola's exact flags on
-> `ola:dev` (built `FROM docker.io/sbx/shell-docker-image`): create exit 0,
-> `exec -w` exit 0, nested `dockerd` runs `hello-world`, no `*_API_KEY` in the
-> sandbox env, `rm -f` exit 0. A statement marked *not re-verified on v0.51.0*
-> was last checked on an older release and should be tested before relying on
-> it.
+> `ola:dev` and on `ghcr.io/atineose/ola:0.11.0`: create exit 0, `exec -w`
+> exit 0, `exec` exit codes 125/127, nested `dockerd` runs `hello-world`, no
+> `*_API_KEY` in the sandbox env, `SANDBOX=1` reaches the command through
+> `env`, the RESOURCES grammar probed rule by rule, raw TCP and host-service
+> egress, `rm -f` exit 0. A statement marked *not re-verified on v0.54.0* was
+> last checked on an older release and should be tested before relying on it.
 >
 > ola's invocations: `--version`, `create shell --name --template --skills off
 > -m --no-progress <path>`, `run --name`, `exec [-w]`, `ls`, `policy allow
@@ -31,7 +33,7 @@ version: 3.0.0
   the supported sbx release is written.
 - **The check:** `_ola_check_sbx_version` (in `ola.sh`) runs first in
   `_ola_sandbox_prepare`, so it covers `ola-sandbox` and `ola-monitor`. It
-  reads `sbx --version` (`sbx version v0.51.0 <sha>`; does not start the
+  reads `sbx --version` (`sbx version v0.54.0 <sha>`; does not start the
   daemon) and:
   - older than the pin → **fails** with the required version;
   - equal → silent;
@@ -48,7 +50,9 @@ version: 3.0.0
 2. Create a throwaway sandbox with ola's exact flags on `ola:dev` and check:
    create and `exec -w` exit 0, `env | grep _API_KEY` empty, `docker run --rm
    hello-world` works, `SANDBOX=1` reaches `ola` through `env`, `rm -f`
-   removes it. Time a first and a second create.
+   removes it. Time a first and a second create. Probe the RESOURCES grammar
+   with the forms `_ola_host_resources` can emit (a scoped `policy allow
+   network --sandbox <throwaway>` per form; the rules go with the sandbox).
 3. Fix ola for anything that broke, then **rewrite this skill to describe the
    new release only** — remove anything that no longer holds and any
    compatibility code for the old release. Bump this skill's `version`.
@@ -66,10 +70,11 @@ version: 3.0.0
 - `sbx inspect <name> [--format json|yaml]` — full detail, incl. the image (`sandbox-kit-assembled:<hash>`, see *Custom Templates*), bind mounts, and the sbx version that created it.
 - `sbx stop <name>…` — stop, keep state. `sbx exec` on a stopped sandbox starts it.
 - `sbx rm [--force] [--all] <name>…` — delete sandbox(es) and all state. `--force` is needed for a running/in-use sandbox and without a TTY.
-- `sbx exec [-it] [-u root] [-w DIR] [-e K=V] [--env-file F] <name> CMD [ARG…]` — run a command inside. **Exit status is the command's; 125 if sbx could not run it (e.g. no such sandbox); 127 for a missing command.** `-d` is not supported.
+- `sbx exec [-it] [-u root] [-w DIR] [-e K=V] [--env-file F] <name> CMD [ARG…]` — run a command inside. **Exit status is the command's; 125 if sbx could not run it (e.g. no such sandbox); 127 for a missing command.** There is no `-d`/`--detach`, `--privileged` or `--detach-keys` (rejected, not ignored).
 - `sbx cp [-L] SRC DST` — copy host⇄sandbox; the sandbox side is `SANDBOX:PATH`. Symlinks that escape the workspace are blocked.
 - `sbx diagnose [--format table|json|yaml|github-issue] [--upload]` — installation/daemon/connectivity checks. Warns when `SSL_CERT_FILE`/`SSL_CERT_DIR` replace the system trust store.
 - `sbx prune [--dry-run [--json]] [--force] [--filter until=TIMESTAMP]` — remove **stopped** sandboxes only; safe to run habitually. `until=` takes RFC 3339, a Unix timestamp, or a Go duration relative to now (`until=168h`). Secrets scoped to a pruned sandbox go with it.
+- `sbx df [--verbose]` — local image, container and managed-volume disk usage with an estimate of reclaimable space (more than `sbx prune` alone frees). Unused source-kit build images become eligible for automatic cleanup after seven days; images referenced by a sandbox or a saved template are kept.
 - `sbx reset [--force] [--preserve-secrets]` — stop everything and clear all state, secrets and policies; reports how many user-added and approval-granted rules it removes. Run `sbx policy init` afterwards.
 - `sbx --version` — client version, without starting the daemon. `sbx version` prints the same.
 
@@ -92,7 +97,7 @@ Output: `--format table|json|yaml` everywhere (`--json` is an alias; `--format`/
 - `--kit <ref>`, `--kit-arg name=value`, `--kit-args-file FILE` (experimental), `--profile <governance-profile>`.
 - Extra workspaces: `PATH[:TARGET][:ro]` positionals after the main path; a `:ro` one may be a single file. Targets that would hide the shared skills store are rejected.
 
-Agents: claude, codex, copilot, cursor, devin, docker-agent, droid, gemini, kiro, opencode, shell. Built-in names resolve to published kits at `docker.io/sbx/<name>:latest` (override per agent with `kit.shortcuts.<agent>`). The first positional may instead be a kit reference (directory, ZIP, git repo, OCI); a relative one must be written as a path (`./my-kit`). ola always passes `shell`. Omitting PATH creates a sandbox with no workspace bind mount; ola always passes the project dir.
+Agents: claude, codex, copilot, cursor, devin, docker-agent, droid, kiro, opencode, shell. Built-in names resolve to published kits at `docker.io/sbx/<name>:latest` (override per agent with `kit.shortcuts.<agent>`). The first positional may instead be a kit reference (directory, ZIP, git repo, OCI); a relative one must be written as a path (`./my-kit`). ola always passes `shell`. Omitting PATH creates a sandbox with no workspace bind mount; ola always passes the project dir.
 
 > **Relevance to ola:** ola injects env through its own `~/.ola/agent.env`
 > sidecar (written with `sbx exec` + base64) and sets `SANDBOX=1` with `env`
@@ -133,16 +138,15 @@ The agent folder declares its own environment (`allowlist.txt`,
 or not at all. (`readwrite` would be worse: task agents mutating a store shared
 by every sandbox on the host.)
 
-### sbx runs its own `apt-get update` at every start *(not re-verified on v0.51.0)*
-Every sandbox *start* — including the one an `sbx exec` triggers on a stopped
-sandbox — kicks off, in the background:
-```
-sh -c 'command -v apt-get >/dev/null 2>&1 && (apt-get update -qq -y >/dev/null 2>&1 || true) &'
-```
-It is detached, with **no readiness signal**, so apt work in the first seconds
-of a sandbox's life races it and fails with `Could not get lock
-/var/lib/apt/lists/lock`. Pass `apt-get -o DPkg::Lock::Timeout=120` rather than
-sleeping or polling. The image has no systemd and no apt periodic timers.
+### apt at sandbox start
+On v0.54.0 a sandbox *start* runs **no** `apt-get update` of its own: watched
+for 15s after an `sbx exec` started a stopped sandbox, no apt process ran and
+`/var/lib/apt/lists` kept its image-build timestamps. The image has no systemd
+and no apt periodic timers either. So a first `apt-get install` in
+`provision.sh` needs its own `apt-get update` (the lists are as old as the
+image). Still pass `apt-get -o DPkg::Lock::Timeout=120`: it costs nothing and
+makes a concurrent apt run wait for the lock instead of failing with `Could
+not get lock /var/lib/apt/lists/lock`.
 
 ### Stopping a process *inside* a sandbox
 A process started with `sbx exec <name> CMD` keeps running after the client
@@ -165,8 +169,9 @@ there is no swap flag and no global swap setting.
   explicitly. ola sets 80% of the Docker VM, clamped to 32 GiB and to 75% of
   host memory (`_ola_sbx_memory`); `OLA_SBX_MEMORY` overrides that, and a value
   above 75% of host memory is accepted with a warning.
-- **There is no swap, and you cannot add it** *(not re-verified on v0.51.0)*.
-  `SwapTotal: 0`; `swapon` of a swapfile fails with `EINVAL` on the overlay
+- **There is no swap, and you cannot add it.** `SwapTotal: 0` (observed on
+  v0.54.0, with `MemTotal` equal to `-m`). *Not re-verified on v0.54.0:*
+  `swapon` of a swapfile fails with `EINVAL` on the overlay
   rootfs and no block device is exposed for a swap partition. Docker Desktop's
   VM swap setting does not reach sbx micro-VMs, and a template cannot fix it.
 - **So the sandbox is a hard RAM wall.** Crossing `-m` is an **immediate OOM
@@ -179,16 +184,17 @@ there is no swap flag and no global swap setting.
 ola's image is `FROM docker.io/sbx/shell-docker-image`, which ships a **nested
 `dockerd`**, already running before the first command. The `agent` user is in
 the `docker` group, so `docker` needs no sudo and `provision.sh` has nothing to
-install. Observed on v0.51.0: `dockerd 29.9.3`, storage driver `overlayfs`,
+install. Observed on v0.54.0: `dockerd 29.9.3`, storage driver `overlayfs`,
 `docker run --rm hello-world` works.
 
 - **It is a nested daemon, not the host socket.** `docker ps` inside lists none
   of the host's containers, and an image built on the host is invisible — every
   image is pulled or built inside.
-- **The image store has its own disk cap** *(not re-verified on v0.51.0)*:
-  `/var/lib/docker` is a separate volume, **10 GiB by default**, sized by
-  `sandbox.disk.dockerVolume` at create time only (existing sandboxes are never
-  resized; `DOCKER_SANDBOXES_DOCKER_SIZE` overrides it for one sandbox).
+- **The image store has its own disk cap**: `/var/lib/docker` is a separate
+  volume, **10 GiB by default** (observed on v0.54.0: `/dev/vdd`, 9.8G). *Not
+  re-verified on v0.54.0:* it is sized by `sandbox.disk.dockerVolume` at
+  create time only (existing sandboxes are never resized;
+  `DOCKER_SANDBOXES_DOCKER_SIZE` overrides it for one sandbox).
 - **Pulls go through the ordinary policy proxy.** The default profile allows
   `docker.io`, `ghcr.io`, `quay.io`, `gcr.io` and `registry.k8s.io`; a private
   registry needs an allow rule.
@@ -211,7 +217,9 @@ pollutes captured error output. An empty `--sandbox` value is rejected.
 - `sbx policy deny network "domain"` — deny always beats allow; an explicit CIDR deny beats a matching domain allow.
 - `sbx policy rm network --resource "domain"` or `--id <RULE_ID>` (the RULE_ID column of `--wide`, not the rule name; a wrong one prints the corrected command), plus `--sandbox` for a scoped rule.
 - `--method GET,HEAD [--path '/v1/**'] [--query name=value]` on `policy allow|deny|rm network` — HTTP-level rules (`policy ls --type http`). Unused by ola.
-- `sbx policy check network <host|URL> [--protocol tcp|udp]` / `sbx policy check http` / `sbx policy inspect <policy-or-rule>`.
+- `sbx policy check network <host|URL> [--protocol tcp|udp]` (names the rule that allowed the target) / `sbx policy check http` / `sbx policy inspect <policy-or-rule>`.
+- A rule scoped with `--sandbox` is removed with that sandbox (`sbx rm`).
+- HTTP-level rules match URL paths and query names/values **case-insensitively** (ASCII letters).
 - `sbx policy approval ls | inspect <ID> | respond <ID> --option allow|dismiss` — the queue of refused requests. A request with no matching rule is **still denied at once**; the approval is a record waiting for an answer, and `allow` writes a persistent rule (`--created-via approval`). **ola never answers these** — task egress belongs in `allowlist.txt`, where it is declared and reviewed. The queue is a good list of what a run tried to reach and was refused.
 - `sbx policy log [SANDBOX] [--type network] [--limit N] [--json]` — allowed/blocked requests (`{updated_at, allowed, blocked}` in JSON).
 - `sbx policy refresh`, `sbx policy reset`, `sbx policy profile …`.
@@ -230,43 +238,59 @@ companion only to a plain domain and passes everything else through untouched.
 | multi-label wildcard | `**.example.com` |
 | single-character glob | `api?.example.com` |
 | character class | `api[12].example.com`, `api[!1].example.com` |
-| port suffix | `example.com:443` |
-| bare IPv4 | `10.0.0.5` — never `*.10.0.0.5` |
+| port suffix | `example.com:443`, `*.db.example.com:5432` |
+| bare IPv4 | `10.0.0.5` |
 | CIDR prefix | `10.0.0.0/24`, `2001:db8::1/128` |
-| IPv6 | only bracketed with a port (`[2001:db8::1]:443`) or as CIDR — a bare IPv6 address is refused |
+| IPv6 | only bracketed with a port (`[2001:db8::1]:443`) or as CIDR |
 | all hosts | `**` |
 
-A bare `*` and escaped globs (`\*`) are rejected. Rules are **TCP-only by
-default**; `--protocol tcp|udp` (or `tcp,udp`) selects the transport. ola never
-passes `--protocol`.
+Rejected, each with an error that names the fix (probed on v0.54.0): a bare
+`*` (`use "**" to match all hosts`), an escaped glob `\*.x.com`, a bare IPv6
+`2001:db8::1` (`bracket an IPv6 literal`), and a `*.` prefix on a CIDR or an
+IPv6 (`'/' is not valid in a host name`, `':' is not valid …`). A `*.` prefix
+on a bare IPv4 (`*.10.0.0.5`) is **accepted** — it parses as a host-name glob —
+but no host name is `<label>.10.0.0.5`, so it is a rule that matches nothing;
+`_ola_host_resources` never writes it.
 
-#### Non-HTTP TCP egress (databases) *(not re-verified on v0.51.0)*
+Rules are **TCP-only by default**; `--protocol tcp|udp` (or `tcp,udp`) selects
+the transport. ola never passes `--protocol`.
+
+**Idle connections survive.** v0.54.0 closes *stalled* outbound connections
+after `egress.stalledConnectionTimeoutSeconds` (default 30, `0` disables,
+`sbx daemon restart` applies a change), so clients can reconnect after a host
+network change. Stalled is not idle: a raw TCP connection left silent for 45s
+and an HTTP request whose response took 45s both completed. A long silent LLM
+call (non-streaming, slow prefill) is not cut by it.
+
+#### Non-HTTP TCP egress (databases)
 A sandbox is not limited to HTTP: non-HTTP TCP (SSH, database wire protocols)
 is allowed by a rule for the destination. `allowlist.txt` → `sbx policy allow
 network` already produces the right shape.
 
 - **A bare-hostname allow rule does double duty**: it unblocks the DNS lookup
-  for that host *and* the raw TCP connect on any port (e.g. Mongo's 27017).
-- **Do not use `host:port` or `IP:port` for a TLS service that sends SNI** — the
-  proxy matches the SNI hostname, so such a rule never applies. `IP:port` is
-  only for non-SNI services. An IP rule does not open a *denied* hostname that
-  resolves to that IP.
-- **UDP is an open question.** `--protocol udp` exists, but nobody has
-  verified that the proxy forwards ordinary unicast UDP end to end. UDP to
-  multicast, link-local, unspecified and broadcast addresses is always
-  rejected (`host.docker.internal` exempt); ICMP has no flag and is presumed
-  blocked. So connect to MongoDB with a **seedlist** URI
+  for that host *and* the raw TCP connect on any port. Observed on v0.54.0:
+  without a rule, `gitlab.com:22` connects and then closes with no data; with
+  a bare `gitlab.com` rule the SSH banner arrives.
+- **Do not use `host:port` or `IP:port` for a TLS service that sends SNI** *(not
+  re-verified on v0.54.0)* — the proxy matches the SNI hostname, so such a rule
+  never applies. `IP:port` is only for non-SNI services. An IP rule does not
+  open a *denied* hostname that resolves to that IP.
+- **UDP egress is off by default.** A `--protocol udp` rule is stored with
+  `warning: UDP rule saved, but UDP egress is disabled; enable experimental
+  features and feature.udp-egress to use UDP`, and a DNS query to `1.1.1.1:53`
+  got no reply with or without the rule. ola does not enable it. ICMP has no
+  flag and is presumed blocked. So connect to MongoDB with a **seedlist** URI
   (`mongodb://h1,h2,h3/?tls=true&authSource=admin…`), not `mongodb+srv://`
-  (SRV/TXT lookups need UDP), until a test inside a sandbox shows otherwise.
+  (SRV/TXT lookups need UDP).
 - Egress leaves via the **host-side** proxy, so host routing (e.g. a VPN
   bypass) still applies. The `mongo-vpn` skill has the MongoDB recipe.
 
-#### Reaching a service on the host *(not re-verified on v0.51.0)*
+#### Reaching a service on the host
 Connect to `host.docker.internal:<port>` (it resolves in-sandbox), but **allow
 `localhost`**, not `host.docker.internal`: the policy engine evaluates the
 connection under the resource name `localhost` (`sbx policy allow network
---sandbox <SANDBOX> localhost`). A rule for `host.docker.internal` alone still
-403s with `Blocked by network policy: domain localhost:...`.
+--sandbox <SANDBOX> localhost`). Observed on v0.54.0: no rule → 403, a
+`host.docker.internal` rule alone → still 403, `localhost` → 200.
 
 ### Credentials
 
@@ -332,7 +356,9 @@ not). Everything ola's agents need is injected by `ola.sh`:
   `user.name`/`user.email` from the host (`--get-all | head -1`, `--includes`
   honoured) into the sandbox's global git config. Both or neither; otherwise
   the image default `ola <ola@localhost>` stays. A repo-local `user.*` still
-  wins.
+  wins. sbx itself also copies the host's global identity in, but only when the
+  workspace root is *not* a git repo — ola's project dir always is, so ola's
+  injection is the one that applies.
 
 `sbx secret` — **ola never calls it**; here so its errors are legible. Service
 secrets are held by the sbx proxy (not the agent, not the OS keychain), which
@@ -387,13 +413,14 @@ contains the target is not mistaken for it.
 second argument** (default `../agent`); `ola-monitor` passes whatever it
 resolved from ola's own `-f`. A **`provision.sh`** there runs inside the sandbox
 on every create and reconnect (base64 through `sbx exec`), aborting the prepare
-on a non-zero exit; apt-based scripts must handle the boot-time apt lock above.
+on a non-zero exit; apt-based scripts see *apt at sandbox start* above.
 
 ### Ports
-Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = ephemeral; loopback by default).
-- `sbx ports <name>` — list published ports (`--json`)
-- `sbx ports <name> -p 8080:3000` (`--publish`) — forward host→sandbox; a host port already in use names the sandbox port that holds it
-- `sbx ports <name> --unpublish 8080:3000`
+Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = ephemeral; loopback by default). ola publishes no ports.
+- `sbx port ls <name>` — list published ports (`--json`)
+- `sbx port publish <name> [HOST_PORT:]SANDBOX_PORT…` — forward host→sandbox; a host port already in use names the sandbox port that holds it
+- `sbx port unpublish <name> SANDBOX_PORT` (all mappings of that port) or `HOST_PORT:SANDBOX_PORT` (one)
+- `sbx ports` is the deprecated predecessor; do not use it.
 
 ### Git Workflow
 - **Default: bind mode** — the agent edits the bind-mounted host working tree in place. In a new sandbox, Git keeps the host's ignore decisions for paths in a primary workspace mounted at a repo root.
@@ -402,7 +429,7 @@ Format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]` (HOST_PORT omitted = eph
 
 ### Custom Templates
 - Base images: **`docker.io/sbx/shell-image`**, or **`docker.io/sbx/shell-docker-image`** with Docker Engine (ola uses the latter). Layout: Ubuntu 26.04, user `agent` with sudo and in the `docker` group, `NPM_CONFIG_PREFIX=/usr/local/share/npm-global`, `BASH_ENV=/etc/sandbox-persistent.sh`, Ubuntu's nodejs 22 / npm 9.2 (ola's Dockerfile replaces them with NodeSource Node 24).
-- `sbx create shell --template <img>` composes the published `docker.io/sbx/shell:latest` kit with the template into a local `sandbox-kit-assembled:<hash>` image (shown by `sbx inspect`); the guest rootfs is still the template's. The CLI prints `○ shell — now ships as a kit; resolving docker.io/sbx/shell:latest` to stderr even with `--no-progress`. Measured: **~70s for the first create from a new image, ~4s for the next** (the composed image is cached).
+- `sbx create shell --template <img>` composes the published `docker.io/sbx/shell:latest` kit with the template into a local `sandbox-kit-assembled:<hash>` image (shown by `sbx inspect`); the guest rootfs is still the template's. The CLI prints `○ shell — now ships as a kit; resolving docker.io/sbx/shell:latest` to stderr even with `--no-progress`. Measured on v0.54.0: **3–4s** when the composed image is cached (both `ola:dev` and a registry tag). A first create from a new image took ~70s *(not re-measured on v0.54.0)*.
 - Templates are pulled from an **OCI registry**, not the local Docker image store; the dev path is `docker save` → `sbx template load`.
 - `sbx template ls` prints a locally loaded image fully qualified (`docker.io/library/ola   dev …`); `ola.sh`'s `ola:dev` lookup matches exactly that.
 - `sbx template save` / `ls` / `inspect` / `rm` / `load` — snapshot and manage templates.
@@ -417,7 +444,8 @@ Documented so an unexpected flag or error is legible, not as a recommendation.
 - **`sbx env`** (experimental) — `create` / `exec` / `plan` / `rm` / `run` drive a sandbox declared in an `sbxenv.yaml` (agent, mixin kits, mounts, env, secrets, `additionalWorkspaces[].target`, `entrypoint`/`cmd`, `sandboxOptions`). A plan/approve model (`sbx env plan` changes nothing; `-f` for a non-TTY). A `lifecycle:` block runs commands **on the host with your privileges**, which is why it re-asks every time and why `--skip-host-commands` exists. Unrelated to the `-e`/`--env` flags.
 
 ## Debugging
-- `sbx diagnose` — first stop for installation/daemon/connectivity problems.
+- `sbx diagnose` — first stop for installation/daemon/connectivity problems. In `--format json|yaml` each check has a stable `id`; match on that, not on `name`.
+- **HTTPS from sandboxes stalls or drops behind a firewall or TLS-inspecting proxy** — it may not handle post-quantum key exchange: `sbx settings set tls.postQuantumKeyExchange false`, then `sbx daemon restart`.
 - `sbx policy log [SANDBOX]` and `sbx policy approval ls` — what the proxy refused.
 - `sbx exec -it <name> bash` — inspect a sandbox interactively.
 - `~/Library/Application Support/com.docker.sandboxes/sandboxes/sandboxd/daemon.log` (macOS) — the daemon's JSON log; the CLI's one-line error is often all you get otherwise.

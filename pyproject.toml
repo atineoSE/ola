@@ -18,7 +18,7 @@ dependencies = [
 # release notes for every ola version state it (see the ola-release skill).
 # Bump it only after re-verifying the sbx skill's contract on that release.
 [tool.ola]
-sbx-version = "0.51.0"
+sbx-version = "0.54.0"
 
 [project.scripts]
 ola = "ola.cli:main"

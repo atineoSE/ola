@@ -123,9 +123,9 @@ _ola_policy_allow() {
 # Allow one host in the sbx network policy, adding the `,*.<host>` subdomain
 # companion only where that is a valid pattern.
 #
-# A bare IPv4 literal must NOT get a `*.<ip>` wildcard appended — that is not a
-# valid host pattern and sbx rejects the whole rule, which is exactly what
-# silently blocked the LLM endpoint before. The RESOURCES grammar (CIDR
+# A bare IPv4 literal must NOT get a `*.<ip>` wildcard appended — sbx accepts
+# it as a host-name glob, but no host name matches it, so it is a dead rule
+# beside the real one. The RESOURCES grammar (CIDR
 # prefixes, `**.`/`?`/`[…]` globs, bracketed IPv6) is strict: a malformed
 # pattern is rejected outright rather than stored as a rule that quietly
 # matches nothing. Since a rejected rule
@@ -732,9 +732,9 @@ _ola_image_tag() {
 #     fires) behind a cheap no-op, and the cost of getting it wrong is
 #     paid silently on every later run;
 #   - must exit non-zero on failure;
-#   - should tolerate a busy apt: sbx runs its own `apt-get update` in the
-#     background on every sandbox *start*, so anything apt-based here races
-#     it and wants `-o DPkg::Lock::Timeout=<seconds>`.
+#   - should tolerate a busy apt (`-o DPkg::Lock::Timeout=<seconds>`), and
+#     run its own `apt-get update` first: sbx does not refresh the lists at
+#     sandbox start, so they are as old as the image.
 #
 # Injected as base64 through `sbx exec` (the same idiom as the credential
 # injectors) rather than executed by path: the agent folder is only visible

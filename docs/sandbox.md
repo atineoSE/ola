@@ -130,9 +130,10 @@ Contract:
   "already provisioned" marker (a marker keyed to the script would hide a
   broken internal fast-path guard behind a cheap no-op);
 - must exit non-zero on failure;
-- if it uses apt, pass `-o DPkg::Lock::Timeout=120`. sbx runs its own
-  `apt-get update` in the background on every sandbox *start*, so a provision
-  that runs right after create/reconnect races it for the apt lock.
+- if it uses apt, run `apt-get update` first (sbx does not refresh the lists
+  at sandbox start, so they are as old as the image) and pass
+  `-o DPkg::Lock::Timeout=120`, so a concurrent apt run waits for the lock
+  instead of failing.
 
 Anything the agent folder needs at run time is reachable: the folder lives
 under the mounted project dir. An agent folder *outside* that dir still

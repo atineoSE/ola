@@ -15,8 +15,9 @@
 #      looks right and is always false, because Ubuntu keeps the server
 #      binaries off PATH — the guard never fires and apt re-runs on every
 #      reconnect.
-#   2. Tolerate a busy apt. sbx runs its own `apt-get update` in the background
-#      on every sandbox *start*, so this races it for the lock.
+#   2. Refresh, and tolerate a busy apt. sbx does not refresh the apt lists at
+#      sandbox start (they are as old as the image), so run `update` first;
+#      the lock timeout makes a concurrent apt run wait instead of failing.
 #   3. Expose a stable wrapper on PATH. Tasks read plan text, not install
 #      paths; a versioned directory in a task description rots at the next
 #      distro bump.
